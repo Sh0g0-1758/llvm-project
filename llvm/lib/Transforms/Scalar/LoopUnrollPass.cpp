@@ -142,7 +142,7 @@ static cl::opt<unsigned> UnrollMaxUpperBound(
         "The max of trip count upper bound that is considered in unrolling"));
 
 static cl::opt<unsigned> PragmaUnrollThreshold(
-    "pragma-unroll-threshold", cl::init(16 * 1024), cl::Hidden,
+    "pragma-unroll-threshold", cl::init(16384), cl::Hidden,
     cl::desc("Unrolled size limit for loops with an unroll(full) or "
              "unroll_count pragma."));
 
@@ -176,7 +176,7 @@ static cl::opt<unsigned>
                                     "loop), used in all but O3 optimizations"));
 
 static cl::opt<unsigned> PragmaUnrollFullMaxIterations(
-    "pragma-unroll-full-max-iterations", cl::init(1'000'000), cl::Hidden,
+    "pragma-unroll-full-max-iterations", cl::init(1000000), cl::Hidden,
     cl::desc("Maximum allowed iterations to unroll under pragma unroll full."));
 
 /// A magic value for use with the Threshold parameter to indicate

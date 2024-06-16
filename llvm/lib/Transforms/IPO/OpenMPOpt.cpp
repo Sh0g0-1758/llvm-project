@@ -146,7 +146,7 @@ static cl::opt<unsigned>
 static cl::opt<unsigned>
     SharedMemoryLimit("openmp-opt-shared-limit", cl::Hidden,
                       cl::desc("Maximum amount of shared memory to use."),
-                      cl::init(std::numeric_limits<unsigned>::max()));
+                      cl::init(4294967295));
 
 STATISTIC(NumOpenMPRuntimeCallsDeduplicated,
           "Number of OpenMP runtime calls deduplicated");

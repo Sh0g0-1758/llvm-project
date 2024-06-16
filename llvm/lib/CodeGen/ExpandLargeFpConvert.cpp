@@ -34,7 +34,7 @@ using namespace llvm;
 
 static cl::opt<unsigned>
     ExpandFpConvertBits("expand-fp-convert-bits", cl::Hidden,
-                     cl::init(llvm::IntegerType::MAX_INT_BITS),
+                     cl::init(8388608),
                      cl::desc("fp convert instructions on integers with "
                               "more than <N> bits are expanded."));
 

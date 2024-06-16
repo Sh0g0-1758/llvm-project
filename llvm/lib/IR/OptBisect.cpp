@@ -26,7 +26,7 @@ static OptBisect &getOptBisector() {
 }
 
 static cl::opt<int> OptBisectLimit("opt-bisect-limit", cl::Hidden,
-                                   cl::init(OptBisect::Disabled), cl::Optional,
+                                   cl::init(2147483647), cl::Optional,
                                    cl::cb<void, int>([](int Limit) {
                                      getOptBisector().setLimit(Limit);
                                    }),

@@ -133,13 +133,13 @@ static cl::opt<uint32_t> MaxNumUsesTraversed(
              "invariance in loop using invariant start (default = 8)"));
 
 static cl::opt<unsigned> FPAssociationUpperLimit(
-    "licm-max-num-fp-reassociations", cl::init(5U), cl::Hidden,
+    "licm-max-num-fp-reassociations", cl::init(5), cl::Hidden,
     cl::desc(
         "Set upper limit for the number of transformations performed "
         "during a single round of hoisting the reassociated expressions."));
 
 cl::opt<unsigned> IntAssociationUpperLimit(
-    "licm-max-num-int-reassociations", cl::init(5U), cl::Hidden,
+    "licm-max-num-int-reassociations", cl::init(5), cl::Hidden,
     cl::desc(
         "Set upper limit for the number of transformations performed "
         "during a single round of hoisting the reassociated expressions."));

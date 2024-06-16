@@ -41,7 +41,7 @@ cl::opt<bool> Quiet("debugify-quiet",
 cl::opt<uint64_t> DebugifyFunctionsLimit(
     "debugify-func-limit",
     cl::desc("Set max number of processed functions per pass."),
-    cl::init(UINT_MAX));
+    cl::init(4294967295));
 
 enum class Level {
   Locations,

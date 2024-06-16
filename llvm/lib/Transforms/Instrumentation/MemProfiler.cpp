@@ -115,12 +115,12 @@ static cl::opt<std::string>
 
 static cl::opt<int> ClMappingScale("memprof-mapping-scale",
                                    cl::desc("scale of memprof shadow mapping"),
-                                   cl::Hidden, cl::init(DefaultShadowScale));
+                                   cl::Hidden, cl::init(3));
 
 static cl::opt<int>
     ClMappingGranularity("memprof-mapping-granularity",
                          cl::desc("granularity of memprof shadow mapping"),
-                         cl::Hidden, cl::init(DefaultMemGranularity));
+                         cl::Hidden, cl::init(64));
 
 static cl::opt<bool> ClStack("memprof-instrument-stack",
                              cl::desc("Instrument scalar stack variables"),

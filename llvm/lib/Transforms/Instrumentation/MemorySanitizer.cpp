@@ -253,7 +253,7 @@ static cl::opt<bool> ClPoisonStackWithCall(
 static cl::opt<int> ClPoisonStackPattern(
     "msan-poison-stack-pattern",
     cl::desc("poison uninitialized stack variables with the given pattern"),
-    cl::Hidden, cl::init(0xff));
+    cl::Hidden, cl::init(255));
 
 static cl::opt<bool>
     ClPrintStackNames("msan-print-stack-names",

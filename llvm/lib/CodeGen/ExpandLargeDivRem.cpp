@@ -35,7 +35,7 @@ using namespace llvm;
 
 static cl::opt<unsigned>
     ExpandDivRemBits("expand-div-rem-bits", cl::Hidden,
-                     cl::init(llvm::IntegerType::MAX_INT_BITS),
+                     cl::init(8388608),
                      cl::desc("div and rem instructions on integers with "
                               "more than <N> bits are expanded."));
 

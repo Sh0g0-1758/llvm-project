@@ -149,13 +149,13 @@ static cl::opt<int> CallPenalty(
 
 static cl::opt<size_t>
     StackSizeThreshold("inline-max-stacksize", cl::Hidden,
-                       cl::init(std::numeric_limits<size_t>::max()),
+                       cl::init(18446744073709551615),
                        cl::desc("Do not inline functions with a stack size "
                                 "that exceeds the specified limit"));
 
 static cl::opt<size_t> RecurStackSizeThreshold(
     "recursive-inline-max-stacksize", cl::Hidden,
-    cl::init(InlineConstants::TotalAllocaSizeRecursiveCaller),
+    cl::init(1024),
     cl::desc("Do not inline recursive functions with a stack "
              "size that exceeds the specified limit"));
 

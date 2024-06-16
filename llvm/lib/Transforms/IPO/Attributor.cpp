@@ -100,7 +100,7 @@ static cl::opt<unsigned>
                            cl::Hidden,
                            cl::desc("Maximal number of callees specialized for "
                                     "a call base"),
-                           cl::init(UINT32_MAX));
+                           cl::init(4294967295));
 
 static cl::opt<unsigned, true> MaxInitializationChainLengthX(
     "attributor-max-initialization-chain-length", cl::Hidden,

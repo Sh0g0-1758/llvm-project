@@ -23,7 +23,7 @@ using namespace llvm;
 using namespace llvm::PatternMatch;
 
 static cl::opt<uint32_t> PredicatePassBranchWeight(
-    "guards-predicate-pass-branch-weight", cl::Hidden, cl::init(1 << 20),
+    "guards-predicate-pass-branch-weight", cl::Hidden, cl::init(1048576),
     cl::desc("The probability of a guard failing is assumed to be the "
              "reciprocal of this value (default = 1 << 20)"));
 

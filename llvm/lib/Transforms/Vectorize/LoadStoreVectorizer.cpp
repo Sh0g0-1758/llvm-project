@@ -257,7 +257,7 @@ public:
   bool run();
 
 private:
-  static const unsigned MaxDepth = 3;
+  static const unsigned MaxDepthVectorize = 3;
 
   /// Runs the vectorizer on a "pseudo basic block", which is a range of
   /// instructions [Begin, End) within one BB all of which have
@@ -1277,7 +1277,7 @@ std::optional<APInt> Vectorizer::getConstantOffsetComplexAddrs(
 
 std::optional<APInt> Vectorizer::getConstantOffsetSelects(
     Value *PtrA, Value *PtrB, Instruction *ContextInst, unsigned Depth) {
-  if (Depth++ == MaxDepth)
+  if (Depth++ == MaxDepthVectorize)
     return std::nullopt;
 
   if (auto *SelectA = dyn_cast<SelectInst>(PtrA)) {
