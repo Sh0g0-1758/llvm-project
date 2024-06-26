@@ -38,15 +38,17 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 #include <optional>
 using namespace llvm;
 using namespace PatternMatch;
 
 #define DEBUG_TYPE "lazy-value-info"
 
-// This is the number of worklist items we will process to try to discover an
-// answer for a given value.
-static const unsigned MaxProcessedPerValue = 500;
+static cl::opt<unsigned>
+    MaxProcessedPerValue("max-processed-per-value", cl::Hidden,
+                            cl::desc("number of worklist items we will process to try to discover an answer for a given value."),
+                            cl::init(500));
 
 char LazyValueInfoWrapperPass::ID = 0;
 LazyValueInfoWrapperPass::LazyValueInfoWrapperPass() : FunctionPass(ID) {

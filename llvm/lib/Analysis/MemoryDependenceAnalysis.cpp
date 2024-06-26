@@ -80,8 +80,9 @@ static cl::opt<unsigned>
                      cl::desc("The number of blocks to scan during memory "
                               "dependency analysis (default = 200)"));
 
-// Limit on the number of memdep results to process.
-static const unsigned int NumResultsLimit = 100;
+static cl::opt<unsigned>
+    NumResultsLimit("num-results-limit", cl::Hidden, cl::init(100),
+                     cl::desc("Limit on the number of memdep results to process"));
 
 /// This is a helper function that removes Val from 'Inst's set in ReverseMap.
 ///

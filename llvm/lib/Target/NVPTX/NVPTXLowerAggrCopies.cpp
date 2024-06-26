@@ -27,10 +27,13 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
+#include "llvm/Support/CommandLine.h"
 
 #define DEBUG_TYPE "nvptx"
 
 using namespace llvm;
+
+static cl::opt<unsigned> MaxAggrCopySize("max-aggr-copy-size", cl::Hidden,cl::desc("Convert intrinsic calls with variable size or with constant size larger than the MaxAggrCopySize threshold"),cl::init(128));
 
 namespace {
 
@@ -46,8 +49,6 @@ struct NVPTXLowerAggrCopies : public FunctionPass {
   }
 
   bool runOnFunction(Function &F) override;
-
-  static const unsigned MaxAggrCopySize = 128;
 
   StringRef getPassName() const override {
     return "Lower aggregate copies/intrinsics into loops";

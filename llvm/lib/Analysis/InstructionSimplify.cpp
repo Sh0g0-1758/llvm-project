@@ -41,6 +41,7 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Statepoint.h"
 #include "llvm/Support/KnownBits.h"
+#include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #include <optional>
 using namespace llvm;
@@ -48,7 +49,7 @@ using namespace llvm::PatternMatch;
 
 #define DEBUG_TYPE "instsimplify"
 
-enum { RecursionLimit = 3 };
+static cl::opt<unsigned> RecursionLimit("recursion-limit", cl::Hidden, cl::init(3), cl::desc("Limit on the number of recursion steps"));
 
 STATISTIC(NumExpand, "Number of expansions");
 STATISTIC(NumReassoc, "Number of reassociations");
