@@ -27,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugCounter.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #define DEBUG_TYPE "predicateinfo"
 using namespace llvm;
@@ -40,7 +41,9 @@ DEBUG_COUNTER(RenameCounter, "predicateinfo-rename",
 
 // Maximum number of conditions considered for renaming for each branch/assume.
 // This limits renaming of deep and/or chains.
-static const unsigned MaxCondsPerBranch = 8;
+static cl::opt<unsigned> MaxCondsPerBranch(
+    "max-conds-per-branch", cl::Hidden, cl::init(8),
+    cl::desc("Maximum number of conditions considered for renaming for each branch/assume."));
 
 namespace {
 // Given a predicate info that is a type of branching terminator, get the

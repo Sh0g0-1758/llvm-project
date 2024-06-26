@@ -64,6 +64,9 @@ static cl::opt<unsigned> SampleProfileProfiCostBlockUnknownInc(
     "sample-profile-profi-cost-block-unknown-inc", cl::init(0), cl::Hidden,
     cl::desc("The cost of increasing an unknown block's count by one."));
 
+// Maximum number of DFS iterations for DAG finding.
+static cl::opt<unsigned> MaxDfsCalls("max-dfs-calls", cl::Hidden, cl::init(10),cl::desc("Maximum number of DFS iterations for DAG finding."));
+
 /// A value indicating an infinite flow/capacity/weight of a block/edge.
 /// Not using numeric_limits<int64_t>::max(), as the values can be summed up
 /// during the execution.
@@ -519,9 +522,6 @@ private:
       }
     }
   }
-
-  /// Maximum number of DFS iterations for DAG finding.
-  static constexpr uint64_t MaxDfsCalls = 10;
 
   /// A node in a flow network.
   struct Node {

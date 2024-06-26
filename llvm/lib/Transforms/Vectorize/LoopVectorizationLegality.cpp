@@ -79,7 +79,9 @@ static cl::opt<LoopVectorizeHints::ScalableForceKind>
                 "cost is inconclusive.")));
 
 /// Maximum vectorization interleave count.
-static const unsigned MaxInterleaveFactor = 16;
+static cl::opt<unsigned> MaxInterleaveFactor(
+    "max-inter-leave-factor", cl::Hidden, cl::init(16),
+    cl::desc("Maximum vectorization interleave count."));
 
 namespace llvm {
 

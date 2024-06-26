@@ -35,6 +35,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombiner.h"
 #include <cassert>
 #include <cstdint>
@@ -49,6 +50,9 @@ using namespace PatternMatch;
 STATISTIC(NumAggregateReconstructionsSimplified,
           "Number of aggregate reconstructions turned into reuse of the "
           "original aggregate");
+
+static cl::opt<unsigned> PredCountLimit("pred-count-limit", cl::init(64), cl::Hidden,
+    cl::desc("predecessor count limit."));
 
 /// Return true if the value is cheaper to scalarize than it is to leave as a
 /// vector operation. If the extract index \p EI is a constant integer then
@@ -1083,9 +1087,6 @@ Instruction *InstCombinerImpl::foldAggregateConstructionIntoAggregateReuse(
   // predecessors, and there are no predecessors to look at, then we're done.
   if (pred_empty(UseBB))
     return nullptr;
-
-  // Arbitrary predecessor count limit.
-  static const int PredCountLimit = 64;
 
   // Cache the (non-uniqified!) list of predecessors in a vector,
   // checking the limit at the same time for efficiency.

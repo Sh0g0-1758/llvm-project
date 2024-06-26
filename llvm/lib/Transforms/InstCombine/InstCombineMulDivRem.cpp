@@ -30,6 +30,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombiner.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
 #include <cassert>
@@ -1342,7 +1343,9 @@ Instruction *InstCombinerImpl::commonIDivTransforms(BinaryOperator &I) {
   return nullptr;
 }
 
-static const unsigned MaxDepth = 6;
+static cl::opt<unsigned> MaxDepth(
+    "max-depth", cl::Hidden, cl::init(6),
+    cl::desc("Maximum Depth can be achieved"));
 
 // Take the exact integer log2 of the value. If DoFold is true, create the
 // actual instructions, otherwise return a non-null dummy value. Return nullptr

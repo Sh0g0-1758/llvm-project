@@ -103,6 +103,7 @@
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -121,6 +122,11 @@ using namespace llvm;
 
 STATISTIC(NumVectorInstructions, "Number of vector accesses generated");
 STATISTIC(NumScalarsVectorized, "Number of scalar accesses vectorized");
+
+/// Maximum vectorization interleave count.
+static cl::opt<unsigned> MaxDepthVectorize(
+    "max-depth-vectorize", cl::Hidden, cl::init(3),
+    cl::desc("Maximum vectorization interleave count."));
 
 namespace {
 
@@ -257,8 +263,6 @@ public:
   bool run();
 
 private:
-  static const unsigned MaxDepthVectorize = 3;
-
   /// Runs the vectorizer on a "pseudo basic block", which is a range of
   /// instructions [Begin, End) within one BB all of which have
   /// isGuaranteedToTransferExecutionToSuccessor(I) == true.

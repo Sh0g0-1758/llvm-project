@@ -201,23 +201,33 @@ static cl::opt<bool> VectorizeNonPowerOf2(
 
 // Limit the number of alias checks. The limit is chosen so that
 // it has no negative effect on the llvm benchmarks.
-static const unsigned AliasedCheckLimit = 10;
+static cl::opt<unsigned> AliasedCheckLimit(
+    "aliased-check-limit", cl::Hidden, cl::init(10),
+    cl::desc("Limit the number of alias checks. The limit is chosen so that it has no negative effect on the llvm benchmarks."));
 
 // Limit of the number of uses for potentially transformed instructions/values,
 // used in checks to avoid compile-time explode.
-static constexpr int UsesLimit = 8;
+static cl::opt<unsigned> UsesLimit(
+    "uses-limit", cl::Hidden, cl::init(8),
+    cl::desc("Limit of the number of uses for potentially transformed instructions/values, used in checks to avoid compile-time explode."));
 
 // Another limit for the alias checks: The maximum distance between load/store
 // instructions where alias checks are done.
 // This limit is useful for very large basic blocks.
-static const unsigned MaxMemDepDistance = 160;
+static cl::opt<unsigned> MaxMemDepDistance(
+    "max-mem-dep-distance", cl::Hidden, cl::init(160),
+    cl::desc("Another limit for the alias checks: The maximum distance between load/store instructions where alias checks are done. This limit is useful for very large basic blocks."));
 
 /// If the ScheduleRegionSizeBudget is exhausted, we allow small scheduling
 /// regions to be handled.
-static const int MinScheduleRegionSize = 16;
+static cl::opt<unsigned> MinScheduleRegionSize(
+    "min-schedule-region-size", cl::Hidden, cl::init(16),
+    cl::desc("If the ScheduleRegionSizeBudget is exhausted, we allow small scheduling regions to be handled."));
 
 /// Maximum allowed number of operands in the PHI nodes.
-static const unsigned MaxPHINumOperands = 128;
+static cl::opt<unsigned> MaxPHINumOperands(
+    "max-phi-num-operands", cl::Hidden, cl::init(128),
+    cl::desc("Maximum allowed number of operands in the PHI nodes."));
 
 /// Predicate for the element types that the SLP vectorizer supports.
 ///

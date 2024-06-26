@@ -24,6 +24,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Support/CommandLine.h"
 #include <cassert>
 #include <utility>
 #include <vector>
@@ -34,7 +35,9 @@ using namespace llvm;
 
 // The maximum number of range extensions allowed for operations requiring
 // widening.
-static const unsigned MaxNumRangeExtensions = 10;
+static cl::opt<unsigned> MaxNumRangeExtensions(
+    "max-num-range-extensions", cl::Hidden, cl::init(10),
+    cl::desc("The maximum number of range extensions allowed for operations requiring widening."));
 
 /// Returns MergeOptions with MaxWidenSteps set to MaxNumRangeExtensions.
 static ValueLatticeElement::MergeOptions getMaxWidenStepsOpts() {

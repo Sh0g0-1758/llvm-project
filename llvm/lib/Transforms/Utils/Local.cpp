@@ -77,6 +77,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
+#include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -114,7 +115,9 @@ static cl::opt<unsigned> PHICSENumPHISmallSize(
 
 // Max recursion depth for collectBitParts used when detecting bswap and
 // bitreverse idioms.
-static const unsigned BitPartRecursionMaxDepth = 48;
+static cl::opt<unsigned> BitPartRecursionMaxDepth(
+    "max-conds-per-branch", cl::Hidden, cl::init(48),
+    cl::desc("Max recursion depth for collectBitParts used when detecting bswap and bitreverse idioms."));
 
 //===----------------------------------------------------------------------===//
 //  Local constant propagation.
