@@ -80,6 +80,10 @@ using namespace llvm;
 
 #define DEBUG_TYPE "attributor"
 
+static cl::opt<unsigned> MaxNumChanges("max-num-changes", cl::Hidden,
+                            cl::desc("Upper bound for the number of allowed changes (=widening steps) for the constant range before we give up."),
+                            cl::init(5));
+
 static cl::opt<bool> ManifestInternal(
     "attributor-manifest-internal", cl::Hidden,
     cl::desc("Manifest Attributor internal string attributes."),
@@ -9518,10 +9522,6 @@ struct AAValueConstantRangeFloating : AAValueConstantRangeImpl {
 
   /// Tracker to bail after too many widening steps of the constant range.
   int NumChanges = 0;
-
-  /// Upper bound for the number of allowed changes (=widening steps) for the
-  /// constant range before we give up.
-  static constexpr int MaxNumChanges = 5;
 };
 
 struct AAValueConstantRangeFunction : AAValueConstantRangeImpl {

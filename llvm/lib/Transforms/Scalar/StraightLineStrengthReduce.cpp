@@ -79,6 +79,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <cassert>
@@ -92,6 +93,10 @@ using namespace PatternMatch;
 
 static const unsigned UnknownAddressSpace =
     std::numeric_limits<unsigned>::max();
+
+static cl::opt<unsigned> MaxNumIterations("max-num-iterations", cl::Hidden,
+                            cl::desc("Limit the scan radius to avoid running in quadratice time."),
+                            cl::init(50));
 
 namespace {
 
@@ -359,8 +364,6 @@ void StraightLineStrengthReduce::allocateCandidatesAndFindBasis(
   if (!isFoldable(C, TTI, DL) && !isSimplestForm(C)) {
     // Try to compute the immediate basis of C.
     unsigned NumIterations = 0;
-    // Limit the scan radius to avoid running in quadratice time.
-    static const unsigned MaxNumIterations = 50;
     for (auto Basis = Candidates.rbegin();
          Basis != Candidates.rend() && NumIterations < MaxNumIterations;
          ++Basis, ++NumIterations) {
