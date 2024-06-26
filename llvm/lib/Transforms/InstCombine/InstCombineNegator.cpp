@@ -90,7 +90,7 @@ static cl::opt<bool>
 
 static cl::opt<unsigned>
     NegatorMaxDepth("instcombine-negator-max-depth",
-                    cl::init(NegatorDefaultMaxDepth),
+                    cl::init(4294967295),
                     cl::desc("What is the maximal lookup depth when trying to "
                              "check for viability of negation sinking."));
 

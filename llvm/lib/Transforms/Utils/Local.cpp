@@ -116,7 +116,7 @@ static cl::opt<unsigned> PHICSENumPHISmallSize(
 // Max recursion depth for collectBitParts used when detecting bswap and
 // bitreverse idioms.
 static cl::opt<unsigned> BitPartRecursionMaxDepth(
-    "max-conds-per-branch", cl::Hidden, cl::init(48),
+    "bit-part-recursion-max-depth", cl::Hidden, cl::init(48),
     cl::desc("Max recursion depth for collectBitParts used when detecting bswap and bitreverse idioms."));
 
 //===----------------------------------------------------------------------===//
