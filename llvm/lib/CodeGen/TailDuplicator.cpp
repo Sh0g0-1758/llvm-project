@@ -85,7 +85,7 @@ static cl::opt<bool>
                   cl::desc("Verify sanity of PHI instructions during taildup"),
                   cl::init(false), cl::Hidden);
 
-static cl::opt<unsigned> TailDupLimit("tail-dup-limit", cl::init(~0U),
+static cl::opt<unsigned> TailDupLimit("tail-dup-limit", cl::init(4294967295),
                                       cl::Hidden);
 
 void TailDuplicator::initMF(MachineFunction &MFin, bool PreRegAlloc,

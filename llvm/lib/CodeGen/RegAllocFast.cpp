@@ -57,6 +57,22 @@ STATISTIC(NumCoalesced, "Number of copies coalesced");
 static cl::opt<bool> IgnoreMissingDefs("rafast-ignore-missing-defs",
                                        cl::Hidden);
 
+static cl::opt<unsigned> ChainLengthLimit("chain-length-limit", cl::Hidden,
+                            cl::desc("Chain Length Limit"),
+                            cl::init(3));
+
+static cl::opt<unsigned> DefLimit("def-limit", cl::Hidden,
+                            cl::desc("def limit"),
+                            cl::init(3));
+
+static cl::opt<unsigned> Upper_Limit("upper-limit", cl::Hidden,
+                            cl::desc("upper limit"),
+                            cl::init(8));
+
+static cl::opt<unsigned> Lower_Limit("lower-limit", cl::Hidden,
+                            cl::desc("lower limit"),
+                            cl::init(8));
+
 static RegisterRegAlloc fastRegAlloc("fast", "fast register allocator",
                                      createFastRegisterAllocator);
 
@@ -493,10 +509,9 @@ bool RegAllocFast::mayLiveOut(Register VirtReg) {
 
   // See if the first \p Limit uses of the register are all in the current
   // block.
-  static const unsigned Limit = 8;
   unsigned C = 0;
   for (const MachineInstr &UseInst : MRI->use_nodbg_instructions(VirtReg)) {
-    if (UseInst.getParent() != MBB || ++C >= Limit) {
+    if (UseInst.getParent() != MBB || ++C >= Upper_Limit) {
       MayLiveAcrossBlocks.set(Register::virtReg2Index(VirtReg));
       // Cannot be live-out if there are no successors.
       return !MBB->succ_empty();
@@ -522,10 +537,9 @@ bool RegAllocFast::mayLiveIn(Register VirtReg) {
     return !MBB->pred_empty();
 
   // See if the first \p Limit def of the register are all in the current block.
-  static const unsigned Limit = 8;
   unsigned C = 0;
   for (const MachineInstr &DefInst : MRI->def_instructions(VirtReg)) {
-    if (DefInst.getParent() != MBB || ++C >= Limit) {
+    if (DefInst.getParent() != MBB || ++C >= Lower_Limit) {
       MayLiveAcrossBlocks.set(Register::virtReg2Index(VirtReg));
       return !MBB->pred_empty();
     }
@@ -825,7 +839,6 @@ void RegAllocFast::assignVirtToPhysReg(MachineInstr &AtMI, LiveReg &LR,
 static bool isCoalescable(const MachineInstr &MI) { return MI.isFullCopy(); }
 
 Register RegAllocFast::traceCopyChain(Register Reg) const {
-  static const unsigned ChainLengthLimit = 3;
   unsigned C = 0;
   do {
     if (Reg.isPhysical())
@@ -844,7 +857,6 @@ Register RegAllocFast::traceCopyChain(Register Reg) const {
 /// chain of copies to check whether we reach a physical register we can
 /// coalesce with.
 Register RegAllocFast::traceCopies(Register VirtReg) const {
-  static const unsigned DefLimit = 3;
   unsigned C = 0;
   for (const MachineInstr &MI : MRI->def_instructions(VirtReg)) {
     if (isCoalescable(MI)) {

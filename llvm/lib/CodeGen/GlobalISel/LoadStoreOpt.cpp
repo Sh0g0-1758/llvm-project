@@ -33,6 +33,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/AtomicOrdering.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -47,7 +48,9 @@ using namespace MIPatternMatch;
 
 STATISTIC(NumStoresMerged, "Number of stores merged");
 
-const unsigned MaxStoreSizeToForm = 128;
+static cl::opt<unsigned> MaxStoreSizeToForm("max-store-size-to-form", cl::Hidden,
+                            cl::desc("Max store size to form"),
+                            cl::init(128));
 
 char LoadStoreOpt::ID = 0;
 INITIALIZE_PASS_BEGIN(LoadStoreOpt, DEBUG_TYPE, "Generic memory optimizations",

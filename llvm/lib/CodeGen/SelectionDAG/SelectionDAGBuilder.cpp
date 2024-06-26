@@ -151,7 +151,11 @@ static cl::opt<unsigned> SwitchPeelThreshold(
 // %buffer = alloca [4096 x i8]
 // %data = load [4096 x i8]* %argPtr
 // store [4096 x i8] %data, [4096 x i8]* %buffer
-static const unsigned MaxParallelChains = 64;
+static cl::opt<unsigned> MaxParallelChains("max-parallel-chains", cl::Hidden,
+                            cl::desc("MaxParallelChains default is arbitrarily high to avoid affecting optimization, but could be lowered to improve compile time"),
+                            cl::init(64));
+
+static unsigned MaxParallelChains_Copy = MaxParallelChains;
 
 static SDValue getCopyFromPartsVector(SelectionDAG &DAG, const SDLoc &DL,
                                       const SDValue *Parts, unsigned NumParts,
@@ -4527,7 +4531,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
   if (isVolatile)
     // Serialize volatile loads with other side effects.
     Root = getRoot();
-  else if (NumValues > MaxParallelChains)
+  else if (NumValues > MaxParallelChains_Copy)
     Root = getMemoryRoot();
   else if (AA &&
            AA->pointsToConstantMemory(MemoryLocation(
@@ -4549,7 +4553,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
     Root = TLI.prepareVolatileOrAtomicLoad(Root, dl, DAG);
 
   SmallVector<SDValue, 4> Values(NumValues);
-  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains, NumValues));
+  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains_Copy, NumValues));
 
   unsigned ChainI = 0;
   for (unsigned i = 0; i != NumValues; ++i, ++ChainI) {
@@ -4559,7 +4563,7 @@ void SelectionDAGBuilder::visitLoad(const LoadInst &I) {
     // they are side-effect free or do not alias. The optimizer should really
     // avoid this case by converting large object/array copies to llvm.memcpy
     // (MaxParallelChains should always remain as failsafe).
-    if (ChainI == MaxParallelChains) {
+    if (ChainI == MaxParallelChains_Copy) {
       assert(PendingLoads.empty() && "PendingLoads must be serialized first");
       SDValue Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
                                   ArrayRef(Chains.data(), ChainI));
@@ -4690,7 +4694,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   SDValue Ptr = getValue(PtrV);
 
   SDValue Root = I.isVolatile() ? getRoot() : getMemoryRoot();
-  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains, NumValues));
+  SmallVector<SDValue, 4> Chains(std::min(MaxParallelChains_Copy, NumValues));
   SDLoc dl = getCurSDLoc();
   Align Alignment = I.getAlign();
   AAMDNodes AAInfo = I.getAAMetadata();
@@ -4700,7 +4704,7 @@ void SelectionDAGBuilder::visitStore(const StoreInst &I) {
   unsigned ChainI = 0;
   for (unsigned i = 0; i != NumValues; ++i, ++ChainI) {
     // See visitLoad comments.
-    if (ChainI == MaxParallelChains) {
+    if (ChainI == MaxParallelChains_Copy) {
       SDValue Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
                                   ArrayRef(Chains.data(), ChainI));
       Root = Chain;
