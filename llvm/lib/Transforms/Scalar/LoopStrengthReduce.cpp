@@ -136,13 +136,16 @@ using namespace llvm;
 /// bail out. This threshold is far beyond the number of users that LSR can
 /// conceivably solve, so it should not affect generated code, but catches the
 /// worst cases before LSR burns too much compile time and stack space.
-static const unsigned MaxIVUsers = 200;
+static cl::opt<unsigned> MaxIVUsers("max-iv-users", cl::Hidden,
+                            cl::desc("MaxIVUsers is an arbitrary threshold that provides an early opportunity for bail out."),
+                            cl::init(200));
 
 /// Limit the size of expression that SCEV-based salvaging will attempt to
 /// translate into a DIExpression.
 /// Choose a maximum size such that debuginfo is not excessively increased and
 /// the salvaging is not too expensive for the compiler.
-static const unsigned MaxSCEVSalvageExpressionSize = 64;
+static cl::opt<unsigned> MaxSCEVSalvageExpressionSize("max-scev-salvage-expression-size", cl::Hidden,
+cl::desc("Limit the size of expression that SCEV-based salvaging will attempt to translate into a DIExpression."),cl::init(64));
 
 // Cleanup congruent phis after LSR phi expansion.
 static cl::opt<bool> EnablePhiElim(

@@ -67,10 +67,14 @@ using CharMatrix = std::vector<std::vector<char>>;
 } // end anonymous namespace
 
 // Maximum number of dependencies that can be handled in the dependency matrix.
-static const unsigned MaxMemInstrCount = 100;
+static cl::opt<unsigned> MaxMemInstrCount("max-mem-instr-count", cl::Hidden,
+                            cl::desc("Maximum number of dependencies that can be handled in the dependency matrix."),
+                            cl::init(100));
 
 // Maximum loop depth supported.
-static const unsigned MaxLoopNestDepth = 10;
+static cl::opt<unsigned> MaxLoopNestDepth("max-loop-nest-depth", cl::Hidden,
+                            cl::desc("Maximum loop depth supported."),
+                            cl::init(10));
 
 #ifdef DUMP_DEP_MATRICIES
 static void printDepMatrix(CharMatrix &DepMatrix) {
