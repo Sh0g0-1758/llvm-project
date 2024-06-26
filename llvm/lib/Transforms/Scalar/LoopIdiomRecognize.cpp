@@ -108,14 +108,14 @@ STATISTIC(NumShiftUntilZero,
 
 bool DisableLIRP::All;
 static cl::opt<bool, true>
-    DisableLIRPAll("disable-" DEBUG_TYPE "-all",
+    DisableLIRPAll("disable-loop-idiom-all",
                    cl::desc("Options to disable Loop Idiom Recognize Pass."),
                    cl::location(DisableLIRP::All), cl::init(false),
                    cl::ReallyHidden);
 
 bool DisableLIRP::Memset;
 static cl::opt<bool, true>
-    DisableLIRPMemset("disable-" DEBUG_TYPE "-memset",
+    DisableLIRPMemset("disable-loop-idiom-memset",
                       cl::desc("Proceed with loop idiom recognize pass, but do "
                                "not convert loop(s) to memset."),
                       cl::location(DisableLIRP::Memset), cl::init(false),
@@ -123,7 +123,7 @@ static cl::opt<bool, true>
 
 bool DisableLIRP::Memcpy;
 static cl::opt<bool, true>
-    DisableLIRPMemcpy("disable-" DEBUG_TYPE "-memcpy",
+    DisableLIRPMemcpy("disable-loop-idiom-memcpy",
                       cl::desc("Proceed with loop idiom recognize pass, but do "
                                "not convert loop(s) to memcpy."),
                       cl::location(DisableLIRP::Memcpy), cl::init(false),
