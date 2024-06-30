@@ -36,7 +36,7 @@ STATISTIC(NumPooledStrings, "Number of Strings Pooled");
 using namespace llvm;
 
 static cl::opt<unsigned>
-    MaxStringsPooled("ppc-max-strings-pooled", cl::Hidden, cl::init(-1),
+    MaxStringsPooled("ppc-max-strings-pooled", cl::Hidden, cl::init(0),
                      cl::desc("Maximum Number of Strings to Pool."));
 
 static cl::opt<unsigned>

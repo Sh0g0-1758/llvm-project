@@ -82,6 +82,7 @@ struct HotColdHintParser : public cl::parser<unsigned> {
 // and 255 is the hottest. Default to 1 value away from the coldest and hottest
 // hints, so that the compiler hinted allocations are slightly less strong than
 // manually inserted hints at the two extremes.
+// Add a check for these, there is a limiter here : 
 static cl::opt<unsigned, false, HotColdHintParser> ColdNewHintValue(
     "cold-new-hint-value", cl::Hidden, cl::init(1),
     cl::desc("Value to pass to hot/cold operator new for cold allocation"));
