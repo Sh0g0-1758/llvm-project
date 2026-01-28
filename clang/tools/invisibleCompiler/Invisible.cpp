@@ -11,6 +11,8 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/AST/ParentMapContext.h"
 #include <map>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 using namespace clang;
@@ -18,17 +20,16 @@ using namespace clang::driver;
 using namespace clang::tooling;
 using namespace llvm;
 
-Rewriter rewriter;
-
 class renameVarsVisitor : public RecursiveASTVisitor<renameVarsVisitor> {
 private:
     ASTContext *astContext;
     string currentFuncName;
+    Rewriter* rewriter;
 public:
-    explicit renameVarsVisitor(ASTContext *C) 
-      : astContext(C)
+    explicit renameVarsVisitor(ASTContext *C, Rewriter* R)
+      : astContext(C), rewriter(R)
     {
-        rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+        rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
 
     virtual bool VisitFunctionDecl(FunctionDecl *func) {
@@ -39,7 +40,7 @@ public:
     // rename declaration / definition of variables
     virtual bool VisitVarDecl(VarDecl *VD) {
         string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
-        rewriter.ReplaceText(VD->getLocation(), VD->getName().size(), newName);
+        rewriter->ReplaceText(VD->getLocation(), VD->getName().size(), newName);
         return true;
     }
 
@@ -47,14 +48,14 @@ public:
     virtual bool VisitDeclRefExpr(DeclRefExpr *DRE) {
         if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
             string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
-            rewriter.ReplaceText(DRE->getSourceRange(), newName);
+            rewriter->ReplaceText(DRE->getSourceRange(), newName);
         }
         return true;
     }
 };
 
-void renameVarsCallback(ASTContext &AST) {
-    renameVarsVisitor *visitor = new renameVarsVisitor(&AST);
+void renameVarsCallback(ASTContext &AST, Rewriter* rewriter) {
+    renameVarsVisitor *visitor = new renameVarsVisitor(&AST, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
@@ -116,11 +117,14 @@ class inlineVisitor : public RecursiveASTVisitor<inlineVisitor> {
 private:
     ASTContext *astContext;
     string currentFuncName;
+    string source_caller;
+    string source_callee;
+    Rewriter* rewriter;
 public:
-    explicit inlineVisitor(ASTContext *C) 
-      : astContext(C)
+    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, Rewriter* R) 
+      : astContext(C), source_caller(cal_), source_callee(cale_), rewriter(R)
     {
-        rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+        rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
 
     bool isPlainVariable(Expr *arg) {
@@ -135,9 +139,16 @@ public:
         return false;
     }
 
+    virtual bool VisitFunctionDecl(FunctionDecl *func) {
+        currentFuncName = func->getNameInfo().getName().getAsString();
+        return true;
+    }
+
     virtual bool VisitCallExpr(CallExpr *call) {
+        if(source_caller != currentFuncName) return true;
         FunctionDecl *callee = call->getDirectCallee();
         if (!callee || !callee->hasBody()) return true;
+        if(source_callee != callee->getNameAsString()) return true;
 
         ASTContext &Ctx = callee->getASTContext();
         SourceManager &SM = Ctx.getSourceManager();
@@ -207,7 +218,7 @@ public:
         }
 
         size_t firstContent = rawBody.find_first_not_of(" \n\r\t");
-        size_t lastContent = rawBody.find_last_not_of(" \n\r\t");
+        size_t lastContent  = rawBody.find_last_not_of(" \n\r\t");
 
         if (firstContent != string::npos && lastContent != string::npos) {
             rawBody = rawBody.substr(firstContent, lastContent - firstContent + 1);
@@ -215,22 +226,22 @@ public:
 
         inlinedCode += rawBody;
 
-        rewriter.ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
+        rewriter->ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
 
         return true;
     }
 };
 
-void inlineCallback(ASTContext &AST) {
-    inlineVisitor *visitor = new inlineVisitor(&AST);
+void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, Rewriter* rewriter) {
+    inlineVisitor *visitor = new inlineVisitor(&AST, caller, callee, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
-void saveChanges() {
-    SourceManager &SM = rewriter.getSourceMgr();
+void saveChanges(Rewriter* rewriter) {
+    SourceManager &SM = rewriter->getSourceMgr();
     FileID mainFileID = SM.getMainFileID();
 
-    const RewriteBuffer *RewriteBuf = rewriter.getRewriteBufferFor(mainFileID);
+    const RewriteBuffer *RewriteBuf = rewriter->getRewriteBufferFor(mainFileID);
     if (RewriteBuf) {
         std::error_code EC;
         llvm::raw_fd_ostream outFile("buffer.cpp", EC, llvm::sys::fs::OF_None);
@@ -251,7 +262,7 @@ enum class optPass {
 
 using TUCallbackType = std::function<void(ASTContext &)>;
 
-std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType) {
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee) {
     class ToolASTConsumer : public ASTConsumer {
     public:
         TUCallbackType Callback;
@@ -287,34 +298,62 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType)
             : Callback(std::move(Callback)) {}
 
         std::unique_ptr<FrontendAction> create() override {
-        return std::make_unique<ToolASTAction>(Callback);
+            return std::make_unique<ToolASTAction>(Callback);
         }
 
     private:
         TUCallbackType Callback;
     };
 
-    return std::make_unique<ToolActionFactory>([optType](ASTContext &AST) {
+    return std::make_unique<ToolActionFactory>([optType, caller, callee](ASTContext &AST) {
         if (optType == optPass::RENAME_PASS) {
-            renameVarsCallback(AST);
+            Rewriter rewriter;
+            renameVarsCallback(AST, &rewriter);
+            saveChanges(&rewriter);
         } else if(optType == optPass::INLINE_PASS) {
-            inlineCallback(AST);
+            Rewriter rewriter;
+            inlineCallback(AST, caller, callee, &rewriter);
+            saveChanges(&rewriter);
         }
     });
 }
 
 int main(int argc, const char **argv) {
-    // inline
-    {
-        auto ExpectedParser = CommonOptionsParser::create(argc, argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+    // oracle gives us the function to be inlined in topo sort for now
+    std::vector<std::pair<std::string, std::string>> inline_oracle;
+    std::ifstream infile("oracle_list.txt"); // Name of your input file
+
+    if (!infile.is_open()) {
+        llvm::errs() << "Error: Could not open oracle file.\n";
+    } else {
+        std::string line;
+        while (std::getline(infile, line)) {
+            std::stringstream ss(line);
+            std::string caller, callee;
+            if (ss >> caller >> callee) {
+                inline_oracle.emplace_back(caller, callee);
+            }
+        }
+    }
+
+    // iterate over the oracle and inline functions as required
+    for(int i = 0; i < inline_oracle.size(); i++) {
+        int _argc;
+        const char **_argv;
+        if(i == 0) {
+            _argc = argc; _argv = argv;
+        } else {
+            static const char* dummy_argv[] = {"", "buffer.cpp"};
+            _argc = 2; _argv = dummy_argv;
+        }
+        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
         if (!ExpectedParser) {
             llvm::errs() << ExpectedParser.takeError();
             return 1;
         }
         CommonOptionsParser &Options = ExpectedParser.get();
         ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS);
+        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second);
         int result = Tool.run(ActionFactory.get());
-        saveChanges();
     }
 }
