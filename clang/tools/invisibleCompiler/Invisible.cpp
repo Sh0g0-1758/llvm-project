@@ -1,0 +1,320 @@
+#include "clang/Driver/Options.h"
+#include "clang/AST/AST.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Frontend/ASTConsumers.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Tooling.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/AST/ParentMapContext.h"
+#include <map>
+
+using namespace std;
+using namespace clang;
+using namespace clang::driver;
+using namespace clang::tooling;
+using namespace llvm;
+
+Rewriter rewriter;
+
+class renameVarsVisitor : public RecursiveASTVisitor<renameVarsVisitor> {
+private:
+    ASTContext *astContext;
+    string currentFuncName;
+public:
+    explicit renameVarsVisitor(ASTContext *C) 
+      : astContext(C)
+    {
+        rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+    }
+
+    virtual bool VisitFunctionDecl(FunctionDecl *func) {
+        currentFuncName = func->getNameInfo().getName().getAsString();
+        return true;
+    }
+
+    // rename declaration / definition of variables
+    virtual bool VisitVarDecl(VarDecl *VD) {
+        string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
+        rewriter.ReplaceText(VD->getLocation(), VD->getName().size(), newName);
+        return true;
+    }
+
+    // rename variables at places of usage
+    virtual bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+        if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+            string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
+            rewriter.ReplaceText(DRE->getSourceRange(), newName);
+        }
+        return true;
+    }
+};
+
+void renameVarsCallback(ASTContext &AST) {
+    renameVarsVisitor *visitor = new renameVarsVisitor(&AST);
+    visitor->TraverseDecl(AST.getTranslationUnitDecl());
+}
+
+class inlinePrinterHelper : public PrinterHelper {
+    string Prefix;
+    string targetVar;
+    std::map<int, string> callerParams;
+    PrintingPolicy Policy;
+public:
+    inlinePrinterHelper(string p, string t, std::map<int, string> c, PrintingPolicy pl) : Prefix(p), targetVar(t), callerParams(c), Policy(pl) {}
+
+    virtual bool handledStmt(Stmt *S, llvm::raw_ostream &OS) override {
+        if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
+            if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+                if (ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(VD)) {
+                    unsigned idx = PVD->getFunctionScopeIndex();
+                    OS << callerParams[idx];
+                } else {
+                    OS << Prefix << VD->getNameAsString() << "_" << VD->getID();
+                }
+                return true;
+            }
+        }
+
+        if (DeclStmt *DS = dyn_cast<DeclStmt>(S)) {
+            for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it) {
+                if (VarDecl *VD = dyn_cast<VarDecl>(*it)) {
+                    OS << VD->getType().getAsString() << " " 
+                    << Prefix << VD->getNameAsString() << "_" << VD->getID();
+                    
+                    if (VD->hasInit()) {
+                        OS << " = ";
+                        VD->getInit()->printPretty(OS, this, Policy);
+                    }
+                    OS << ";\n";
+                }
+            }
+            return true; 
+        }
+
+        if (ReturnStmt *RS = dyn_cast<ReturnStmt>(S)) {
+            if (!targetVar.empty()) {
+                OS << targetVar << " = ";
+                if (Expr *RetVal = RS->getRetValue()) {
+                    RetVal->printPretty(OS, this, Policy);
+                }
+                OS << ";\n";
+            } else {
+                OS << "[Invisible] no return value\n";
+            }
+            return true;
+        }
+
+        return false;
+    }
+};
+
+class inlineVisitor : public RecursiveASTVisitor<inlineVisitor> {
+private:
+    ASTContext *astContext;
+    string currentFuncName;
+public:
+    explicit inlineVisitor(ASTContext *C) 
+      : astContext(C)
+    {
+        rewriter.setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+    }
+
+    bool isPlainVariable(Expr *arg) {
+        Expr *stripped = arg->IgnoreParenImpCasts();
+
+        if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(stripped)) {
+            if (isa<VarDecl>(DRE->getDecl())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    virtual bool VisitCallExpr(CallExpr *call) {
+        FunctionDecl *callee = call->getDirectCallee();
+        if (!callee || !callee->hasBody()) return true;
+
+        ASTContext &Ctx = callee->getASTContext();
+        SourceManager &SM = Ctx.getSourceManager();
+        const LangOptions &LangOpts = Ctx.getLangOpts();
+
+        string targetVar = "";
+        auto parents = Ctx.getParents(*call);
+        const Stmt *stmtToReplace = call;
+
+        if (!parents.empty()) {
+            auto &ParentNode = parents[0];
+
+            // int x = foo();
+            if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
+                targetVar = VD->getType().getAsString() + " " + VD->getNameAsString();
+
+                auto grandparents = Ctx.getParents(*VD);
+                if (!grandparents.empty()) {
+                    if (const DeclStmt *GS = grandparents[0].get<DeclStmt>()) {
+                        stmtToReplace = GS;
+                    }
+                }
+            } 
+            // x = foo();
+            else if (const Stmt *PS = ParentNode.get<Stmt>()) {
+                if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(PS)) {
+                    if (BO->isAssignmentOp()) {
+                        targetVar = Lexer::getSourceText(CharSourceRange::getTokenRange(BO->getLHS()->getSourceRange()), SM, LangOpts).str();
+                        stmtToReplace = BO;
+                    }
+                }
+            }
+        }
+
+        string inlinedCode;
+        string prefix = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_";
+
+        std::map<int, string> callerParams;
+        for (unsigned i = 0; i < call->getNumArgs(); ++i) {
+            ParmVarDecl *pvd = callee->getParamDecl(i);
+            Expr *arg = call->getArg(i);
+            string argText = Lexer::getSourceText(
+                CharSourceRange::getTokenRange(arg->getSourceRange()), SM, LangOpts).str();
+
+            if (!isPlainVariable(arg)) {
+                inlinedCode += pvd->getType().getAsString() + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
+                callerParams[i] = prefix + pvd->getNameAsString();
+            } else {
+                callerParams[i] = argText;
+            }
+        }
+
+        string bodyStr;
+        llvm::raw_string_ostream SS(bodyStr);
+        PrintingPolicy Policy = Ctx.getPrintingPolicy();
+        Policy.Indentation = 2;
+
+        inlinePrinterHelper Helper(prefix, targetVar, callerParams, Policy);
+        callee->getBody()->printPretty(SS, &Helper, Policy);
+        string rawBody = SS.str();
+
+        size_t firstBrace = rawBody.find('{');
+        size_t lastBrace  = rawBody.rfind('}');
+
+        if (firstBrace != string::npos && lastBrace != string::npos && firstBrace < lastBrace) {
+            rawBody = rawBody.substr(firstBrace + 1, lastBrace - firstBrace - 1);
+        }
+
+        size_t firstContent = rawBody.find_first_not_of(" \n\r\t");
+        size_t lastContent = rawBody.find_last_not_of(" \n\r\t");
+
+        if (firstContent != string::npos && lastContent != string::npos) {
+            rawBody = rawBody.substr(firstContent, lastContent - firstContent + 1);
+        }
+
+        inlinedCode += rawBody;
+
+        rewriter.ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
+
+        return true;
+    }
+};
+
+void inlineCallback(ASTContext &AST) {
+    inlineVisitor *visitor = new inlineVisitor(&AST);
+    visitor->TraverseDecl(AST.getTranslationUnitDecl());
+}
+
+void saveChanges() {
+    SourceManager &SM = rewriter.getSourceMgr();
+    FileID mainFileID = SM.getMainFileID();
+
+    const RewriteBuffer *RewriteBuf = rewriter.getRewriteBufferFor(mainFileID);
+    if (RewriteBuf) {
+        std::error_code EC;
+        llvm::raw_fd_ostream outFile("buffer.cpp", EC, llvm::sys::fs::OF_None);
+
+        if (!EC) {
+            outFile << string(RewriteBuf->begin(), RewriteBuf->end());
+            errs() << "[Invisible] Successfully emitted updated source to buffer.cpp\n";
+        }
+    } else {
+        errs() << "[Invisible] No changes were made to the source.\n";
+    }
+}
+
+enum class optPass {
+    RENAME_PASS,
+    INLINE_PASS
+};
+
+using TUCallbackType = std::function<void(ASTContext &)>;
+
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType) {
+    class ToolASTConsumer : public ASTConsumer {
+    public:
+        TUCallbackType Callback;
+        ToolASTConsumer(TUCallbackType Callback)
+            : Callback(std::move(Callback)) {}
+
+        void HandleTranslationUnit(ASTContext &Context) override {
+            Callback(Context);
+        }
+    };
+
+    class ToolASTAction : public ASTFrontendAction {
+    public:
+        explicit ToolASTAction(TUCallbackType Callback)
+            : Callback(std::move(Callback)) {}
+
+    protected:
+        std::unique_ptr<clang::ASTConsumer>
+        CreateASTConsumer(clang::CompilerInstance &compiler,
+                        StringRef /* dummy */) override {
+        std::unique_ptr<clang::ASTConsumer> Consumer{
+            new ToolASTConsumer(Callback)};
+        return Consumer;
+        }
+
+    private:
+        TUCallbackType Callback;
+    };
+
+    class ToolActionFactory : public FrontendActionFactory {
+    public:
+        ToolActionFactory(TUCallbackType Callback)
+            : Callback(std::move(Callback)) {}
+
+        std::unique_ptr<FrontendAction> create() override {
+        return std::make_unique<ToolASTAction>(Callback);
+        }
+
+    private:
+        TUCallbackType Callback;
+    };
+
+    return std::make_unique<ToolActionFactory>([optType](ASTContext &AST) {
+        if (optType == optPass::RENAME_PASS) {
+            renameVarsCallback(AST);
+        } else if(optType == optPass::INLINE_PASS) {
+            inlineCallback(AST);
+        }
+    });
+}
+
+int main(int argc, const char **argv) {
+    // inline
+    {
+        auto ExpectedParser = CommonOptionsParser::create(argc, argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+        if (!ExpectedParser) {
+            llvm::errs() << ExpectedParser.takeError();
+            return 1;
+        }
+        CommonOptionsParser &Options = ExpectedParser.get();
+        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS);
+        int result = Tool.run(ActionFactory.get());
+        saveChanges();
+    }
+}
