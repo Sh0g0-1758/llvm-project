@@ -46,11 +46,16 @@ public:
         std::string rawFunc = SS.str();
         currentFuncName = func->getNameInfo().getName().getAsString();
 
-        std::string fileName = currentFuncName + ".txt";
+        SourceManager &SM = rewriter->getSourceMgr();
+        FileID mainFileID = SM.getMainFileID();
+        auto FERef = SM.getFileEntryRefForID(mainFileID);
+        llvm::SmallString<256> outPath = FERef->getName();
+        llvm::sys::path::remove_filename(outPath);
+        llvm::sys::path::append(outPath, currentFuncName + ".txt");
 
-        std::ofstream outFile(fileName);
+        std::ofstream outFile(outPath.c_str());
         if (!outFile.is_open()) {
-            llvm::errs() << "Failed to open file: " << fileName << "\n";
+            llvm::errs() << "Failed to open file: " << outPath.c_str() << "\n";
             return true;
         }
 
@@ -59,7 +64,6 @@ public:
 
         return true;
     }
-
 };
 
 void filterCallback(ASTContext &AST, Rewriter* rewriter) {
@@ -251,8 +255,14 @@ void saveChanges(Rewriter* rewriter) {
 
     const RewriteBuffer *RewriteBuf = rewriter->getRewriteBufferFor(mainFileID);
     if (RewriteBuf) {
+        auto FERef = SM.getFileEntryRefForID(mainFileID);
+        llvm::SmallString<256> outPath = FERef->getName();
+        llvm::sys::path::remove_filename(outPath);
+        llvm::sys::path::append(outPath, "buffer.cpp");
+
         std::error_code EC;
-        llvm::raw_fd_ostream outFile("buffer.cpp", EC, llvm::sys::fs::OF_None);
+        llvm::raw_fd_ostream outFile(outPath, EC);
+
 
         if (!EC) {
             outFile << string(RewriteBuf->begin(), RewriteBuf->end());
@@ -317,7 +327,6 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
         if (optType == optPass::FILTER_PASS) {
             Rewriter rewriter;
             filterCallback(AST, &rewriter);
-            saveChanges(&rewriter);
         } else if(optType == optPass::INLINE_PASS) {
             Rewriter rewriter;
             inlineCallback(AST, caller, callee, &rewriter);
