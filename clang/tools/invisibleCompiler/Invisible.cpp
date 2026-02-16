@@ -20,42 +20,50 @@ using namespace clang::driver;
 using namespace clang::tooling;
 using namespace llvm;
 
-class renameVarsVisitor : public RecursiveASTVisitor<renameVarsVisitor> {
+class filterVisitor : public RecursiveASTVisitor<filterVisitor> {
 private:
     ASTContext *astContext;
     string currentFuncName;
     Rewriter* rewriter;
 public:
-    explicit renameVarsVisitor(ASTContext *C, Rewriter* R)
+    explicit filterVisitor(ASTContext *C, Rewriter* R)
       : astContext(C), rewriter(R)
     {
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
 
     virtual bool VisitFunctionDecl(FunctionDecl *func) {
+        if (!func->hasBody()) return true;
+
+        std::string funcStr;
+        llvm::raw_string_ostream SS(funcStr);
+
+        PrintingPolicy Policy = astContext->getPrintingPolicy();
+        Policy.Indentation = 2;
+
+        func->print(SS, Policy);
+
+        std::string rawFunc = SS.str();
         currentFuncName = func->getNameInfo().getName().getAsString();
-        return true;
-    }
 
-    // rename declaration / definition of variables
-    virtual bool VisitVarDecl(VarDecl *VD) {
-        string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
-        rewriter->ReplaceText(VD->getLocation(), VD->getName().size(), newName);
-        return true;
-    }
+        std::string fileName = currentFuncName + ".txt";
 
-    // rename variables at places of usage
-    virtual bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-        if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-            string newName = currentFuncName + "_" + VD->getNameAsString() + '_' + to_string(VD->getID());
-            rewriter->ReplaceText(DRE->getSourceRange(), newName);
+        std::ofstream outFile(fileName);
+        if (!outFile.is_open()) {
+            llvm::errs() << "Failed to open file: " << fileName << "\n";
+            return true;
         }
+
+        outFile << rawFunc;
+        outFile.close();
+
         return true;
     }
+
 };
 
-void renameVarsCallback(ASTContext &AST, Rewriter* rewriter) {
-    renameVarsVisitor *visitor = new renameVarsVisitor(&AST, rewriter);
+void filterCallback(ASTContext &AST, Rewriter* rewriter) {
+    filterVisitor *visitor = new filterVisitor(&AST, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
@@ -256,7 +264,7 @@ void saveChanges(Rewriter* rewriter) {
 }
 
 enum class optPass {
-    RENAME_PASS,
+    FILTER_PASS,
     INLINE_PASS
 };
 
@@ -306,9 +314,9 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
     };
 
     return std::make_unique<ToolActionFactory>([optType, caller, callee](ASTContext &AST) {
-        if (optType == optPass::RENAME_PASS) {
+        if (optType == optPass::FILTER_PASS) {
             Rewriter rewriter;
-            renameVarsCallback(AST, &rewriter);
+            filterCallback(AST, &rewriter);
             saveChanges(&rewriter);
         } else if(optType == optPass::INLINE_PASS) {
             Rewriter rewriter;
@@ -316,6 +324,10 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
             saveChanges(&rewriter);
         }
     });
+}
+
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType) {
+    return getFrontendActionFactory(optType, "", "");
 }
 
 int main(int argc, const char **argv) {
@@ -354,6 +366,20 @@ int main(int argc, const char **argv) {
         CommonOptionsParser &Options = ExpectedParser.get();
         ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
         auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second);
+        int result = Tool.run(ActionFactory.get());
+    }
+
+    // emit each function in a different file
+    {
+        int _argc = 2; static const char* _argv[] = {"", "buffer.cpp"};
+        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+        if (!ExpectedParser) {
+            llvm::errs() << ExpectedParser.takeError();
+            return 1;
+        }
+        CommonOptionsParser &Options = ExpectedParser.get();
+        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+        auto ActionFactory = getFrontendActionFactory(optPass::FILTER_PASS);
         int result = Tool.run(ActionFactory.get());
     }
 }
