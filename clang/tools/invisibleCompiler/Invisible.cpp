@@ -10,6 +10,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/AST/ParentMapContext.h"
+#include "llvm/Support/JSON.h"
 #include <map>
 #include <fstream>
 #include <sstream>
@@ -23,7 +24,7 @@ using namespace llvm;
 class filterVisitor : public RecursiveASTVisitor<filterVisitor> {
 private:
     ASTContext *astContext;
-    string currentFuncName;
+    std::map<std::string, std::string> functions;
     Rewriter* rewriter;
 public:
     explicit filterVisitor(ASTContext *C, Rewriter* R)
@@ -42,33 +43,40 @@ public:
         Policy.Indentation = 2;
 
         func->print(SS, Policy);
+        SS.flush();
 
-        std::string rawFunc = SS.str();
-        currentFuncName = func->getNameInfo().getName().getAsString();
+        std::string funcName = func->getNameInfo().getName().getAsString();
+        functions[funcName] = SS.str();
+        return true;
+    }
 
+    void saveFunctionsJSON() {
         SourceManager &SM = rewriter->getSourceMgr();
         FileID mainFileID = SM.getMainFileID();
         auto FERef = SM.getFileEntryRefForID(mainFileID);
         llvm::SmallString<256> outPath = FERef->getName();
         llvm::sys::path::remove_filename(outPath);
-        llvm::sys::path::append(outPath, currentFuncName + ".txt");
+        llvm::sys::path::append(outPath, "functions.json");
 
-        std::ofstream outFile(outPath.c_str());
-        if (!outFile.is_open()) {
-            llvm::errs() << "Failed to open file: " << outPath.c_str() << "\n";
-            return true;
+        llvm::json::Object root;
+        for (const auto &entry : functions)
+            root[entry.first] = entry.second;
+
+        std::error_code EC;
+        llvm::raw_fd_ostream OS(outPath, EC, llvm::sys::fs::OF_Text);
+        if (EC) {
+            llvm::errs() << "[Invisible] failed to open " << outPath << ": " << EC.message() << "\n";
+            return;
         }
 
-        outFile << rawFunc;
-        outFile.close();
-
-        return true;
+        OS << llvm::formatv("{0:2}\n", llvm::json::Value(std::move(root)));
     }
 };
 
 void filterCallback(ASTContext &AST, Rewriter* rewriter) {
     filterVisitor *visitor = new filterVisitor(&AST, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
+    visitor->saveFunctionsJSON();
 }
 
 class inlinePrinterHelper : public PrinterHelper {
@@ -358,7 +366,7 @@ int main(int argc, const char **argv) {
     }
 
     // iterate over the oracle and inline functions as required
-    for(int i = 0; i < inline_oracle.size(); i++) {
+    for(size_t i = 0; i < inline_oracle.size(); i++) {
         int _argc;
         const char **_argv;
         if(i == 0) {
