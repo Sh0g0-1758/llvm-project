@@ -21,6 +21,66 @@ using namespace clang::driver;
 using namespace clang::tooling;
 using namespace llvm;
 
+class commaInitializationVisitor : public RecursiveASTVisitor<commaInitializationVisitor> {
+private:
+    ASTContext *astContext;
+    Rewriter* rewriter;
+public:
+    explicit commaInitializationVisitor(ASTContext *C, Rewriter* R)
+      : astContext(C), rewriter(R)
+    {
+        rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+    }
+
+    virtual bool VisitDeclStmt(DeclStmt *DS) {
+        if (DS->isSingleDecl())
+            return true;
+
+        SmallVector<const VarDecl *, 8> VarDecls;
+        for (const Decl *D : DS->decls()) {
+            if (const auto *VD = dyn_cast<VarDecl>(D))
+                VarDecls.push_back(VD);
+            else
+                return true;
+        }
+
+        const SourceManager &SM = astContext->getSourceManager();
+        const LangOptions &LO = astContext->getLangOpts();
+        const VarDecl *FirstVD = VarDecls.front();
+        QualType QT = FirstVD->getType();
+        std::string TypeStr = QT.getAsString();
+
+        std::string Replacement;
+        for (const VarDecl *VD : VarDecls) {
+            Replacement += TypeStr + " " + VD->getNameAsString();
+
+            if (VD->hasInit()) {
+                Replacement += " = ";
+                Replacement += Lexer::getSourceText(
+                    CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
+                    SM, LO
+                ).str();
+            }
+
+            Replacement += ";\n";
+        }
+
+        SourceRange SR = DS->getSourceRange();
+        rewriter->ReplaceText(
+            CharSourceRange::getTokenRange(SR),
+            Replacement
+        );
+
+        return true;
+    }
+
+};
+
+void commaInitializationCallback(ASTContext &AST, Rewriter* rewriter) {
+    commaInitializationVisitor *visitor = new commaInitializationVisitor(&AST, rewriter);
+    visitor->TraverseDecl(AST.getTranslationUnitDecl());
+}
+
 class filterVisitor : public RecursiveASTVisitor<filterVisitor> {
 private:
     ASTContext *astContext;
@@ -172,6 +232,20 @@ public:
 
         ASTContext &Ctx = callee->getASTContext();
         SourceManager &SM = Ctx.getSourceManager();
+        
+        SourceLocation loc = call->getExprLoc();
+        loc = SM.getSpellingLoc(loc); // important for macros
+
+        PresumedLoc ploc = SM.getPresumedLoc(loc);
+        if (ploc.isValid()) {
+            llvm::outs()
+                << "Call to " << source_callee
+                << " at " << ploc.getFilename()
+                << ":" << ploc.getLine()
+                << ":" << ploc.getColumn()
+                << "\n";
+        }
+
         const LangOptions &LangOpts = Ctx.getLangOpts();
 
         string targetVar = "";
@@ -282,6 +356,7 @@ void saveChanges(Rewriter* rewriter) {
 }
 
 enum class optPass {
+    COMMA_INITIALIZATION_PASS,
     FILTER_PASS,
     INLINE_PASS
 };
@@ -332,11 +407,13 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
     };
 
     return std::make_unique<ToolActionFactory>([optType, caller, callee](ASTContext &AST) {
-        if (optType == optPass::FILTER_PASS) {
-            Rewriter rewriter;
+        Rewriter rewriter;
+        if (optType == optPass::COMMA_INITIALIZATION_PASS) {
+            commaInitializationCallback(AST, &rewriter);
+            saveChanges(&rewriter);
+        } else if (optType == optPass::FILTER_PASS) {
             filterCallback(AST, &rewriter);
         } else if(optType == optPass::INLINE_PASS) {
-            Rewriter rewriter;
             inlineCallback(AST, caller, callee, &rewriter);
             saveChanges(&rewriter);
         }
@@ -348,6 +425,22 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType)
 }
 
 int main(int argc, const char **argv) {
+    // preprocess step to convert comma initializers to stand-alone statements
+    if(llvm::StringRef(argv[2]) == "only-preprocess") {
+        int _argc = 2;
+        const char* _argv[] = {"", argv[1]};
+        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+        if (!ExpectedParser) {
+            llvm::errs() << ExpectedParser.takeError();
+            return 1;
+        }
+        CommonOptionsParser &Options = ExpectedParser.get();
+        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+        auto ActionFactory = getFrontendActionFactory(optPass::COMMA_INITIALIZATION_PASS);
+        int result = Tool.run(ActionFactory.get());
+        return 0;
+    }
+
     // oracle gives us the function to be inlined in topo sort for now
     std::vector<std::pair<std::string, std::string>> inline_oracle;
     std::ifstream infile("oracle_list.txt"); // Name of your input file
@@ -365,16 +458,11 @@ int main(int argc, const char **argv) {
         }
     }
 
+    int _argc = 2;
+    static const char* _argv[] = {"", "buffer.cpp"};
+
     // iterate over the oracle and inline functions as required
     for(size_t i = 0; i < inline_oracle.size(); i++) {
-        int _argc;
-        const char **_argv;
-        if(i == 0) {
-            _argc = argc; _argv = argv;
-        } else {
-            static const char* dummy_argv[] = {"", "buffer.cpp"};
-            _argc = 2; _argv = dummy_argv;
-        }
         auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
         if (!ExpectedParser) {
             llvm::errs() << ExpectedParser.takeError();
@@ -388,7 +476,6 @@ int main(int argc, const char **argv) {
 
     // emit each function in a different file
     {
-        int _argc = 2; static const char* _argv[] = {"", "buffer.cpp"};
         auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
         if (!ExpectedParser) {
             llvm::errs() << ExpectedParser.takeError();
