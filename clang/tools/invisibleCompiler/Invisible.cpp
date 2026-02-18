@@ -199,10 +199,12 @@ private:
     string currentFuncName;
     string source_caller;
     string source_callee;
+    std::vector<std::pair<size_t, size_t>>* callSite;
+    size_t currIndx;
     Rewriter* rewriter;
 public:
-    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, Rewriter* R) 
-      : astContext(C), source_caller(cal_), source_callee(cale_), rewriter(R)
+    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, std::vector<std::pair<size_t, size_t>>* cals_, size_t cind_, Rewriter* R) 
+      : astContext(C), source_caller(cal_), source_callee(cale_), callSite(cals_), currIndx(cind_), rewriter(R)
     {
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
@@ -234,17 +236,11 @@ public:
         SourceManager &SM = Ctx.getSourceManager();
         
         SourceLocation loc = call->getExprLoc();
-        loc = SM.getSpellingLoc(loc); // important for macros
-
+        loc = SM.getSpellingLoc(loc);
         PresumedLoc ploc = SM.getPresumedLoc(loc);
-        if (ploc.isValid()) {
-            llvm::outs()
-                << "Call to " << source_callee
-                << " at " << ploc.getFilename()
-                << ":" << ploc.getLine()
-                << ":" << ploc.getColumn()
-                << "\n";
-        }
+
+        if((ploc.getLine() != (*callSite)[currIndx].first) || 
+           (ploc.getColumn() != (*callSite)[currIndx].second)) return true;
 
         const LangOptions &LangOpts = Ctx.getLangOpts();
 
@@ -279,6 +275,7 @@ public:
 
         string inlinedCode;
         string prefix = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_";
+        size_t addedLines = 0;
 
         std::map<int, string> callerParams;
         for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -290,6 +287,7 @@ public:
             if (!isPlainVariable(arg)) {
                 inlinedCode += pvd->getType().getAsString() + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
                 callerParams[i] = prefix + pvd->getNameAsString();
+                addedLines++;
             } else {
                 callerParams[i] = argText;
             }
@@ -307,18 +305,20 @@ public:
         size_t firstBrace = rawBody.find('{');
         size_t lastBrace  = rawBody.rfind('}');
 
-        if (firstBrace != string::npos && lastBrace != string::npos && firstBrace < lastBrace) {
+        if (firstBrace != string::npos && lastBrace != string::npos && firstBrace < lastBrace)
             rawBody = rawBody.substr(firstBrace + 1, lastBrace - firstBrace - 1);
-        }
 
         size_t firstContent = rawBody.find_first_not_of(" \n\r\t");
         size_t lastContent  = rawBody.find_last_not_of(" \n\r\t");
 
-        if (firstContent != string::npos && lastContent != string::npos) {
+        if (firstContent != string::npos && lastContent != string::npos)
             rawBody = rawBody.substr(firstContent, lastContent - firstContent + 1);
-        }
 
+        addedLines += std::count(rawBody.begin(), rawBody.end(), '\n');
         inlinedCode += rawBody;
+
+        for(size_t i = currIndx + 1; i < (*callSite).size(); i++)
+            (*callSite)[i].first += addedLines;
 
         rewriter->ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
 
@@ -326,8 +326,8 @@ public:
     }
 };
 
-void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, Rewriter* rewriter) {
-    inlineVisitor *visitor = new inlineVisitor(&AST, caller, callee, rewriter);
+void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, size_t>>* callSite, size_t currIndx, Rewriter* rewriter) {
+    inlineVisitor *visitor = new inlineVisitor(&AST, caller, callee, callSite, currIndx, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
@@ -363,65 +363,68 @@ enum class optPass {
 
 using TUCallbackType = std::function<void(ASTContext &)>;
 
-std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee) {
-    class ToolASTConsumer : public ASTConsumer {
-    public:
-        TUCallbackType Callback;
-        ToolASTConsumer(TUCallbackType Callback)
-            : Callback(std::move(Callback)) {}
+class ToolASTConsumer : public ASTConsumer {
+public:
+    TUCallbackType Callback;
+    ToolASTConsumer(TUCallbackType Callback)
+        : Callback(std::move(Callback)) {}
 
-        void HandleTranslationUnit(ASTContext &Context) override {
-            Callback(Context);
-        }
-    };
+    void HandleTranslationUnit(ASTContext &Context) override {
+        Callback(Context);
+    }
+};
 
-    class ToolASTAction : public ASTFrontendAction {
-    public:
-        explicit ToolASTAction(TUCallbackType Callback)
-            : Callback(std::move(Callback)) {}
+class ToolASTAction : public ASTFrontendAction {
+public:
+    explicit ToolASTAction(TUCallbackType Callback)
+        : Callback(std::move(Callback)) {}
 
-    protected:
-        std::unique_ptr<clang::ASTConsumer>
-        CreateASTConsumer(clang::CompilerInstance &compiler,
-                        StringRef /* dummy */) override {
-        std::unique_ptr<clang::ASTConsumer> Consumer{
-            new ToolASTConsumer(Callback)};
-        return Consumer;
-        }
+protected:
+    std::unique_ptr<clang::ASTConsumer>
+    CreateASTConsumer(clang::CompilerInstance &compiler,
+                    StringRef /* dummy */) override {
+    std::unique_ptr<clang::ASTConsumer> Consumer{
+        new ToolASTConsumer(Callback)};
+    return Consumer;
+    }
 
-    private:
-        TUCallbackType Callback;
-    };
+private:
+    TUCallbackType Callback;
+};
 
-    class ToolActionFactory : public FrontendActionFactory {
-    public:
-        ToolActionFactory(TUCallbackType Callback)
-            : Callback(std::move(Callback)) {}
+class ToolActionFactory : public FrontendActionFactory {
+public:
+    ToolActionFactory(TUCallbackType Callback)
+        : Callback(std::move(Callback)) {}
 
-        std::unique_ptr<FrontendAction> create() override {
-            return std::make_unique<ToolASTAction>(Callback);
-        }
+    std::unique_ptr<FrontendAction> create() override {
+        return std::make_unique<ToolASTAction>(Callback);
+    }
 
-    private:
-        TUCallbackType Callback;
-    };
+private:
+    TUCallbackType Callback;
+};
 
-    return std::make_unique<ToolActionFactory>([optType, caller, callee](ASTContext &AST) {
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, size_t>>* callSite, size_t currIndx) {
+    return std::make_unique<ToolActionFactory>([optType, caller, callee, callSite, currIndx](ASTContext &AST) {
         Rewriter rewriter;
-        if (optType == optPass::COMMA_INITIALIZATION_PASS) {
-            commaInitializationCallback(AST, &rewriter);
-            saveChanges(&rewriter);
-        } else if (optType == optPass::FILTER_PASS) {
-            filterCallback(AST, &rewriter);
-        } else if(optType == optPass::INLINE_PASS) {
-            inlineCallback(AST, caller, callee, &rewriter);
+        if(optType == optPass::INLINE_PASS) {
+            inlineCallback(AST, caller, callee, callSite, currIndx, &rewriter);
             saveChanges(&rewriter);
         }
     });
 }
 
 std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType) {
-    return getFrontendActionFactory(optType, "", "");
+    return std::make_unique<ToolActionFactory>([optType](ASTContext &AST) {
+        Rewriter rewriter;
+        if (optType == optPass::COMMA_INITIALIZATION_PASS) {
+            commaInitializationCallback(AST, &rewriter);
+            saveChanges(&rewriter);
+        } else if (optType == optPass::FILTER_PASS) {
+            filterCallback(AST, &rewriter);
+        }
+    });
 }
 
 int main(int argc, const char **argv) {
@@ -443,6 +446,7 @@ int main(int argc, const char **argv) {
 
     // oracle gives us the function to be inlined in topo sort for now
     std::vector<std::pair<std::string, std::string>> inline_oracle;
+    std::vector<std::pair<size_t, size_t>> inline_debugLoc;
     std::ifstream infile("oracle_list.txt"); // Name of your input file
 
     if (!infile.is_open()) {
@@ -452,17 +456,20 @@ int main(int argc, const char **argv) {
         while (std::getline(infile, line)) {
             std::stringstream ss(line);
             std::string caller, callee;
-            if (ss >> caller >> callee) {
+            size_t row, col;
+            if (ss >> caller >> callee >> row >> col) {
                 inline_oracle.emplace_back(caller, callee);
+                inline_debugLoc.emplace_back(row, col);
             }
         }
     }
 
     int _argc = 2;
-    static const char* _argv[] = {"", "buffer.cpp"};
+    const char* _argv[2];
 
     // iterate over the oracle and inline functions as required
     for(size_t i = 0; i < inline_oracle.size(); i++) {
+        _argv[1] = i == 0 ? argv[1] : "buffer.cpp";
         auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
         if (!ExpectedParser) {
             llvm::errs() << ExpectedParser.takeError();
@@ -470,7 +477,7 @@ int main(int argc, const char **argv) {
         }
         CommonOptionsParser &Options = ExpectedParser.get();
         ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second);
+        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second, &inline_debugLoc, i);
         int result = Tool.run(ActionFactory.get());
     }
 
