@@ -273,7 +273,7 @@ public:
         }
 
         string inlinedCode;
-        string prefix = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_";
+        string prefix = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_";
         size_t addedLines = 0;
 
         std::map<int, string> callerParams;
