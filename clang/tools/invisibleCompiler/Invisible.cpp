@@ -199,11 +199,11 @@ private:
     string currentFuncName;
     string source_caller;
     string source_callee;
-    std::vector<std::pair<size_t, size_t>>* callSite;
+    std::vector<size_t>* callSite;
     size_t currIndx;
     Rewriter* rewriter;
 public:
-    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, std::vector<std::pair<size_t, size_t>>* cals_, size_t cind_, Rewriter* R) 
+    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, std::vector<size_t>* cals_, size_t cind_, Rewriter* R) 
       : astContext(C), source_caller(cal_), source_callee(cale_), callSite(cals_), currIndx(cind_), rewriter(R)
     {
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
@@ -239,8 +239,7 @@ public:
         loc = SM.getSpellingLoc(loc);
         PresumedLoc ploc = SM.getPresumedLoc(loc);
 
-        if((ploc.getLine() != (*callSite)[currIndx].first) || 
-           (ploc.getColumn() != (*callSite)[currIndx].second)) return true;
+        if((ploc.getLine() != (*callSite)[currIndx])) return true;
 
         const LangOptions &LangOpts = Ctx.getLangOpts();
 
@@ -318,7 +317,7 @@ public:
         inlinedCode += rawBody;
 
         for(size_t i = currIndx + 1; i < (*callSite).size(); i++)
-            (*callSite)[i].first += addedLines;
+            if((*callSite)[i] > (*callSite)[currIndx]) (*callSite)[i] += addedLines;
 
         rewriter->ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
 
@@ -326,7 +325,7 @@ public:
     }
 };
 
-void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, size_t>>* callSite, size_t currIndx, Rewriter* rewriter) {
+void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, std::vector<size_t>* callSite, size_t currIndx, Rewriter* rewriter) {
     inlineVisitor *visitor = new inlineVisitor(&AST, caller, callee, callSite, currIndx, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
@@ -405,7 +404,7 @@ private:
     TUCallbackType Callback;
 };
 
-std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, size_t>>* callSite, size_t currIndx) {
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee, std::vector<size_t>* callSite, size_t currIndx) {
     return std::make_unique<ToolActionFactory>([optType, caller, callee, callSite, currIndx](ASTContext &AST) {
         Rewriter rewriter;
         if(optType == optPass::INLINE_PASS) {
@@ -446,7 +445,7 @@ int main(int argc, const char **argv) {
 
     // oracle gives us the function to be inlined in topo sort for now
     std::vector<std::pair<std::string, std::string>> inline_oracle;
-    std::vector<std::pair<size_t, size_t>> inline_debugLoc;
+    std::vector<size_t> inline_debugLoc;
     std::ifstream infile("oracle_list.txt"); // Name of your input file
 
     if (!infile.is_open()) {
@@ -456,10 +455,10 @@ int main(int argc, const char **argv) {
         while (std::getline(infile, line)) {
             std::stringstream ss(line);
             std::string caller, callee;
-            size_t row, col;
-            if (ss >> caller >> callee >> row >> col) {
+            size_t row;
+            if (ss >> caller >> callee >> row) {
                 inline_oracle.emplace_back(caller, callee);
-                inline_debugLoc.emplace_back(row, col);
+                inline_debugLoc.emplace_back(row);
             }
         }
     }
