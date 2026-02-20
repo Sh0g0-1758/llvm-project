@@ -14,6 +14,7 @@
 #include <map>
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
 
 using namespace std;
 using namespace clang;
@@ -78,6 +79,106 @@ public:
 
 void commaInitializationCallback(ASTContext &AST, Rewriter* rewriter) {
     commaInitializationVisitor *visitor = new commaInitializationVisitor(&AST, rewriter);
+    visitor->TraverseDecl(AST.getTranslationUnitDecl());
+}
+
+bool FuncCallCleaned;
+
+class cleanupFuncCallVisitor : public RecursiveASTVisitor<cleanupFuncCallVisitor> {
+private:
+    ASTContext *astContext;
+    Rewriter* rewriter;
+public:
+    explicit cleanupFuncCallVisitor(ASTContext *C, Rewriter* R)
+      : astContext(C), rewriter(R)
+    {
+        rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+        FuncCallCleaned = false;
+    }
+
+    SourceLocation findInsertionLocBeforeCompound(const CallExpr *call) {
+        DynTypedNode current = DynTypedNode::create(*call);
+        const Stmt *lastStmt = nullptr;
+
+        while (true) {
+            auto parents = astContext->getParents(current);
+            if (parents.empty())
+                return SourceLocation();
+
+            const DynTypedNode &parent = parents[0];
+            if (const CompoundStmt *CS = parent.get<CompoundStmt>()) {
+                if (!lastStmt)
+                    return SourceLocation();
+                return lastStmt->getBeginLoc();
+            }
+
+            if (const Stmt *S = parent.get<Stmt>()) {
+                lastStmt = S;
+            }
+
+            current = parent;
+        }
+    }
+
+    virtual bool VisitCallExpr(CallExpr *call) {
+        if (FuncCallCleaned) return true;
+        FunctionDecl *callee = call->getDirectCallee();
+        bool goodCall = false;
+        auto parents = astContext->getParents(*call);
+        if (!parents.empty()) {
+            auto &ParentNode = parents[0];
+
+            // int x = foo();
+            if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
+                goodCall = true;
+            } 
+            else if (const Stmt *PS = ParentNode.get<Stmt>()) {
+                // x = foo();
+                if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(PS)) {
+                    // make sure its at the top level and not nested like if (45 == (a = foo()))
+                    if (BO->isAssignmentOp()) {
+                        auto parents = astContext->getParents(*BO);
+                        auto& ParentNode = parents[0];
+                        if (const Stmt *PS = ParentNode.get<Stmt>()) {
+                            if(const CompoundStmt *CS = dyn_cast<CompoundStmt>(PS)) {
+                                goodCall = true;
+                            }
+                        }
+                    }
+                // foo();
+                } else if (const CompoundStmt* CS = dyn_cast<CompoundStmt>(PS)) {
+                    goodCall = true;
+                }
+            }
+        }
+
+        if (goodCall) return true;
+        FuncCallCleaned = true;
+
+        SourceManager &SM = astContext->getSourceManager();
+        SourceLocation loc = call->getExprLoc();
+        loc = SM.getSpellingLoc(loc);
+        PresumedLoc ploc = SM.getPresumedLoc(loc);
+        auto LangOpts = astContext->getLangOpts();
+
+        auto call_ = Lexer::getSourceText(CharSourceRange::getTokenRange(call->getSourceRange()), SM, LangOpts).str();
+
+        QualType retTy = callee->getReturnType();
+        PrintingPolicy policy(astContext->getLangOpts());
+        policy.adjustForCPlusPlus();
+        std::string codeToAdd = retTy.getAsString(policy);
+        static int cnter = 0;
+        std::string retVar = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_" + "Ret";
+        codeToAdd += " " + retVar + " = " + call_ + ";\n";
+
+        rewriter->InsertTextBefore(findInsertionLocBeforeCompound(call), codeToAdd);
+        rewriter->ReplaceText(call->getSourceRange(), retVar);
+        return true;
+    }
+};
+
+void cleanupFuncCallCallback(ASTContext &AST, Rewriter* rewriter) {
+    cleanupFuncCallVisitor *visitor = new cleanupFuncCallVisitor(&AST, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
@@ -330,7 +431,7 @@ void inlineCallback(ASTContext &AST, const std::string& caller, const std::strin
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
-void saveChanges(Rewriter* rewriter) {
+void saveChanges(Rewriter* rewriter, const char* file) {
     SourceManager &SM = rewriter->getSourceMgr();
     FileID mainFileID = SM.getMainFileID();
 
@@ -339,7 +440,7 @@ void saveChanges(Rewriter* rewriter) {
         auto FERef = SM.getFileEntryRefForID(mainFileID);
         llvm::SmallString<256> outPath = FERef->getName();
         llvm::sys::path::remove_filename(outPath);
-        llvm::sys::path::append(outPath, "buffer.cpp");
+        llvm::sys::path::append(outPath, file);
 
         std::error_code EC;
         llvm::raw_fd_ostream outFile(outPath, EC);
@@ -347,14 +448,16 @@ void saveChanges(Rewriter* rewriter) {
 
         if (!EC) {
             outFile << string(RewriteBuf->begin(), RewriteBuf->end());
-            errs() << "[Invisible] Successfully emitted updated source to buffer.cpp\n";
+            errs() << "[Invisible] Successfully emitted updated source to " << file << "\n";
         }
+
     } else {
         errs() << "[Invisible] No changes were made to the source.\n";
     }
 }
 
 enum class optPass {
+    CLEANUP_FUNCTION_CALL_PASS,
     COMMA_INITIALIZATION_PASS,
     FILTER_PASS,
     INLINE_PASS
@@ -409,17 +512,20 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
         Rewriter rewriter;
         if(optType == optPass::INLINE_PASS) {
             inlineCallback(AST, caller, callee, callSite, currIndx, &rewriter);
-            saveChanges(&rewriter);
+            saveChanges(&rewriter, "buffer.cpp");
         }
     });
 }
 
-std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType) {
-    return std::make_unique<ToolActionFactory>([optType](ASTContext &AST) {
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const char* file = "") {
+    return std::make_unique<ToolActionFactory>([optType, file](ASTContext &AST) {
         Rewriter rewriter;
         if (optType == optPass::COMMA_INITIALIZATION_PASS) {
             commaInitializationCallback(AST, &rewriter);
-            saveChanges(&rewriter);
+            saveChanges(&rewriter, file);
+        } else if(optType == optPass::CLEANUP_FUNCTION_CALL_PASS) {
+            cleanupFuncCallCallback(AST, &rewriter);
+            saveChanges(&rewriter, file);
         } else if (optType == optPass::FILTER_PASS) {
             filterCallback(AST, &rewriter);
         }
@@ -427,19 +533,35 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType)
 }
 
 int main(int argc, const char **argv) {
-    // preprocess step to convert comma initializers to stand-alone statements
     if(llvm::StringRef(argv[2]) == "only-preprocess") {
         int _argc = 2;
         const char* _argv[] = {"", argv[1]};
-        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
-        if (!ExpectedParser) {
-            llvm::errs() << ExpectedParser.takeError();
-            return 1;
+        
+        // preprocess step to convert comma initializers to stand-alone statements
+        {
+            auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+            if (!ExpectedParser) {
+                llvm::errs() << ExpectedParser.takeError();
+                return 1;
+            }
+            CommonOptionsParser &Options = ExpectedParser.get();
+            ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+            auto ActionFactory = getFrontendActionFactory(optPass::COMMA_INITIALIZATION_PASS, argv[1]);
+            int result = Tool.run(ActionFactory.get());
         }
-        CommonOptionsParser &Options = ExpectedParser.get();
-        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::COMMA_INITIALIZATION_PASS);
-        int result = Tool.run(ActionFactory.get());
+
+        // preprocess step to remove any function calls as params in function calls
+        do {
+            auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+            if (!ExpectedParser) {
+                llvm::errs() << ExpectedParser.takeError();
+                return 1;
+            }
+            CommonOptionsParser &Options = ExpectedParser.get();
+            ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+            auto ActionFactory = getFrontendActionFactory(optPass::CLEANUP_FUNCTION_CALL_PASS, argv[1]);
+            int result = Tool.run(ActionFactory.get());
+        } while(FuncCallCleaned);
         return 0;
     }
 
