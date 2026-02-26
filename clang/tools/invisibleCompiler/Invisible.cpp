@@ -167,7 +167,6 @@ public:
         PrintingPolicy policy(astContext->getLangOpts());
         policy.adjustForCPlusPlus();
         std::string codeToAdd = retTy.getAsString(policy);
-        static int cnter = 0;
         std::string retVar = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_" + "Ret";
         codeToAdd += " " + retVar + " = " + call_ + ";\n";
 
