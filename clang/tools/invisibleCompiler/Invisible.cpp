@@ -22,6 +22,14 @@ using namespace clang::driver;
 using namespace clang::tooling;
 using namespace llvm;
 
+// class dummyPrinterHelper : public PrinterHelper {
+// public:
+//     dummyPrinterHelper() {}
+//     virtual bool handledStmt(Stmt *S, llvm::raw_ostream &OS) override {
+//         return false;
+//     }
+// };
+
 class commaInitializationVisitor : public RecursiveASTVisitor<commaInitializationVisitor> {
 private:
     ASTContext *astContext;
@@ -32,6 +40,25 @@ public:
     {
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
+
+    /* use for debugging */
+    // virtual bool VisitCallExpr(CallExpr *call) {
+    //     FunctionDecl *callee = call->getDirectCallee();
+    //     if (!callee || !callee->hasBody()) return true;
+    //     if (auto *memberCall = dyn_cast<CXXMethodDecl>(callee)) {return true;}
+    //     llvm::outs() << callee->getNameAsString() << "\n";
+    //     if (callee->isFunctionTemplateSpecialization()) llvm::outs() << "found a template with function body\n";
+    //     string bodyStr;
+    //     llvm::raw_string_ostream SS(bodyStr);
+    //     PrintingPolicy Policy = astContext->getPrintingPolicy();
+    //     Policy.Indentation = 2;
+
+    //     dummyPrinterHelper Helper;
+    //     callee->getBody()->printPretty(SS, &Helper, Policy);
+    //     string rawBody = SS.str();
+    //     llvm::outs() << rawBody << "\n";
+    //     return true;
+    // }
 
     virtual bool VisitDeclStmt(DeclStmt *DS) {
         if (DS->isSingleDecl())
@@ -130,7 +157,18 @@ public:
 
             // int x = foo();
             if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
-                goodCall = true;
+                // make sure its at the top level and not nested like for (int i = foo(base); i < 20; i++)
+                auto parents = astContext->getParents(*VD);
+                auto& ParentNode = parents[0];
+                if(const DeclStmt* DS = ParentNode.get<DeclStmt>()) {
+                    auto parents = astContext->getParents(*DS);
+                    auto& ParentNode = parents[0];
+                    if (const Stmt *PS = ParentNode.get<Stmt>()) {
+                        if(const CompoundStmt *CS = dyn_cast<CompoundStmt>(PS)) {
+                            goodCall = true;
+                        }
+                    }
+                }
             } 
             else if (const Stmt *PS = ParentNode.get<Stmt>()) {
                 // x = foo();
@@ -263,8 +301,10 @@ public:
         if (DeclStmt *DS = dyn_cast<DeclStmt>(S)) {
             for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it) {
                 if (VarDecl *VD = dyn_cast<VarDecl>(*it)) {
-                    OS << VD->getType().getAsString() << " " 
-                    << Prefix << VD->getNameAsString() << "_" << VD->getID();
+                    OS << VD->getType().getAsString() << " ";
+                    if (VD->getStorageClass() == SC_Static)
+                        OS << "static ";
+                    OS << Prefix << VD->getNameAsString() << "_" << VD->getID();
                     
                     if (VD->hasInit()) {
                         OS << " = ";
@@ -283,8 +323,6 @@ public:
                     RetVal->printPretty(OS, this, Policy);
                 }
                 OS << ";\n";
-            } else {
-                OS << "[Invisible] no return value\n";
             }
             return true;
         }
@@ -309,11 +347,19 @@ public:
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
     }
 
+    // use this to identify if we are dealing with an lvalue or not. 
+    // currently not being used as we can simply do some liveness analysis later to take care of this. 
     bool isPlainVariable(Expr *arg) {
         Expr *stripped = arg->IgnoreParenImpCasts();
 
+        if (auto *construct = dyn_cast<CXXConstructExpr>(stripped)) {
+            if (construct->getNumArgs() == 1) {
+                stripped = construct->getArg(0)->IgnoreParenImpCasts();
+            }
+        }
+
         if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(stripped)) {
-            if (isa<VarDecl>(DRE->getDecl())) {
+            if (DRE->isLValue()) {
                 return true;
             }
         }
@@ -330,6 +376,9 @@ public:
         if(source_caller != currentFuncName) return true;
         FunctionDecl *callee = call->getDirectCallee();
         if (!callee || !callee->hasBody()) return true;
+        // TODO: Handle class methods. We behave conservatively towards them as they might 
+        //       be using class private vars which would need special treatment later on. 
+        if (auto *memberCall = dyn_cast<CXXMethodDecl>(callee)) {return true;}
         if(source_callee != callee->getNameAsString()) return true;
 
         ASTContext &Ctx = callee->getASTContext();
@@ -347,12 +396,21 @@ public:
         auto parents = Ctx.getParents(*call);
         const Stmt *stmtToReplace = call;
 
+        string inlinedCode;
+        size_t addedLines = 0;
         if (!parents.empty()) {
+            // If the args take an xvalue
+            if (const ExprWithCleanups *EWC = parents[0].get<ExprWithCleanups>()) {
+                parents = Ctx.getParents(*EWC);
+            }
+
             auto &ParentNode = parents[0];
 
             // int x = foo();
             if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
-                targetVar = VD->getType().getAsString() + " " + VD->getNameAsString();
+                inlinedCode += VD->getType().getAsString() + " " + (VD->getStorageClass() == SC_Static ? "static " : "") + VD->getNameAsString() + ";\n";
+                addedLines += 1;
+                targetVar = VD->getNameAsString();
 
                 auto grandparents = Ctx.getParents(*VD);
                 if (!grandparents.empty()) {
@@ -372,23 +430,35 @@ public:
             }
         }
 
-        string inlinedCode;
-        string prefix = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_";
-        size_t addedLines = 0;
+        string calleeName = callee->getNameAsString();
+        // remove the operator bit (+/-/*) from the callee name
+        if(dyn_cast<CXXOperatorCallExpr>(call)) calleeName = calleeName.substr(0, calleeName.size() - 2);
+        string prefix = calleeName + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_";
 
         std::map<int, string> callerParams;
         for (unsigned i = 0; i < call->getNumArgs(); ++i) {
             ParmVarDecl *pvd = callee->getParamDecl(i);
             Expr *arg = call->getArg(i);
-            string argText = Lexer::getSourceText(
-                CharSourceRange::getTokenRange(arg->getSourceRange()), SM, LangOpts).str();
 
-            if (!isPlainVariable(arg)) {
+            string argText;
+            if (auto *DAE = dyn_cast<CXXDefaultArgExpr>(arg)) {
+                string defaultStr;
+                llvm::raw_string_ostream DS(defaultStr);
+                DAE->getExpr()->printPretty(DS, nullptr, Ctx.getPrintingPolicy());
+                DS.flush();
+                argText = defaultStr;
+            } else {
+                llvm::raw_string_ostream SS(argText);
+                arg->printPretty(SS, nullptr, Ctx.getPrintingPolicy());
+                SS.flush();
+            }
+
+            if (pvd->getType()->isLValueReferenceType()) {
+                callerParams[i] = argText;
+            } else {
                 inlinedCode += pvd->getType().getAsString() + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
                 callerParams[i] = prefix + pvd->getNameAsString();
                 addedLines++;
-            } else {
-                callerParams[i] = argText;
             }
         }
 
@@ -434,8 +504,24 @@ void saveChanges(Rewriter* rewriter, const char* file) {
     SourceManager &SM = rewriter->getSourceMgr();
     FileID mainFileID = SM.getMainFileID();
 
+    auto FERef = SM.getFileEntryRefForID(mainFileID);
+    llvm::SmallString<256> outPath = FERef->getName();
+    llvm::sys::path::remove_filename(outPath);
+    llvm::sys::path::append(outPath, file);
+
+    std::error_code EC;
+    llvm::raw_fd_ostream outFile(outPath, EC);
+
     const RewriteBuffer *RewriteBuf = rewriter->getRewriteBufferFor(mainFileID);
     if (RewriteBuf) {
+        if (!EC) {
+            outFile << string(RewriteBuf->begin(), RewriteBuf->end());
+            errs() << "[Invisible] Successfully emitted updated source to " << file << "\n";
+        }
+    } else {
+        errs() << "[Invisible] No changes were made to the source.\n";
+
+        // Write the original file contents unchanged
         auto FERef = SM.getFileEntryRefForID(mainFileID);
         llvm::SmallString<256> outPath = FERef->getName();
         llvm::sys::path::remove_filename(outPath);
@@ -444,14 +530,11 @@ void saveChanges(Rewriter* rewriter, const char* file) {
         std::error_code EC;
         llvm::raw_fd_ostream outFile(outPath, EC);
 
-
         if (!EC) {
-            outFile << string(RewriteBuf->begin(), RewriteBuf->end());
-            errs() << "[Invisible] Successfully emitted updated source to " << file << "\n";
+            llvm::StringRef originalContent = SM.getBufferData(mainFileID);
+            outFile << originalContent;
+            errs() << "[Invisible] Emitted original source to " << file << "\n";
         }
-
-    } else {
-        errs() << "[Invisible] No changes were made to the source.\n";
     }
 }
 
@@ -586,6 +669,7 @@ int main(int argc, const char **argv) {
 
     int _argc = 2;
     const char* _argv[2];
+    _argv[0] = "";
 
     // iterate over the oracle and inline functions as required
     for(size_t i = 0; i < inline_oracle.size(); i++) {
