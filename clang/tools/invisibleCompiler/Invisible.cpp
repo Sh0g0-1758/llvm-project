@@ -337,11 +337,11 @@ private:
     string currentFuncName;
     string source_caller;
     string source_callee;
-    std::vector<size_t>* callSite;
+    std::vector<std::pair<size_t, std::string>>* callSite;
     size_t currIndx;
     Rewriter* rewriter;
 public:
-    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, std::vector<size_t>* cals_, size_t cind_, Rewriter* R) 
+    explicit inlineVisitor(ASTContext *C, const std::string& cal_, const std::string& cale_, std::vector<std::pair<size_t, std::string>>* cals_, size_t cind_, Rewriter* R) 
       : astContext(C), source_caller(cal_), source_callee(cale_), callSite(cals_), currIndx(cind_), rewriter(R)
     {
         rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
@@ -388,7 +388,7 @@ public:
         loc = SM.getSpellingLoc(loc);
         PresumedLoc ploc = SM.getPresumedLoc(loc);
 
-        if((ploc.getLine() != (*callSite)[currIndx])) return true;
+        if((ploc.getLine() != (*callSite)[currIndx].first)) return true;
 
         const LangOptions &LangOpts = Ctx.getLangOpts();
 
@@ -487,7 +487,8 @@ public:
         inlinedCode += rawBody;
 
         for(size_t i = currIndx + 1; i < (*callSite).size(); i++)
-            if((*callSite)[i] > (*callSite)[currIndx]) (*callSite)[i] += addedLines;
+            if(((*callSite)[i].second == (*callSite)[currIndx].second) && 
+                ((*callSite)[i].first > (*callSite)[currIndx].first)) (*callSite)[i].first += addedLines;
 
         rewriter->ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
 
@@ -495,7 +496,7 @@ public:
     }
 };
 
-void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, std::vector<size_t>* callSite, size_t currIndx, Rewriter* rewriter) {
+void inlineCallback(ASTContext &AST, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, std::string>>* callSite, size_t currIndx, Rewriter* rewriter) {
     inlineVisitor *visitor = new inlineVisitor(&AST, caller, callee, callSite, currIndx, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
@@ -504,37 +505,21 @@ void saveChanges(Rewriter* rewriter, const char* file) {
     SourceManager &SM = rewriter->getSourceMgr();
     FileID mainFileID = SM.getMainFileID();
 
-    auto FERef = SM.getFileEntryRefForID(mainFileID);
-    llvm::SmallString<256> outPath = FERef->getName();
-    llvm::sys::path::remove_filename(outPath);
-    llvm::sys::path::append(outPath, file);
-
     std::error_code EC;
-    llvm::raw_fd_ostream outFile(outPath, EC);
+    llvm::raw_fd_ostream outFile(file, EC);
 
-    const RewriteBuffer *RewriteBuf = rewriter->getRewriteBufferFor(mainFileID);
-    if (RewriteBuf) {
-        if (!EC) {
+    if(!EC) {
+        const RewriteBuffer *RewriteBuf = rewriter->getRewriteBufferFor(mainFileID);
+        if (RewriteBuf) {
             outFile << string(RewriteBuf->begin(), RewriteBuf->end());
             errs() << "[Invisible] Successfully emitted updated source to " << file << "\n";
-        }
-    } else {
-        errs() << "[Invisible] No changes were made to the source.\n";
-
-        // Write the original file contents unchanged
-        auto FERef = SM.getFileEntryRefForID(mainFileID);
-        llvm::SmallString<256> outPath = FERef->getName();
-        llvm::sys::path::remove_filename(outPath);
-        llvm::sys::path::append(outPath, file);
-
-        std::error_code EC;
-        llvm::raw_fd_ostream outFile(outPath, EC);
-
-        if (!EC) {
+        } else {
             llvm::StringRef originalContent = SM.getBufferData(mainFileID);
             outFile << originalContent;
             errs() << "[Invisible] Emitted original source to " << file << "\n";
         }
+    } else {
+        errs() << "[Invisible] unable to open output file when trying to save changes\n";
     }
 }
 
@@ -589,12 +574,12 @@ private:
     TUCallbackType Callback;
 };
 
-std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee, std::vector<size_t>* callSite, size_t currIndx) {
-    return std::make_unique<ToolActionFactory>([optType, caller, callee, callSite, currIndx](ASTContext &AST) {
+std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType, const std::string& caller, const std::string& callee, std::vector<std::pair<size_t, std::string>>* callSite, size_t currIndx, const char* file) {
+    return std::make_unique<ToolActionFactory>([optType, caller, callee, callSite, currIndx, file](ASTContext &AST) {
         Rewriter rewriter;
         if(optType == optPass::INLINE_PASS) {
             inlineCallback(AST, caller, callee, callSite, currIndx, &rewriter);
-            saveChanges(&rewriter, "buffer.cpp");
+            saveChanges(&rewriter, file);
         }
     });
 }
@@ -614,10 +599,17 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
     });
 }
 
+/**
+ * Usage -
+ * 
+ * If using the preprocess functionality - ./invisible <path_to_base_directory> <file_path_relative_to_base_director> <preprocess_functionality>
+ * If using the inline functionality     - ./invisible <path_to_base_directory> [make sure you have the oracle_list.txt file in the same directory as the tool]
+ */
 int main(int argc, const char **argv) {
-    if(llvm::StringRef(argv[2]) == "only-preprocess") {
+    if(argc == 4 && llvm::StringRef(argv[3]) == "only-preprocess") {
         int _argc = 2;
-        const char* _argv[] = {"", argv[1]};
+        std::string file = std::string(argv[1]) + std::string(argv[2]);
+        const char* _argv[] = {"", file.c_str()};
         
         // preprocess step to convert comma initializers to stand-alone statements
         {
@@ -628,7 +620,7 @@ int main(int argc, const char **argv) {
             }
             CommonOptionsParser &Options = ExpectedParser.get();
             ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-            auto ActionFactory = getFrontendActionFactory(optPass::COMMA_INITIALIZATION_PASS, argv[1]);
+            auto ActionFactory = getFrontendActionFactory(optPass::COMMA_INITIALIZATION_PASS, _argv[1]);
             int result = Tool.run(ActionFactory.get());
         }
 
@@ -641,15 +633,32 @@ int main(int argc, const char **argv) {
             }
             CommonOptionsParser &Options = ExpectedParser.get();
             ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-            auto ActionFactory = getFrontendActionFactory(optPass::CLEANUP_FUNCTION_CALL_PASS, argv[1]);
+            auto ActionFactory = getFrontendActionFactory(optPass::CLEANUP_FUNCTION_CALL_PASS, _argv[1]);
             int result = Tool.run(ActionFactory.get());
         } while(FuncCallCleaned);
         return 0;
+    } else if(argc == 4 && llvm::StringRef(argv[3]) == "separate-functions") {
+        int _argc = 2;
+        std::string file = std::string(argv[1]) + std::string(argv[2]);
+        const char* _argv[] = {"", file.c_str()};
+        
+        // emit each function in a different file
+        {
+            auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+            if (!ExpectedParser) {
+                llvm::errs() << ExpectedParser.takeError();
+                return 1;
+            }
+            CommonOptionsParser &Options = ExpectedParser.get();
+            ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+            auto ActionFactory = getFrontendActionFactory(optPass::FILTER_PASS);
+            int result = Tool.run(ActionFactory.get());
+        }
     }
 
     // oracle gives us the function to be inlined in topo sort for now
     std::vector<std::pair<std::string, std::string>> inline_oracle;
-    std::vector<size_t> inline_debugLoc;
+    std::vector<std::pair<size_t, std::string>> inline_debugLoc;
     std::ifstream infile("oracle_list.txt"); // Name of your input file
 
     if (!infile.is_open()) {
@@ -658,11 +667,11 @@ int main(int argc, const char **argv) {
         std::string line;
         while (std::getline(infile, line)) {
             std::stringstream ss(line);
-            std::string caller, callee;
+            std::string caller, callee, file;
             size_t row;
-            if (ss >> caller >> callee >> row) {
+            if (ss >> caller >> callee >> row >> file) {
                 inline_oracle.emplace_back(caller, callee);
-                inline_debugLoc.emplace_back(row);
+                inline_debugLoc.emplace_back(row, file);
             }
         }
     }
@@ -672,8 +681,9 @@ int main(int argc, const char **argv) {
     _argv[0] = "";
 
     // iterate over the oracle and inline functions as required
-    for(size_t i = 0; i < inline_oracle.size(); i++) {
-        _argv[1] = i == 0 ? argv[1] : "buffer.cpp";
+    for (size_t i = 0; i < inline_oracle.size(); i++) {
+        std::string file = std::string(argv[1]) + inline_debugLoc[i].second;
+        _argv[1] = file.c_str();
         auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
         if (!ExpectedParser) {
             llvm::errs() << ExpectedParser.takeError();
@@ -681,20 +691,7 @@ int main(int argc, const char **argv) {
         }
         CommonOptionsParser &Options = ExpectedParser.get();
         ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second, &inline_debugLoc, i);
-        int result = Tool.run(ActionFactory.get());
-    }
-
-    // emit each function in a different file
-    {
-        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
-        if (!ExpectedParser) {
-            llvm::errs() << ExpectedParser.takeError();
-            return 1;
-        }
-        CommonOptionsParser &Options = ExpectedParser.get();
-        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::FILTER_PASS);
+        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second, &inline_debugLoc, i, _argv[1]);
         int result = Tool.run(ActionFactory.get());
     }
 }
