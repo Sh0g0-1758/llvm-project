@@ -1,4 +1,3 @@
-#include "clang/Driver/Options.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTConsumer.h"
@@ -603,7 +602,7 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
  * Usage -
  * 
  * If using the preprocess functionality - ./invisible <path_to_base_directory> <file_path_relative_to_base_director> <preprocess_functionality>
- * If using the inline functionality     - ./invisible <path_to_base_directory> [make sure you have the oracle_list.txt file in the same directory as the tool]
+ * If using the inline functionality     - ./invisible <path_to_base_directory> <path_to_oracle_file>
  */
 int main(int argc, const char **argv) {
     if(argc == 4 && llvm::StringRef(argv[3]) == "only-preprocess") {
@@ -659,7 +658,7 @@ int main(int argc, const char **argv) {
     // oracle gives us the function to be inlined in topo sort for now
     std::vector<std::pair<std::string, std::string>> inline_oracle;
     std::vector<std::pair<size_t, std::string>> inline_debugLoc;
-    std::ifstream infile("oracle_list.txt"); // Name of your input file
+    std::ifstream infile(argv[2]);
 
     if (!infile.is_open()) {
         llvm::errs() << "Error: Could not open oracle file.\n";
@@ -695,3 +694,4 @@ int main(int argc, const char **argv) {
         int result = Tool.run(ActionFactory.get());
     }
 }
+ 
