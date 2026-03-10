@@ -21,13 +21,13 @@ using namespace clang::driver;
 using namespace clang::tooling;
 using namespace llvm;
 
-// class dummyPrinterHelper : public PrinterHelper {
-// public:
-//     dummyPrinterHelper() {}
-//     virtual bool handledStmt(Stmt *S, llvm::raw_ostream &OS) override {
-//         return false;
-//     }
-// };
+class dummyPrinterHelper : public PrinterHelper {
+public:
+    dummyPrinterHelper() {}
+    virtual bool handledStmt(Stmt *S, llvm::raw_ostream &OS) override {
+        return false;
+    }
+};
 
 class commaInitializationVisitor : public RecursiveASTVisitor<commaInitializationVisitor> {
 private:
@@ -100,7 +100,6 @@ public:
 
         return true;
     }
-
 };
 
 void commaInitializationCallback(ASTContext &AST, Rewriter* rewriter) {
@@ -215,6 +214,167 @@ public:
 
 void cleanupFuncCallCallback(ASTContext &AST, Rewriter* rewriter) {
     cleanupFuncCallVisitor *visitor = new cleanupFuncCallVisitor(&AST, rewriter);
+    visitor->TraverseDecl(AST.getTranslationUnitDecl());
+}
+
+bool constantFolded;
+
+class constantFoldVisitor : public RecursiveASTVisitor<constantFoldVisitor> {
+private:
+    ASTContext *astContext;
+    Rewriter* rewriter;
+public:
+    explicit constantFoldVisitor(ASTContext *C, Rewriter* R)
+      : astContext(C), rewriter(R)
+    {
+        rewriter->setSourceMgr(astContext->getSourceManager(), astContext->getLangOpts());
+        constantFolded = false;
+    }
+
+    virtual bool VisitBinaryOperator(BinaryOperator *BO) {
+        if(constantFolded) return true;
+        // If both LHS and RHS can be dynamically casted to an integerLiteral, that means both the operands must be of the same type. 
+        if(auto* LHS = dyn_cast<IntegerLiteral>(BO->getLHS()->IgnoreParens())) {
+            if(auto* RHS = dyn_cast<IntegerLiteral>(BO->getRHS()->IgnoreParens())) {
+                constantFolded = true;
+                const BuiltinType *BT = LHS->getType()->getAs<BuiltinType>();
+                if(BT->isSignedInteger()) {
+                    auto lval = LHS->getValue().getSExtValue();
+                    auto rval = RHS->getValue().getSExtValue();
+        
+                    int64_t result = 0;
+                    bool valid = true;
+
+                    switch(BO->getOpcode()) {
+                        // arith
+                        case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
+                        case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
+                        case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
+                        case BinaryOperator::Opcode::BO_Div:
+                            if (rval == 0) { valid = false; break; }
+                            result = lval / rval; break;
+                        case BinaryOperator::Opcode::BO_Rem:
+                            if (rval == 0) { valid = false; break; }
+                            result = lval % rval; break;
+
+                        // Bitwise
+                        case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
+                        case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
+                        case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
+                        case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
+                        case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
+
+                        // Logical/Comparison (return 0 or 1)
+                        case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
+                        case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
+                        case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
+                        case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
+                        case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
+                        case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
+                        case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
+                        case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
+
+                        default: valid = false; break;
+                    }
+
+                    if (valid)
+                        rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
+                } else if(BT->isUnsignedInteger()) {
+                    auto lval = LHS->getValue().getZExtValue();
+                    auto rval = RHS->getValue().getZExtValue();
+        
+                    uint64_t result = 0;
+                    bool valid = true;
+
+                    switch(BO->getOpcode()) {
+                        // arith
+                        case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
+                        case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
+                        case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
+                        case BinaryOperator::Opcode::BO_Div:
+                            if (rval == 0) { valid = false; break; }
+                            result = lval / rval; break;
+                        case BinaryOperator::Opcode::BO_Rem:
+                            if (rval == 0) { valid = false; break; }
+                            result = lval % rval; break;
+
+                        // Bitwise
+                        case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
+                        case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
+                        case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
+                        case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
+                        case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
+
+                        // Logical/Comparison (return 0 or 1)
+                        case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
+                        case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
+                        case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
+                        case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
+                        case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
+                        case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
+                        case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
+                        case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
+
+                        default: valid = false; break;
+                    }
+
+                    if (valid)
+                        rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
+                }
+            }
+        }
+
+        if(auto* LHS = dyn_cast<FloatingLiteral>(BO->getLHS()->IgnoreParens())) {
+            if(auto* RHS = dyn_cast<FloatingLiteral>(BO->getRHS()->IgnoreParens())) {
+                constantFolded = true;
+                double lval = LHS->getValue().convertToDouble();
+                double rval = RHS->getValue().convertToDouble();
+
+                double result = 0.0;
+                bool valid = true;
+                bool isComparison = false;
+                int64_t cmpResult = 0;
+
+                switch(BO->getOpcode()) {
+                    // Arithmetic
+                    case BinaryOperator::Opcode::BO_Add: result = lval + rval; break;
+                    case BinaryOperator::Opcode::BO_Sub: result = lval - rval; break;
+                    case BinaryOperator::Opcode::BO_Mul: result = lval * rval; break;
+                    case BinaryOperator::Opcode::BO_Div:
+                        if (rval == 0.0) { valid = false; break; }
+                        result = lval / rval; break;
+                    case BinaryOperator::Opcode::BO_Rem:
+                        if (rval == 0.0) { valid = false; break; }
+                        result = std::fmod(lval, rval); break;
+
+                    // Comparisons (produce an integer 0 or 1, not a float)
+                    case BinaryOperator::Opcode::BO_LAnd: isComparison = true; cmpResult = lval && rval; break;
+                    case BinaryOperator::Opcode::BO_LOr:  isComparison = true; cmpResult = lval || rval; break;
+                    case BinaryOperator::Opcode::BO_LT:   isComparison = true; cmpResult = lval <  rval; break;
+                    case BinaryOperator::Opcode::BO_GT:   isComparison = true; cmpResult = lval >  rval; break;
+                    case BinaryOperator::Opcode::BO_LE:   isComparison = true; cmpResult = lval <= rval; break;
+                    case BinaryOperator::Opcode::BO_GE:   isComparison = true; cmpResult = lval >= rval; break;
+                    case BinaryOperator::Opcode::BO_EQ:   isComparison = true; cmpResult = lval == rval; break;
+                    case BinaryOperator::Opcode::BO_NE:   isComparison = true; cmpResult = lval != rval; break;
+
+                    default: valid = false; break;
+                }
+
+                if (valid) {
+                    std::string replacement = isComparison
+                        ? std::to_string(cmpResult)
+                        : std::to_string(result);
+                    rewriter->ReplaceText(BO->getSourceRange(), replacement);
+                }
+            }
+        }
+        return true;
+    }
+
+};
+
+void constantFoldCallback(ASTContext &AST, Rewriter* rewriter) {
+    constantFoldVisitor *visitor = new constantFoldVisitor(&AST, rewriter);
     visitor->TraverseDecl(AST.getTranslationUnitDecl());
 }
 
@@ -526,7 +686,8 @@ enum class optPass {
     CLEANUP_FUNCTION_CALL_PASS,
     COMMA_INITIALIZATION_PASS,
     FILTER_PASS,
-    INLINE_PASS
+    INLINE_PASS,
+    CONSTANT_FOLD_PASS
 };
 
 using TUCallbackType = std::function<void(ASTContext &)>;
@@ -594,6 +755,9 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
             saveChanges(&rewriter, file);
         } else if (optType == optPass::FILTER_PASS) {
             filterCallback(AST, &rewriter);
+        } else if (optType == optPass::CONSTANT_FOLD_PASS) {
+            constantFoldCallback(AST, &rewriter);
+            saveChanges(&rewriter, file);
         }
     });
 }
@@ -601,8 +765,9 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
 /**
  * Usage -
  * 
- * If using the preprocess functionality - ./invisible <path_to_base_directory> <file_path_relative_to_base_director> <preprocess_functionality>
- * If using the inline functionality     - ./invisible <path_to_base_directory> <path_to_oracle_file>
+ * If using the preprocess functionality - ./invisible <path_to_base_directory> <file_path_relative_to_base_directory> <preprocess_functionality>
+ * If using the inline functionality     - ./invisible <path_to_base_directory> <path_to_oracle_file> <pass_to_run> - for inline
+ *                                       - ./invisible <path_to_base_directory> <file_path_relative_to_base_directory> <pass_to_run> - for constant fold
  */
 int main(int argc, const char **argv) {
     if(argc == 4 && llvm::StringRef(argv[3]) == "only-preprocess") {
@@ -653,45 +818,64 @@ int main(int argc, const char **argv) {
             auto ActionFactory = getFrontendActionFactory(optPass::FILTER_PASS);
             int result = Tool.run(ActionFactory.get());
         }
-    }
-
-    // oracle gives us the function to be inlined in topo sort for now
-    std::vector<std::pair<std::string, std::string>> inline_oracle;
-    std::vector<std::pair<size_t, std::string>> inline_debugLoc;
-    std::ifstream infile(argv[2]);
-
-    if (!infile.is_open()) {
-        llvm::errs() << "Error: Could not open oracle file.\n";
-    } else {
-        std::string line;
-        while (std::getline(infile, line)) {
-            std::stringstream ss(line);
-            std::string caller, callee, file;
-            size_t row;
-            if (ss >> caller >> callee >> row >> file) {
-                inline_oracle.emplace_back(caller, callee);
-                inline_debugLoc.emplace_back(row, file);
+    } else if(argc == 4 && llvm::StringRef(argv[3]) == "inline") {
+        // oracle gives us the function to be inlined in topo sort for now
+        std::vector<std::pair<std::string, std::string>> inline_oracle;
+        std::vector<std::pair<size_t, std::string>> inline_debugLoc;
+        std::ifstream infile(argv[2]);
+    
+        if (!infile.is_open()) {
+            llvm::errs() << "Error: Could not open oracle file.\n";
+        } else {
+            std::string line;
+            while (std::getline(infile, line)) {
+                std::stringstream ss(line);
+                std::string caller, callee, file;
+                size_t row;
+                if (ss >> caller >> callee >> row >> file) {
+                    inline_oracle.emplace_back(caller, callee);
+                    inline_debugLoc.emplace_back(row, file);
+                }
             }
         }
-    }
-
-    int _argc = 2;
-    const char* _argv[2];
-    _argv[0] = "";
-
-    // iterate over the oracle and inline functions as required
-    for (size_t i = 0; i < inline_oracle.size(); i++) {
-        std::string file = std::string(argv[1]) + inline_debugLoc[i].second;
-        _argv[1] = file.c_str();
-        auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
-        if (!ExpectedParser) {
-            llvm::errs() << ExpectedParser.takeError();
-            return 1;
+    
+        int _argc = 2;
+        const char* _argv[2];
+        _argv[0] = "";
+    
+        // iterate over the oracle and inline functions as required
+        for (size_t i = 0; i < inline_oracle.size(); i++) {
+            std::string file = std::string(argv[1]) + inline_debugLoc[i].second;
+            _argv[1] = file.c_str();
+            auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+            if (!ExpectedParser) {
+                llvm::errs() << ExpectedParser.takeError();
+                return 1;
+            }
+            CommonOptionsParser &Options = ExpectedParser.get();
+            ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+            auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second, &inline_debugLoc, i, _argv[1]);
+            int result = Tool.run(ActionFactory.get());
         }
-        CommonOptionsParser &Options = ExpectedParser.get();
-        ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
-        auto ActionFactory = getFrontendActionFactory(optPass::INLINE_PASS, inline_oracle[i].first, inline_oracle[i].second, &inline_debugLoc, i, _argv[1]);
-        int result = Tool.run(ActionFactory.get());
+    } else if(argc == 4 && llvm::StringRef(argv[3]) == "constant-fold") {
+        int _argc = 2;
+        std::string file = std::string(argv[1]) + std::string(argv[2]);
+        const char* _argv[] = {"", file.c_str()};
+
+        // preprocess step to remove any function calls as params in function calls
+        do {
+            auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
+            if (!ExpectedParser) {
+                llvm::errs() << ExpectedParser.takeError();
+                return 1;
+            }
+            CommonOptionsParser &Options = ExpectedParser.get();
+            ClangTool Tool(Options.getCompilations(), Options.getSourcePathList());
+            auto ActionFactory = getFrontendActionFactory(optPass::CONSTANT_FOLD_PASS, _argv[1]);
+            int result = Tool.run(ActionFactory.get());
+        } while(constantFolded);
+        return 0;
     }
+
 }
  
