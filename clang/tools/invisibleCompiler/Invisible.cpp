@@ -131,7 +131,7 @@ public:
                 return SourceLocation();
 
             const DynTypedNode &parent = parents[0];
-            if (const CompoundStmt *CS = parent.get<CompoundStmt>()) {
+            if (parent.get<CompoundStmt>()) {
                 if (!lastStmt)
                     return SourceLocation();
                 return lastStmt->getBeginLoc();
@@ -162,7 +162,7 @@ public:
                     auto parents = astContext->getParents(*DS);
                     auto& ParentNode = parents[0];
                     if (const Stmt *PS = ParentNode.get<Stmt>()) {
-                        if(const CompoundStmt *CS = dyn_cast<CompoundStmt>(PS)) {
+                        if(dyn_cast<CompoundStmt>(PS)) {
                             goodCall = true;
                         }
                     }
@@ -176,13 +176,13 @@ public:
                         auto parents = astContext->getParents(*BO);
                         auto& ParentNode = parents[0];
                         if (const Stmt *PS = ParentNode.get<Stmt>()) {
-                            if(const CompoundStmt *CS = dyn_cast<CompoundStmt>(PS)) {
+                            if(dyn_cast<CompoundStmt>(PS)) {
                                 goodCall = true;
                             }
                         }
                     }
                 // foo();
-                } else if (const CompoundStmt* CS = dyn_cast<CompoundStmt>(PS)) {
+                } else if (dyn_cast<CompoundStmt>(PS)) {
                     goodCall = true;
                 }
             }
@@ -231,110 +231,113 @@ public:
         constantFolded = false;
     }
 
-    virtual bool VisitBinaryOperator(BinaryOperator *BO) {
-        if(constantFolded) return true;
-        // If both LHS and RHS can be dynamically casted to an integerLiteral, that means both the operands must be of the same type. 
-        if(auto* LHS = dyn_cast<IntegerLiteral>(BO->getLHS()->IgnoreParens())) {
-            if(auto* RHS = dyn_cast<IntegerLiteral>(BO->getRHS()->IgnoreParens())) {
-                constantFolded = true;
-                const BuiltinType *BT = LHS->getType()->getAs<BuiltinType>();
-                if(BT->isSignedInteger()) {
-                    auto lval = LHS->getValue().getSExtValue();
-                    auto rval = RHS->getValue().getSExtValue();
-        
-                    int64_t result = 0;
-                    bool valid = true;
+    union operandVal {
+        uint64_t i;
+        double   f;
+    };
 
-                    switch(BO->getOpcode()) {
-                        // arith
-                        case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
-                        case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
-                        case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
-                        case BinaryOperator::Opcode::BO_Div:
-                            if (rval == 0) { valid = false; break; }
-                            result = lval / rval; break;
-                        case BinaryOperator::Opcode::BO_Rem:
-                            if (rval == 0) { valid = false; break; }
-                            result = lval % rval; break;
-
-                        // Bitwise
-                        case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
-                        case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
-                        case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
-                        case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
-                        case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
-
-                        // Logical/Comparison (return 0 or 1)
-                        case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
-                        case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
-                        case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
-                        case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
-                        case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
-                        case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
-                        case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
-                        case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
-
-                        default: valid = false; break;
-                    }
-
-                    if (valid)
-                        rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
-                } else if(BT->isUnsignedInteger()) {
-                    auto lval = LHS->getValue().getZExtValue();
-                    auto rval = RHS->getValue().getZExtValue();
-        
-                    uint64_t result = 0;
-                    bool valid = true;
-
-                    switch(BO->getOpcode()) {
-                        // arith
-                        case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
-                        case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
-                        case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
-                        case BinaryOperator::Opcode::BO_Div:
-                            if (rval == 0) { valid = false; break; }
-                            result = lval / rval; break;
-                        case BinaryOperator::Opcode::BO_Rem:
-                            if (rval == 0) { valid = false; break; }
-                            result = lval % rval; break;
-
-                        // Bitwise
-                        case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
-                        case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
-                        case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
-                        case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
-                        case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
-
-                        // Logical/Comparison (return 0 or 1)
-                        case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
-                        case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
-                        case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
-                        case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
-                        case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
-                        case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
-                        case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
-                        case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
-
-                        default: valid = false; break;
-                    }
-
-                    if (valid)
-                        rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
-                }
+    bool getOperands(Expr* operand, operandVal& op) {
+        if(auto* ICE = dyn_cast<ImplicitCastExpr>(operand)) {
+            CastKind CK = ICE->getCastKind();
+            if(CK == CK_IntegralCast || CK == CK_FloatingCast) {
+                return getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+            } else if(CK == CK_FloatingToIntegral) {
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                if(!res) return false;
+                op.i = (uint64_t)op.f;
+                return true;
+            } else if(CK == CK_IntegralToFloating) {
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                if(!res) return false;
+                op.f = (double)op.i;
+                return true;
+            } else if(CK == CK_IntegralToBoolean) {
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                if(!res) return false;
+                op.i = (uint64_t)((bool)op.i);
+                return true;
+            } else if(CK == CK_FloatingToBoolean) {
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                if(!res) return false;
+                op.f = (double)((bool)op.f);
+                return true;
             }
         }
 
-        if(auto* LHS = dyn_cast<FloatingLiteral>(BO->getLHS()->IgnoreParens())) {
-            if(auto* RHS = dyn_cast<FloatingLiteral>(BO->getRHS()->IgnoreParens())) {
-                constantFolded = true;
-                double lval = LHS->getValue().convertToDouble();
-                double rval = RHS->getValue().convertToDouble();
+        if(auto* IL = dyn_cast<IntegerLiteral>(operand)) {
+            op.i = IL->getType()->getAs<BuiltinType>()->isSignedInteger() ?
+                   (uint64_t)IL->getValue().getSExtValue() :
+                   IL->getValue().getZExtValue();
+            return true;
+        } else if(auto* FL = dyn_cast<FloatingLiteral>(operand)) {
+            op.f = FL->getValue().convertToDouble();
+            return true;
+        } else if(auto* CL = dyn_cast<CharacterLiteral>(operand)) {
+            op.i = (uint64_t)CL->getValue();
+            return true;
+        } else if(auto* BL = dyn_cast<CXXBoolLiteralExpr>(operand)) {
+            op.i = (uint64_t)BL->getValue();
+            return true;
+        }
 
+        return false;
+    }
+
+    virtual bool VisitBinaryOperator(BinaryOperator *BO) {
+        if(constantFolded) return true;
+        operandVal lhs;
+        operandVal rhs;
+        if(getOperands(BO->getLHS()->IgnoreParenCasts(), lhs) && getOperands(BO->getRHS()->IgnoreParenCasts(), rhs)) {
+            constantFolded = true;
+            auto* BT = BO->getType()->getAs<BuiltinType>();
+            if(BT->isInteger()) {
+                bool valid = true;
+                uint64_t result = 0;
+                uint64_t lval = lhs.i;
+                uint64_t rval = rhs.i;
+                switch(BO->getOpcode()) {
+                    // arith
+                    case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
+                    case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
+                    case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
+                    case BinaryOperator::Opcode::BO_Div:
+                        if (rval == 0) { valid = false; break; }
+                        result = lval / rval; break;
+                    case BinaryOperator::Opcode::BO_Rem:
+                        if (rval == 0) { valid = false; break; }
+                        result = lval % rval; break;
+    
+                    // Bitwise
+                    case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
+                    case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
+                    case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
+                    case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
+                    case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
+    
+                    // Logical/Comparison (return 0 or 1)
+                    case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
+                    case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
+                    case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
+                    case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
+                    case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
+                    case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
+                    case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
+                    case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
+    
+                    default: valid = false; break;
+                }
+    
+                if (valid)
+                    rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
+            } else if (BT->isFloatingPoint()) {
+                double lval = lhs.f;
+                double rval = rhs.f;
+    
                 double result = 0.0;
                 bool valid = true;
                 bool isComparison = false;
                 int64_t cmpResult = 0;
-
+    
                 switch(BO->getOpcode()) {
                     // Arithmetic
                     case BinaryOperator::Opcode::BO_Add: result = lval + rval; break;
@@ -346,7 +349,7 @@ public:
                     case BinaryOperator::Opcode::BO_Rem:
                         if (rval == 0.0) { valid = false; break; }
                         result = std::fmod(lval, rval); break;
-
+    
                     // Comparisons (produce an integer 0 or 1, not a float)
                     case BinaryOperator::Opcode::BO_LAnd: isComparison = true; cmpResult = lval && rval; break;
                     case BinaryOperator::Opcode::BO_LOr:  isComparison = true; cmpResult = lval || rval; break;
@@ -356,10 +359,10 @@ public:
                     case BinaryOperator::Opcode::BO_GE:   isComparison = true; cmpResult = lval >= rval; break;
                     case BinaryOperator::Opcode::BO_EQ:   isComparison = true; cmpResult = lval == rval; break;
                     case BinaryOperator::Opcode::BO_NE:   isComparison = true; cmpResult = lval != rval; break;
-
+    
                     default: valid = false; break;
                 }
-
+    
                 if (valid) {
                     std::string replacement = isComparison
                         ? std::to_string(cmpResult)
@@ -370,7 +373,6 @@ public:
         }
         return true;
     }
-
 };
 
 void constantFoldCallback(ASTContext &AST, Rewriter* rewriter) {
