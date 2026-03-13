@@ -73,13 +73,19 @@ public:
 
         const SourceManager &SM = astContext->getSourceManager();
         const LangOptions &LO = astContext->getLangOpts();
-        const VarDecl *FirstVD = VarDecls.front();
-        QualType QT = FirstVD->getType();
-        std::string TypeStr = QT.getAsString();
 
         std::string Replacement;
         for (const VarDecl *VD : VarDecls) {
-            Replacement += TypeStr + " " + VD->getNameAsString();
+            QualType qt = VD->getType();
+            std::string array_suffix;
+
+            while (const auto* array_type = astContext->getAsConstantArrayType(qt)) {
+                llvm::SmallString<16> size_str;
+                array_type->getSize().toString(size_str, 10, false);
+                array_suffix += "[" + std::string(size_str) + "]";
+                qt = array_type->getElementType();
+            }
+            Replacement += qt.getAsString() + " " + VD->getNameAsString() + array_suffix;
 
             if (VD->hasInit()) {
                 Replacement += " = ";
@@ -145,6 +151,10 @@ public:
         }
     }
 
+    // This is supposed to run after doing a clang-format --style="{InsertBraces: true}". Hence if a call is good,
+    // ie. of the form int x = foo() | x = foo() | foo(), its parent must be a CompoundStmt. 
+    // This is not true for If/While/For/Switch statements. But in them, the function that return something should only be called. 
+    // again this is not true only for ForStmt, in which the first argument can be a function call that returns nothing.
     virtual bool VisitCallExpr(CallExpr *call) {
         if (FuncCallCleaned) return true;
         FunctionDecl *callee = call->getDirectCallee();
@@ -199,12 +209,18 @@ public:
 
         auto call_ = Lexer::getSourceText(CharSourceRange::getTokenRange(call->getSourceRange()), SM, LangOpts).str();
 
-        QualType retTy = callee->getReturnType();
-        PrintingPolicy policy(astContext->getLangOpts());
-        policy.adjustForCPlusPlus();
-        std::string codeToAdd = retTy.getAsString(policy);
-        std::string retVar = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_" + "Ret";
-        codeToAdd += " " + retVar + " = " + call_ + ";\n";
+        std::string codeToAdd = "";
+        std::string retVar    = "";
+        if(call->getType()->isVoidType()) {
+            codeToAdd += call_ + ";\n";
+        } else {
+            QualType retTy = callee->getReturnType();
+            PrintingPolicy policy(astContext->getLangOpts());
+            policy.adjustForCPlusPlus();
+            codeToAdd = retTy.getAsString(policy);
+            retVar = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_" + "Ret";
+            codeToAdd += " " + retVar + " = " + call_ + ";\n";
+        }
 
         rewriter->InsertTextBefore(findInsertionLocBeforeCompound(call), codeToAdd);
         rewriter->ReplaceText(call->getSourceRange(), retVar);
@@ -984,6 +1000,17 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
  * If using the inline functionality     - ./invisible <path_to_base_directory> <path_to_oracle_file> <pass_to_run> - for inline
  *                                       - ./invisible <path_to_base_directory> <file_path_relative_to_base_directory> <pass_to_run> - for constant fold
  */
+
+ /**
+  * TODO:
+  *      - Handle inlining static variables. The problem with static variables is that they can't be hoisted at the top as they have to be initialized only once. 
+  *        and they must be thread safe. Ofcourse replicating them at each inlined call is also out of the question. So for now, if we encounter a static variable 
+  *        in the code, we just abort the inlining procedure. 
+  *      - remove all this redundant disk I/O. Instead try and workout an in-process version of the code. 
+  *      - take care of function pointer and array types in the comma-initialization pass
+  *      - take care of determining whether or not the function is present at the top level to process it further. 
+  *      - come up with test cases for all the functionalities that the pass aim to perform. 
+  */
 int main(int argc, const char **argv) {
     if(argc == 4 && llvm::StringRef(argv[3]) == "only-preprocess") {
         int _argc = 2;
@@ -1091,6 +1118,4 @@ int main(int argc, const char **argv) {
         } while(constantFolded);
         return 0;
     }
-
 }
- 
