@@ -238,7 +238,6 @@ public:
 
     bool getOperands(Expr* operand, operandVal& op) {
         if(auto* ICE = dyn_cast<ImplicitCastExpr>(operand)) {
-            llvm::outs() << "Found the implicit cast\n"; 
             CastKind CK = ICE->getCastKind();
             if(CK == CK_IntegralCast || CK == CK_FloatingCast) {
                 return getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
@@ -250,10 +249,8 @@ public:
             } else if(CK == CK_IntegralToFloating) {
                 auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
-                llvm::outs() << "Unsigned int val: " << op.i << "\n";
                 if(ICE->getSubExpr()->getType()->isSignedIntegerType()) op.f = (double)((int64_t)op.i);
                 else op.f = (double)op.i;
-                llvm::outs() << "Float val: " << op.f << "\n";
                 return true;
             } else if(CK == CK_IntegralToBoolean) {
                 auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
@@ -263,7 +260,7 @@ public:
             } else if(CK == CK_FloatingToBoolean) {
                 auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
-                op.f = (double)((bool)op.f);
+                op.i = (uint64_t)((bool)op.f);
                 return true;
             }
         }
@@ -286,7 +283,6 @@ public:
             op.i = IL->getType()->getAs<BuiltinType>()->isSignedInteger() ?
                    (uint64_t)IL->getValue().getSExtValue() :
                    IL->getValue().getZExtValue();
-            llvm::outs() << "Integer Literal: " << op.i << "\n";
             return true;
         } else if(auto* FL = dyn_cast<FloatingLiteral>(operand)) {
             op.f = FL->getValue().convertToDouble();
@@ -522,6 +518,68 @@ public:
                         } else {
                             rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
                         }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    virtual bool VisitConditionalOperator(ConditionalOperator* CO) {
+        if(constantFolded) return true;
+        operandVal lhs;
+        operandVal rhs;
+        operandVal cond;
+        if(getOperands(CO->getLHS()->IgnoreParenNoopCasts(*astContext), lhs) && getOperands(CO->getRHS()->IgnoreParenNoopCasts(*astContext), rhs) && getOperands(CO->getCond()->IgnoreParenNoopCasts(*astContext), cond)) {
+            auto* CT = CO->getType()->getAs<BuiltinType>();
+            if(CT->isUnsignedInteger()) {
+                uint64_t result = 0;
+                uint64_t lval = lhs.i;
+                uint64_t rval = rhs.i;
+                uint64_t condval = cond.i;
+                result = condval ? lval : rval; 
+                {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(CO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+                    result &= mask;
+                    llvm::APInt ap_result(width, result, false);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, false);
+                    rewriter->ReplaceText(CO->getSourceRange(), str.str().str());
+                }
+            } else if(CT->isSignedInteger()) {
+                int64_t result = 0;
+                int64_t lval = lhs.i;
+                int64_t rval = rhs.i;
+                uint64_t condval = cond.i;
+                result = condval ? lval : rval;
+                {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(CO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+
+                    int64_t truncated = (int64_t)(result & mask);
+                    if (width < 64 && (truncated & (1LL << (width - 1))))
+                        truncated |= ~mask;
+
+                    llvm::APInt ap_result(width, (uint64_t)truncated, true);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, true);
+                    rewriter->ReplaceText(CO->getSourceRange(), str.str().str());
+                }
+            } else if(CT->isFloatingPoint()) {
+                double result = 0;
+                double lval = lhs.f;
+                double rval = rhs.f;
+                uint64_t condval = cond.i;
+                result = condval ? lval : rval;
+                {
+                    constantFolded = true;
+                    if (CT->getKind() == BuiltinType::Float) {
+                        rewriter->ReplaceText(CO->getSourceRange(), std::to_string((float)result));
+                    } else {
+                        rewriter->ReplaceText(CO->getSourceRange(), std::to_string(result));
                     }
                 }
             }
