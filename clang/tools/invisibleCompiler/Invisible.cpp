@@ -238,29 +238,47 @@ public:
 
     bool getOperands(Expr* operand, operandVal& op) {
         if(auto* ICE = dyn_cast<ImplicitCastExpr>(operand)) {
+            llvm::outs() << "Found the implicit cast\n"; 
             CastKind CK = ICE->getCastKind();
             if(CK == CK_IntegralCast || CK == CK_FloatingCast) {
-                return getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                return getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
             } else if(CK == CK_FloatingToIntegral) {
-                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
                 op.i = (uint64_t)op.f;
                 return true;
             } else if(CK == CK_IntegralToFloating) {
-                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
-                op.f = (double)op.i;
+                llvm::outs() << "Unsigned int val: " << op.i << "\n";
+                if(ICE->getSubExpr()->getType()->isSignedIntegerType()) op.f = (double)((int64_t)op.i);
+                else op.f = (double)op.i;
+                llvm::outs() << "Float val: " << op.f << "\n";
                 return true;
             } else if(CK == CK_IntegralToBoolean) {
-                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
                 op.i = (uint64_t)((bool)op.i);
                 return true;
             } else if(CK == CK_FloatingToBoolean) {
-                auto res = getOperands(ICE->getSubExpr()->IgnoreParenCasts(), op);
+                auto res = getOperands(ICE->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
                 if(!res) return false;
                 op.f = (double)((bool)op.f);
                 return true;
+            }
+        }
+
+        if(auto* UO = dyn_cast<UnaryOperator>(operand)) {
+            UnaryOperator::Opcode uop = UO->getOpcode();
+            if(uop == UnaryOperator::Opcode::UO_Minus) {
+                auto res = getOperands(UO->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
+                if(!res) return false;
+                if(UO->getType()->getAs<BuiltinType>()->isFloatingPoint())        op.f = -op.f;
+                else if(UO->getType()->getAs<BuiltinType>()->isUnsignedInteger()) op.i = -op.i;
+                else if(UO->getType()->getAs<BuiltinType>()->isSignedInteger())   op.i = -(int64_t)op.i;
+                return true;
+            } else if(uop == UnaryOperator::Opcode::UO_Plus) {
+                return getOperands(UO->getSubExpr()->IgnoreParenNoopCasts(*astContext), op);
             }
         }
 
@@ -268,6 +286,7 @@ public:
             op.i = IL->getType()->getAs<BuiltinType>()->isSignedInteger() ?
                    (uint64_t)IL->getValue().getSExtValue() :
                    IL->getValue().getZExtValue();
+            llvm::outs() << "Integer Literal: " << op.i << "\n";
             return true;
         } else if(auto* FL = dyn_cast<FloatingLiteral>(operand)) {
             op.f = FL->getValue().convertToDouble();
@@ -283,14 +302,85 @@ public:
         return false;
     }
 
+    virtual bool VisitUnaryOperator(UnaryOperator* UO) {
+        if(UO->getOpcode() == UnaryOperator::Opcode::UO_Minus || UO->getOpcode() == UnaryOperator::Opcode::UO_Plus) return true;
+        if(constantFolded) return true;
+        operandVal rhs;
+        if(getOperands(UO->getSubExpr()->IgnoreParenNoopCasts(*astContext), rhs)) {
+            auto* UT = UO->getType()->getAs<BuiltinType>();
+            if(UT->isUnsignedInteger()) {
+                bool valid = true;
+                uint64_t result = 0;
+                uint64_t rval = rhs.i;
+                switch(UO->getOpcode()) {
+                    case UnaryOperator::Opcode::UO_Not: result = ~rval; break;
+                    case UnaryOperator::Opcode::UO_LNot: result = !rval; break;
+                    default: valid = false; break;
+                }
+
+                if (valid) {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(UO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+                    result &= mask;
+                    llvm::APInt ap_result(width, result, false);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, false);
+                    rewriter->ReplaceText(UO->getSourceRange(), str.str().str());
+                }
+            } else if(UT->isSignedInteger()) {
+                bool valid = true;
+                int64_t result = 0;
+                int64_t rval = rhs.i;
+                switch(UO->getOpcode()) {
+                    case UnaryOperator::Opcode::UO_Not: result = ~rval; break;
+                    case UnaryOperator::Opcode::UO_LNot: result = !rval; break;
+                    default: valid = false; break;
+                }
+
+                if (valid) {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(UO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+
+                    int64_t truncated = (int64_t)(result & mask);
+                    if (width < 64 && (truncated & (1LL << (width - 1))))
+                        truncated |= ~mask;
+
+                    llvm::APInt ap_result(width, (uint64_t)truncated, true);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, true);
+                    rewriter->ReplaceText(UO->getSourceRange(), str.str().str());
+                }
+            } else if(UT->isFloatingPoint()) {
+                bool valid = true;
+                double result = 0;
+                double rval = rhs.i;
+                switch(UO->getOpcode()) {
+                    case UnaryOperator::Opcode::UO_LNot: result = !rval; break;
+                    default: valid = false; break;
+                }
+
+                if (valid) {
+                    constantFolded = true;
+                    if (UT->getKind() == BuiltinType::Float)
+                        rewriter->ReplaceText(UO->getSourceRange(), std::to_string((float)result));
+                    else
+                        rewriter->ReplaceText(UO->getSourceRange(), std::to_string(result));
+                }
+            }
+        }
+        return true;
+    }
+
+    // what about += | -= | *= | /= ?
     virtual bool VisitBinaryOperator(BinaryOperator *BO) {
         if(constantFolded) return true;
         operandVal lhs;
         operandVal rhs;
-        if(getOperands(BO->getLHS()->IgnoreParenCasts(), lhs) && getOperands(BO->getRHS()->IgnoreParenCasts(), rhs)) {
-            constantFolded = true;
+        if(getOperands(BO->getLHS()->IgnoreParenNoopCasts(*astContext), lhs) && getOperands(BO->getRHS()->IgnoreParenNoopCasts(*astContext), rhs)) {
             auto* BT = BO->getType()->getAs<BuiltinType>();
-            if(BT->isInteger()) {
+            if(BT->isUnsignedInteger()) {
                 bool valid = true;
                 uint64_t result = 0;
                 uint64_t lval = lhs.i;
@@ -327,8 +417,67 @@ public:
                     default: valid = false; break;
                 }
     
-                if (valid)
-                    rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
+                if (valid) {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(BO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+                    result &= mask;
+                    llvm::APInt ap_result(width, result, false);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, false);
+                    rewriter->ReplaceText(BO->getSourceRange(), str.str().str());
+                }
+            } else if(BT->isSignedInteger()) {
+                bool valid = true;
+                int64_t result = 0;
+                int64_t lval = lhs.i;
+                int64_t rval = rhs.i;
+                switch(BO->getOpcode()) {
+                    // arith
+                    case BinaryOperator::Opcode::BO_Add:  result = lval + rval; break;
+                    case BinaryOperator::Opcode::BO_Sub:  result = lval - rval; break;
+                    case BinaryOperator::Opcode::BO_Mul:  result = lval * rval; break;
+                    case BinaryOperator::Opcode::BO_Div:
+                        if (rval == 0) { valid = false; break; }
+                        result = lval / rval; break;
+                    case BinaryOperator::Opcode::BO_Rem:
+                        if (rval == 0) { valid = false; break; }
+                        result = lval % rval; break;
+    
+                    // Bitwise
+                    case BinaryOperator::Opcode::BO_And:  result = lval & rval;  break;
+                    case BinaryOperator::Opcode::BO_Or:   result = lval | rval;  break;
+                    case BinaryOperator::Opcode::BO_Xor:  result = lval ^ rval;  break;
+                    case BinaryOperator::Opcode::BO_Shl:  result = lval << rval; break;
+                    case BinaryOperator::Opcode::BO_Shr:  result = lval >> rval; break;
+    
+                    // Logical/Comparison (return 0 or 1)
+                    case BinaryOperator::Opcode::BO_LAnd: result = lval && rval; break;
+                    case BinaryOperator::Opcode::BO_LOr:  result = lval || rval; break;
+                    case BinaryOperator::Opcode::BO_LT:   result = lval <  rval; break;
+                    case BinaryOperator::Opcode::BO_GT:   result = lval >  rval; break;
+                    case BinaryOperator::Opcode::BO_LE:   result = lval <= rval; break;
+                    case BinaryOperator::Opcode::BO_GE:   result = lval >= rval; break;
+                    case BinaryOperator::Opcode::BO_EQ:   result = lval == rval; break;
+                    case BinaryOperator::Opcode::BO_NE:   result = lval != rval; break;
+    
+                    default: valid = false; break;
+                }
+    
+                if (valid) {
+                    constantFolded = true;
+                    uint64_t width = astContext->getTypeSize(BO->getType());
+                    uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
+
+                    int64_t truncated = (int64_t)(result & mask);
+                    if (width < 64 && (truncated & (1LL << (width - 1))))
+                        truncated |= ~mask;
+
+                    llvm::APInt ap_result(width, (uint64_t)truncated, true);
+                    llvm::SmallString<32> str;
+                    ap_result.toString(str, 10, true);
+                    rewriter->ReplaceText(BO->getSourceRange(), str.str().str());
+                }
             } else if (BT->isFloatingPoint()) {
                 double lval = lhs.f;
                 double rval = rhs.f;
@@ -362,12 +511,18 @@ public:
     
                     default: valid = false; break;
                 }
-    
+
                 if (valid) {
-                    std::string replacement = isComparison
-                        ? std::to_string(cmpResult)
-                        : std::to_string(result);
-                    rewriter->ReplaceText(BO->getSourceRange(), replacement);
+                    constantFolded = true;
+                    if(isComparison) {
+                        rewriter->ReplaceText(BO->getSourceRange(), std::to_string(cmpResult));
+                    } else {
+                        if (BT->getKind() == BuiltinType::Float) {
+                            rewriter->ReplaceText(BO->getSourceRange(), std::to_string((float)result));
+                        } else {
+                            rewriter->ReplaceText(BO->getSourceRange(), std::to_string(result));
+                        }
+                    }
                 }
             }
         }
