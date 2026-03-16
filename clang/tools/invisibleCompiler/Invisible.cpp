@@ -73,19 +73,39 @@ public:
 
         const SourceManager &SM = astContext->getSourceManager();
         const LangOptions &LO = astContext->getLangOpts();
+        clang::PrintingPolicy policy(LO);
+        policy.adjustForCPlusPlus();
 
         std::string Replacement;
         for (const VarDecl *VD : VarDecls) {
             QualType qt = VD->getType();
-            std::string array_suffix;
+            std::string array_suffix = "";
 
+            // array type
             while (const auto* array_type = astContext->getAsConstantArrayType(qt)) {
                 llvm::SmallString<16> size_str;
                 array_type->getSize().toString(size_str, 10, false);
                 array_suffix += "[" + std::string(size_str) + "]";
                 qt = array_type->getElementType();
             }
-            Replacement += qt.getAsString() + " " + VD->getNameAsString() + array_suffix;
+
+            // pointer type
+            if (const auto* ptr_type = qt->getAs<clang::PointerType>()) {
+                if (const auto* func_type = ptr_type->getPointeeType()->getAs<clang::FunctionProtoType>()) {
+                    Replacement += func_type->getReturnType().getAsString(policy);
+                    Replacement += " (* " + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix + ")";
+                    Replacement += "(";
+                    for(size_t i = 0; i < func_type->getParamTypes().size(); i++) {
+                        Replacement += func_type->getParamTypes()[i].getAsString(policy);
+                        if(i != func_type->getParamTypes().size() - 1) Replacement += ",";
+                    }
+                    Replacement += ")";
+                } else {
+                    Replacement += ptr_type->getPointeeType().getAsString(policy) + " *" + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
+                }
+            } else {
+                Replacement += qt.getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
+            }
 
             if (VD->hasInit()) {
                 Replacement += " = ";
@@ -1007,9 +1027,11 @@ std::unique_ptr<FrontendActionFactory> getFrontendActionFactory(optPass optType,
   *        and they must be thread safe. Ofcourse replicating them at each inlined call is also out of the question. So for now, if we encounter a static variable 
   *        in the code, we just abort the inlining procedure. 
   *      - remove all this redundant disk I/O. Instead try and workout an in-process version of the code. 
-  *      - take care of function pointer and array types in the comma-initialization pass
-  *      - take care of determining whether or not the function is present at the top level to process it further. 
+  *      - take care of function pointer and array types in the comma-initialization pass [tick]
+  *      - take care of function pointer and array indexing in the inlinePrinter module for the inlinePass
+  *      - take care of determining whether or not the function is present at the top level to process it further. [tick]
   *      - come up with test cases for all the functionalities that the pass aim to perform. 
+  *      - take account of printing the bool type as it is. Right now its printed as _Bool. [tick]
   */
 int main(int argc, const char **argv) {
     if(argc == 4 && llvm::StringRef(argv[3]) == "only-preprocess") {
