@@ -71,51 +71,54 @@ public:
                 return true;
         }
 
-        const SourceManager &SM = astContext->getSourceManager();
-        const LangOptions &LO = astContext->getLangOpts();
-        clang::PrintingPolicy policy(LO);
+        clang::PrintingPolicy policy(astContext->getLangOpts());
         policy.adjustForCPlusPlus();
 
         std::string Replacement;
         for (const VarDecl *VD : VarDecls) {
-            QualType qt = VD->getType();
-            std::string array_suffix = "";
+            std::string s;
+            llvm::raw_string_ostream os(s);
+            VD->print(os, policy);
+            Replacement += s + ";\n";
 
-            // array type
-            while (const auto* array_type = astContext->getAsConstantArrayType(qt)) {
-                llvm::SmallString<16> size_str;
-                array_type->getSize().toString(size_str, 10, false);
-                array_suffix += "[" + std::string(size_str) + "]";
-                qt = array_type->getElementType();
-            }
+            // QualType qt = VD->getType();
+            // std::string array_suffix = "";
 
-            // pointer type
-            if (const auto* ptr_type = qt->getAs<clang::PointerType>()) {
-                if (const auto* func_type = ptr_type->getPointeeType()->getAs<clang::FunctionProtoType>()) {
-                    Replacement += func_type->getReturnType().getAsString(policy);
-                    Replacement += " (* " + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix + ")";
-                    Replacement += "(";
-                    for(size_t i = 0; i < func_type->getParamTypes().size(); i++) {
-                        Replacement += func_type->getParamTypes()[i].getAsString(policy);
-                        if(i != func_type->getParamTypes().size() - 1) Replacement += ",";
-                    }
-                    Replacement += ")";
-                } else {
-                    Replacement += ptr_type->getPointeeType().getAsString(policy) + " *" + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
-                }
-            } else {
-                Replacement += qt.getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
-            }
+            // // array type
+            // while (const auto* array_type = astContext->getAsConstantArrayType(qt)) {
+            //     llvm::SmallString<16> size_str;
+            //     array_type->getSize().toString(size_str, 10, false);
+            //     array_suffix += "[" + std::string(size_str) + "]";
+            //     qt = array_type->getElementType();
+            // }
 
-            if (VD->hasInit()) {
-                Replacement += " = ";
-                Replacement += Lexer::getSourceText(
-                    CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
-                    SM, LO
-                ).str();
-            }
+            // // pointer type
+            // if (const auto* ptr_type = qt->getAs<clang::PointerType>()) {
+            //     if (const auto* func_type = ptr_type->getPointeeType()->getAs<clang::FunctionProtoType>()) {
+            //         Replacement += func_type->getReturnType().getAsString(policy);
+            //         Replacement += " (* " + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix + ")";
+            //         Replacement += "(";
+            //         for(size_t i = 0; i < func_type->getParamTypes().size(); i++) {
+            //             Replacement += func_type->getParamTypes()[i].getAsString(policy);
+            //             if(i != func_type->getParamTypes().size() - 1) Replacement += ",";
+            //         }
+            //         Replacement += ")";
+            //     } else {
+            //         Replacement += ptr_type->getPointeeType().getAsString(policy) + " *" + qt.getQualifiers().getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
+            //     }
+            // } else {
+            //     Replacement += qt.getAsString(policy) + " " + VD->getNameAsString() + array_suffix;
+            // }
 
-            Replacement += ";\n";
+            // if (VD->hasInit()) {
+            //     Replacement += " = ";
+            //     Replacement += Lexer::getSourceText(
+            //         CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
+            //         SM, LO
+            //     ).str();
+            // }
+
+            // Replacement += ";\n";
         }
 
         SourceRange SR = DS->getSourceRange();
@@ -222,9 +225,6 @@ public:
         FuncCallCleaned = true;
 
         SourceManager &SM = astContext->getSourceManager();
-        SourceLocation loc = call->getExprLoc();
-        loc = SM.getSpellingLoc(loc);
-        PresumedLoc ploc = SM.getPresumedLoc(loc);
         auto LangOpts = astContext->getLangOpts();
 
         auto call_ = Lexer::getSourceText(CharSourceRange::getTokenRange(call->getSourceRange()), SM, LangOpts).str();
@@ -235,11 +235,18 @@ public:
             codeToAdd += call_ + ";\n";
         } else {
             QualType retTy = callee->getReturnType();
+
             PrintingPolicy policy(astContext->getLangOpts());
             policy.adjustForCPlusPlus();
-            codeToAdd = retTy.getAsString(policy);
+            SourceLocation loc = call->getExprLoc();
+            loc = SM.getSpellingLoc(loc);
+            PresumedLoc ploc = SM.getPresumedLoc(loc);
+
             retVar = callee->getNameAsString() + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_" + "Ret";
-            codeToAdd += " " + retVar + " = " + call_ + ";\n";
+            llvm::raw_string_ostream OS(codeToAdd);
+            retTy.print(OS, policy, retVar);
+
+            codeToAdd += " = " + call_ + ";\n";
         }
 
         rewriter->InsertTextBefore(findInsertionLocBeforeCompound(call), codeToAdd);
@@ -801,6 +808,9 @@ public:
         if((ploc.getLine() != (*callSite)[currIndx].first)) return true;
 
         const LangOptions &LangOpts = Ctx.getLangOpts();
+        PrintingPolicy Policy = Ctx.getPrintingPolicy();
+        Policy.adjustForCPlusPlus();
+        Policy.Indentation = 2;
 
         string targetVar = "";
         auto parents = Ctx.getParents(*call);
@@ -818,7 +828,7 @@ public:
 
             // int x = foo();
             if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
-                inlinedCode += VD->getType().getAsString() + " " + (VD->getStorageClass() == SC_Static ? "static " : "") + VD->getNameAsString() + ";\n";
+                inlinedCode += VD->getType().getAsString(Policy) + " " + (VD->getStorageClass() == SC_Static ? "static " : "") + VD->getNameAsString() + ";\n";
                 addedLines += 1;
                 targetVar = VD->getNameAsString();
 
@@ -866,7 +876,7 @@ public:
             if (pvd->getType()->isLValueReferenceType()) {
                 callerParams[i] = argText;
             } else {
-                inlinedCode += pvd->getType().getAsString() + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
+                inlinedCode += pvd->getType().getAsString(Policy) + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
                 callerParams[i] = prefix + pvd->getNameAsString();
                 addedLines++;
             }
@@ -874,8 +884,6 @@ public:
 
         string bodyStr;
         llvm::raw_string_ostream SS(bodyStr);
-        PrintingPolicy Policy = Ctx.getPrintingPolicy();
-        Policy.Indentation = 2;
 
         inlinePrinterHelper Helper(prefix, targetVar, callerParams, Policy);
         callee->getBody()->printPretty(SS, &Helper, Policy);
