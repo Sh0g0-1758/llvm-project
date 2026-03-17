@@ -718,15 +718,24 @@ public:
         if (DeclStmt *DS = dyn_cast<DeclStmt>(S)) {
             for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it) {
                 if (VarDecl *VD = dyn_cast<VarDecl>(*it)) {
-                    OS << VD->getType().getAsString() << " ";
-                    if (VD->getStorageClass() == SC_Static)
-                        OS << "static ";
-                    OS << Prefix << VD->getNameAsString() << "_" << VD->getID();
-                    
+                    ASTContext &Ctx = VD->getASTContext();
+                    std::string newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
+                    IdentifierInfo &II = Ctx.Idents.get(newName);
+                    VarDecl *NewVD = VarDecl::Create(
+                        Ctx,
+                        VD->getDeclContext(),
+                        VD->getBeginLoc(),
+                        VD->getLocation(),
+                        &II,
+                        VD->getType(),
+                        Ctx.getTrivialTypeSourceInfo(VD->getType()),
+                        VD->getStorageClass()
+                    );
+
                     if (VD->hasInit()) {
-                        OS << " = ";
-                        VD->getInit()->printPretty(OS, this, Policy);
+                        NewVD->setInit(VD->getInit());
                     }
+                    NewVD->print(OS, Policy);
                     OS << ";\n";
                 }
             }
@@ -819,7 +828,7 @@ public:
         string inlinedCode;
         size_t addedLines = 0;
         if (!parents.empty()) {
-            // If the args take an xvalue
+            // xvalue cleanup
             if (const ExprWithCleanups *EWC = parents[0].get<ExprWithCleanups>()) {
                 parents = Ctx.getParents(*EWC);
             }
@@ -828,7 +837,19 @@ public:
 
             // int x = foo();
             if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
-                inlinedCode += VD->getType().getAsString(Policy) + " " + (VD->getStorageClass() == SC_Static ? "static " : "") + VD->getNameAsString() + ";\n";
+                VarDecl *NewVD = VarDecl::Create(
+                    Ctx,
+                    (clang::DeclContext*)VD->getDeclContext(),
+                    VD->getBeginLoc(),
+                    VD->getLocation(),
+                    VD->getIdentifier(),
+                    VD->getType(),
+                    Ctx.getTrivialTypeSourceInfo(VD->getType()),
+                    VD->getStorageClass()
+                );
+                llvm::raw_string_ostream os(inlinedCode);
+                NewVD->print(os, Policy);
+                inlinedCode += ";\n";
                 addedLines += 1;
                 targetVar = VD->getNameAsString();
 
@@ -862,22 +883,24 @@ public:
 
             string argText;
             if (auto *DAE = dyn_cast<CXXDefaultArgExpr>(arg)) {
-                string defaultStr;
-                llvm::raw_string_ostream DS(defaultStr);
-                DAE->getExpr()->printPretty(DS, nullptr, Ctx.getPrintingPolicy());
+                llvm::raw_string_ostream DS(argText);
+                DAE->getExpr()->printPretty(DS, nullptr, Policy);
                 DS.flush();
-                argText = defaultStr;
             } else {
                 llvm::raw_string_ostream SS(argText);
-                arg->printPretty(SS, nullptr, Ctx.getPrintingPolicy());
+                arg->printPretty(SS, nullptr, Policy);
                 SS.flush();
             }
 
             if (pvd->getType()->isLValueReferenceType()) {
                 callerParams[i] = argText;
             } else {
-                inlinedCode += pvd->getType().getAsString(Policy) + " " + prefix + pvd->getNameAsString() + " = " + argText + ";\n";
+                // TODO: we won't be handling storage specifiers. Though only register would ever be there
                 callerParams[i] = prefix + pvd->getNameAsString();
+                std::string var_text;
+                llvm::raw_string_ostream OS(var_text);
+                pvd->getType().print(OS, Policy, callerParams[i]);
+                inlinedCode += var_text + " = " + argText + ";\n";
                 addedLines++;
             }
         }
