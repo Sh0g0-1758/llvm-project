@@ -719,8 +719,7 @@ public:
             for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it) {
                 if (VarDecl *VD = dyn_cast<VarDecl>(*it)) {
                     ASTContext &Ctx = VD->getASTContext();
-                    std::string newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
-                    IdentifierInfo &II = Ctx.Idents.get(newName);
+                    IdentifierInfo &II = Ctx.Idents.get(Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID()));
                     VarDecl *NewVD = VarDecl::Create(
                         Ctx,
                         VD->getDeclContext(),
@@ -821,11 +820,12 @@ public:
         Policy.adjustForCPlusPlus();
         Policy.Indentation = 2;
 
-        string targetVar = "";
+        string targetVar{};
         auto parents = Ctx.getParents(*call);
         const Stmt *stmtToReplace = call;
 
-        string inlinedCode;
+        string inlinedCode{};
+        llvm::raw_string_ostream OS(inlinedCode);
         size_t addedLines = 0;
         if (!parents.empty()) {
             // xvalue cleanup
@@ -847,9 +847,8 @@ public:
                     Ctx.getTrivialTypeSourceInfo(VD->getType()),
                     VD->getStorageClass()
                 );
-                llvm::raw_string_ostream os(inlinedCode);
-                NewVD->print(os, Policy);
-                inlinedCode += ";\n";
+                NewVD->print(OS, Policy);
+                OS << ";\n";
                 addedLines += 1;
                 targetVar = VD->getNameAsString();
 
@@ -897,10 +896,8 @@ public:
             } else {
                 // TODO: we won't be handling storage specifiers. Though only register would ever be there
                 callerParams[i] = prefix + pvd->getNameAsString();
-                std::string var_text;
-                llvm::raw_string_ostream OS(var_text);
                 pvd->getType().print(OS, Policy, callerParams[i]);
-                inlinedCode += var_text + " = " + argText + ";\n";
+                OS << " = " << argText << ";\n";
                 addedLines++;
             }
         }
@@ -910,27 +907,32 @@ public:
 
         inlinePrinterHelper Helper(prefix, targetVar, callerParams, Policy);
         callee->getBody()->printPretty(SS, &Helper, Policy);
-        string rawBody = SS.str();
+        SS.flush();
 
-        size_t firstBrace = rawBody.find('{');
-        size_t lastBrace  = rawBody.rfind('}');
+        size_t firstBrace = bodyStr.find('{');
+        size_t lastBrace  = bodyStr.rfind('}');
 
         if (firstBrace != string::npos && lastBrace != string::npos && firstBrace < lastBrace)
-            rawBody = rawBody.substr(firstBrace + 1, lastBrace - firstBrace - 1);
+            bodyStr = bodyStr.substr(firstBrace + 1, lastBrace - firstBrace - 1);
 
-        size_t firstContent = rawBody.find_first_not_of(" \n\r\t");
-        size_t lastContent  = rawBody.find_last_not_of(" \n\r\t");
+        size_t firstContent = bodyStr.find_first_not_of(" \n\r\t");
+        size_t lastContent  = bodyStr.find_last_not_of(" \n\r\t");
 
         if (firstContent != string::npos && lastContent != string::npos)
-            rawBody = rawBody.substr(firstContent, lastContent - firstContent + 1);
+            bodyStr = bodyStr.substr(firstContent, lastContent - firstContent + 1);
 
-        addedLines += std::count(rawBody.begin(), rawBody.end(), '\n');
-        inlinedCode += rawBody;
+        addedLines += std::count(bodyStr.begin(), bodyStr.end(), '\n');
+        OS << bodyStr;
+
+        auto orig_text = clang::Lexer::getSourceText(
+            clang::CharSourceRange::getTokenRange(stmtToReplace->getSourceRange()), SM, LangOpts);
+        size_t net_lines = addedLines - std::count(orig_text.begin(), orig_text.end(), '\n');
 
         for(size_t i = currIndx + 1; i < (*callSite).size(); i++)
             if(((*callSite)[i].second == (*callSite)[currIndx].second) && 
-                ((*callSite)[i].first > (*callSite)[currIndx].first)) (*callSite)[i].first += addedLines;
+                ((*callSite)[i].first > (*callSite)[currIndx].first)) (*callSite)[i].first += net_lines;
 
+        OS.flush();
         rewriter->ReplaceText(stmtToReplace->getSourceRange(), inlinedCode);
 
         return true;
