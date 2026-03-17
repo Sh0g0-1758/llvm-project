@@ -91,7 +91,7 @@ public:
             //     array_suffix += "[" + std::string(size_str) + "]";
             //     qt = array_type->getElementType();
             // }
-
+            
             // // pointer type
             // if (const auto* ptr_type = qt->getAs<clang::PointerType>()) {
             //     if (const auto* func_type = ptr_type->getPointeeType()->getAs<clang::FunctionProtoType>()) {
@@ -702,6 +702,72 @@ class inlinePrinterHelper : public PrinterHelper {
 public:
     inlinePrinterHelper(string p, string t, std::map<int, string> c, PrintingPolicy pl) : Prefix(p), targetVar(t), callerParams(c), Policy(pl) {}
 
+    struct VLARenamer : clang::RecursiveASTVisitor<VLARenamer> {
+        const std::string &Prefix;
+        clang::ASTContext &Ctx;
+        std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &renamed;
+        std::map<int, string> &callerParams;
+
+        VLARenamer(const std::string &P, clang::ASTContext &C,
+                std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &R, std::map<int, string> &PR)
+            : Prefix(P), Ctx(C), renamed(R), callerParams(PR) {}
+
+        bool VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
+            if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
+                std::string newName{};
+                if (clang::ParmVarDecl *PVD = dyn_cast<clang::ParmVarDecl>(VD)) {
+                    unsigned idx = PVD->getFunctionScopeIndex();
+                    newName = callerParams[idx];
+                } else {
+                    std::string newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
+                }
+                clang::IdentifierInfo *oldII = VD->getIdentifier();
+                renamed.push_back({VD, oldII});
+                VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(newName)));
+            }
+            return true;
+        }
+    };
+
+    void renameVLASizeVars(clang::QualType T, const std::string &Prefix, clang::ASTContext &Ctx,
+                        std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &renamed) {
+        const clang::Type *TP = T.getCanonicalType().getTypePtr();
+
+        if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
+            if (clang::Expr *size = VAT->getSizeExpr()) {
+                VLARenamer r(Prefix, Ctx, renamed, callerParams);
+                r.TraverseStmt(size);
+            }
+            renameVLASizeVars(VAT->getElementType(), Prefix, Ctx, renamed);
+        } else if (const auto *DSAT = llvm::dyn_cast<clang::DependentSizedArrayType>(TP)) {
+            if (clang::Expr *size = DSAT->getSizeExpr()) {
+                VLARenamer r(Prefix, Ctx, renamed, callerParams);
+                r.TraverseStmt(size);
+            }
+            renameVLASizeVars(DSAT->getElementType(), Prefix, Ctx, renamed);
+        } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
+            renameVLASizeVars(PT->getPointeeType(), Prefix, Ctx, renamed);
+        } else if (const auto *RT = llvm::dyn_cast<clang::ReferenceType>(TP)) {
+            renameVLASizeVars(RT->getPointeeType(), Prefix, Ctx, renamed);
+        } else if (const auto *AT = llvm::dyn_cast<clang::ArrayType>(TP)) {
+            renameVLASizeVars(AT->getElementType(), Prefix, Ctx, renamed);
+        } else if (const auto *FPT = llvm::dyn_cast<clang::FunctionProtoType>(TP)) {
+            renameVLASizeVars(FPT->getReturnType(), Prefix, Ctx, renamed);
+            for (auto paramType : FPT->param_types())
+                renameVLASizeVars(paramType, Prefix, Ctx, renamed);
+        } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
+            renameVLASizeVars(FT->getReturnType(), Prefix, Ctx, renamed);
+        } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
+            renameVLASizeVars(FT->getReturnType(), Prefix, Ctx, renamed);
+        } else if (const auto *MPT = llvm::dyn_cast<clang::MemberPointerType>(TP)) {
+            renameVLASizeVars(MPT->getPointeeType(), Prefix, Ctx, renamed);
+        } else if (const auto *VT = llvm::dyn_cast<clang::VectorType>(TP)) {
+            renameVLASizeVars(VT->getElementType(), Prefix, Ctx, renamed);
+        } else if (const auto *ParenT = llvm::dyn_cast<clang::ParenType>(TP)) {
+            renameVLASizeVars(ParenT->getInnerType(), Prefix, Ctx, renamed);
+        }
+    }
+
     virtual bool handledStmt(Stmt *S, llvm::raw_ostream &OS) override {
         if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
             if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
@@ -719,23 +785,49 @@ public:
             for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it) {
                 if (VarDecl *VD = dyn_cast<VarDecl>(*it)) {
                     ASTContext &Ctx = VD->getASTContext();
-                    IdentifierInfo &II = Ctx.Idents.get(Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID()));
-                    VarDecl *NewVD = VarDecl::Create(
-                        Ctx,
-                        VD->getDeclContext(),
-                        VD->getBeginLoc(),
-                        VD->getLocation(),
-                        &II,
-                        VD->getType(),
-                        Ctx.getTrivialTypeSourceInfo(VD->getType()),
-                        VD->getStorageClass()
-                    );
+                    std::string new_name = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
 
-                    if (VD->hasInit()) {
-                        NewVD->setInit(VD->getInit());
+                    IdentifierInfo *oldII = VD->getIdentifier();
+                    VD->setDeclName(DeclarationName(&Ctx.Idents.get(new_name)));
+
+                    std::vector<std::pair<VarDecl*, IdentifierInfo*>> sizeRenames;
+                    renameVLASizeVars(VD->getType(), Prefix, Ctx, sizeRenames);
+
+                    Expr *init = VD->getInit();
+                    VD->setInit(nullptr);
+
+                    VD->print(OS, Policy);
+
+                    VD->setInit(init);
+                    VD->setDeclName(DeclarationName(oldII));
+                    for (auto &[vd, ii] : sizeRenames)
+                        vd->setDeclName(DeclarationName(ii));
+
+                    if (init) {
+                        switch (VD->getInitStyle()) {
+                            case VarDecl::CInit:
+                                OS << " = ";
+                                init->printPretty(OS, this, Policy);
+                                OS << ";\n";
+                                break;
+                            case VarDecl::CallInit:
+                                OS << "(";
+                                init->printPretty(OS, this, Policy);
+                                OS << ");\n";
+                                break;
+                            case VarDecl::ListInit:
+                                init->printPretty(OS, this, Policy);
+                                OS << ";\n";
+                                break;
+                            case VarDecl::ParenListInit:
+                                OS  << "(";
+                                init->printPretty(OS, this, Policy);
+                                OS << ");\n";
+                                break;
+                        }
+                    } else {
+                        OS << ";\n";
                     }
-                    NewVD->print(OS, Policy);
-                    OS << ";\n";
                 }
             }
             return true; 
@@ -836,18 +928,12 @@ public:
             auto &ParentNode = parents[0];
 
             // int x = foo();
+            // TODO: This might need VLA size specifiers as well
             if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
-                VarDecl *NewVD = VarDecl::Create(
-                    Ctx,
-                    (clang::DeclContext*)VD->getDeclContext(),
-                    VD->getBeginLoc(),
-                    VD->getLocation(),
-                    VD->getIdentifier(),
-                    VD->getType(),
-                    Ctx.getTrivialTypeSourceInfo(VD->getType()),
-                    VD->getStorageClass()
-                );
-                NewVD->print(OS, Policy);
+                Expr *init = VD->getInit();
+                VD->setInit(nullptr);
+                VD->print(OS, Policy);
+                VD->setInit(init);
                 OS << ";\n";
                 addedLines += 1;
                 targetVar = VD->getNameAsString();
@@ -1074,6 +1160,7 @@ int main(int argc, const char **argv) {
         
         // preprocess step to convert comma initializers to stand-alone statements
         {
+            cl::PrintOptionValues();
             auto ExpectedParser = CommonOptionsParser::create(_argc, _argv, cl::getGeneralCategory(), cl::ZeroOrMore, "optimization passes on the source code without tackling IR");
             if (!ExpectedParser) {
                 llvm::errs() << ExpectedParser.takeError();
@@ -1174,3 +1261,12 @@ int main(int argc, const char **argv) {
         return 0;
     }
 }
+
+/*
+export UV_CONCURRENT_DOWNLOADS=4
+export UV_CONCURRENT_INSTALLS=4
+export UV_INDEX_PRIVATE_REGISTRY_USERNAME=aws
+export UV_INDEX_PRIVATE_REGISTRY_PASSWORD=$(aws codeartifact get-authorization-token --domain reveng --domain-owner 127214196211 \
+  --query authorizationToken --output text --profile compiler-engineer-codeartifact --region eu-west-2)
+uv pip install -e . --no-cache --reinstall
+*/
