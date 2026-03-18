@@ -719,7 +719,8 @@ public:
                     unsigned idx = PVD->getFunctionScopeIndex();
                     newName = callerParams[idx];
                 } else {
-                    std::string newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
+                    if(!VD->isLocalVarDecl()) newName = VD->getNameAsString();
+                    else newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
                 }
                 clang::IdentifierInfo *oldII = VD->getIdentifier();
                 renamed.push_back({VD, oldII});
@@ -775,7 +776,11 @@ public:
                     unsigned idx = PVD->getFunctionScopeIndex();
                     OS << callerParams[idx];
                 } else {
-                    OS << Prefix << VD->getNameAsString() << "_" << VD->getID();
+                    if (!VD->isLocalVarDecl()) {
+                        OS << VD->getNameAsString();
+                    } else {
+                        OS << Prefix << VD->getNameAsString() << "_" << VD->getID();
+                    }
                 }
                 return true;
             }
@@ -811,9 +816,13 @@ public:
                                 OS << ";\n";
                                 break;
                             case VarDecl::CallInit:
-                                OS << "(";
-                                init->printPretty(OS, this, Policy);
-                                OS << ");\n";
+                                if (auto *CCE = dyn_cast<CXXConstructExpr>(init); CCE && CCE->getNumArgs() == 0) {
+                                    OS << ";\n";
+                                } else {
+                                    OS << "(";
+                                    init->printPretty(OS, this, Policy);
+                                    OS << ");\n";
+                                }
                                 break;
                             case VarDecl::ListInit:
                                 init->printPretty(OS, this, Policy);
@@ -929,7 +938,7 @@ public:
 
             // int x = foo();
             // TODO: This might need VLA size specifiers as well
-            if (const VarDecl *VD = ParentNode.get<VarDecl>()) {
+            if (VarDecl *VD = const_cast<VarDecl*>(ParentNode.get<VarDecl>())) {
                 Expr *init = VD->getInit();
                 VD->setInit(nullptr);
                 VD->print(OS, Policy);
@@ -959,7 +968,7 @@ public:
         string calleeName = callee->getNameAsString();
         // remove the operator bit (+/-/*) from the callee name
         if(dyn_cast<CXXOperatorCallExpr>(call)) calleeName = calleeName.substr(0, calleeName.size() - 2);
-        string prefix = calleeName + "_" + to_string(callee->getID()) + "_" + to_string(ploc.getLine()) + "_";
+        string prefix = calleeName + "_" + to_string(callee->getID()) + "_" + to_string(currIndx) + "_" + to_string(ploc.getLine()) + "_" + to_string(ploc.getColumn()) + "_";
 
         std::map<int, string> callerParams;
         for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -981,7 +990,10 @@ public:
                 callerParams[i] = argText;
             } else {
                 // TODO: we won't be handling storage specifiers. Though only register would ever be there
-                callerParams[i] = prefix + pvd->getNameAsString();
+                auto argLoc = arg->getExprLoc();
+                callerParams[i] = prefix + std::to_string(SM.getSpellingLineNumber(argLoc)) + "_" 
+                                  + std::to_string(SM.getSpellingColumnNumber(argLoc)) + "_" 
+                                  + pvd->getNameAsString();
                 pvd->getType().print(OS, Policy, callerParams[i]);
                 OS << " = " << argText << ";\n";
                 addedLines++;
