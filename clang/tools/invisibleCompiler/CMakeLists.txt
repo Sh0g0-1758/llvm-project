@@ -4,7 +4,9 @@ set(LLVM_LINK_COMPONENTS
   )
 
 add_clang_tool(invisible
-  Invisible.cpp
+  invisible.cpp
+  helper.cpp
+  main.cpp
   )
 
 clang_target_link_libraries(invisible
