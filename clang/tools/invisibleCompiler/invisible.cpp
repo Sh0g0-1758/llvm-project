@@ -83,7 +83,11 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         unsigned spelling_line = src_mgr.getSpellingLineNumber(loc);
         unsigned spelling_col = src_mgr.getSpellingColumnNumber(loc);
 
-        ret_var = callee->getNameAsString() + "_" + std::to_string(callee->getID()) + "_" +
+        std::string callee_name = callee->getNameAsString();
+        // Strip the operator suffix (+/-/*) from operator overloads
+        if (llvm::dyn_cast<clang::CXXOperatorCallExpr>(call))
+            callee_name = callee_name.substr(0, callee_name.size() - 2);
+        ret_var = callee_name + "_" + std::to_string(callee->getID()) + "_" +
                           std::to_string(spelling_line) + "_" + std::to_string(spelling_col) + "_Ret";
         retTy.print(OS, policy, ret_var);
         OS << " = ";
@@ -576,8 +580,14 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         llvm::isa<clang::CompoundLiteralExpr>(inner))
         return true;
 
+    // ── DEBUG ────────────────────────────────────────────────────────────────
+    llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
+    expr->dump();                                          // full AST subtree
+    // ─────────────────────────────────────────────────────────────────────────
+
     clang::Expr::EvalResult result;
-    if (!expr->EvaluateAsRValue(result, m_ctx))
+    clang::Expr::EvalResult inner_result;
+    if (expr->isValueDependent() || !expr->EvaluateAsRValue(result, m_ctx) || inner->isValueDependent() || !inner->EvaluateAsRValue(inner_result, m_ctx))
         return true;
 
     clang::APValue value = result.Val;
@@ -586,6 +596,11 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     llvm::raw_string_ostream OS(replacement);
     value.printPretty(OS, m_ctx, expr->getType());
     OS.flush();
+
+    llvm::errs() << "=== [constantFold] replacement string: ["
+                 << replacement << "]\n\n";
+
+    if (expr->getSourceRange().isInvalid()) return true;
 
     m_rewriter.ReplaceText(
         clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
@@ -711,3 +726,12 @@ InlineResult inline_functions(const std::string& source, const std::string& file
 }
 
 }  // namespace invisible
+
+/*
+export UV_CONCURRENT_DOWNLOADS=4
+ export UV_CONCURRENT_INSTALLS=4
+ export UV_INDEX_PRIVATE_REGISTRY_USERNAME=aws
+ export UV_INDEX_PRIVATE_REGISTRY_PASSWORD=$(aws codeartifact get-authorization-token --domain reveng --domain-owner 127214196211 --query authorizationToken --output text --profile compiler-engineer-codeartifact --region eu-west-2)
+ uv pip install -e . --no-cache --reinstall
+
+*/

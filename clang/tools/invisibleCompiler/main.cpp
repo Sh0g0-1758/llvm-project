@@ -26,7 +26,7 @@ int main(int argc, char* argv[]) {
         source += std::move(line);
         source += "\n";
     }
-
+    
     std::vector<std::string> args;
     for(int i = 3; i < argc; i++) args.emplace_back(argv[i]);
     if(pass == "preprocess") {
