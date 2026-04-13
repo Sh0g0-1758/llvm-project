@@ -630,10 +630,11 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         llvm::isa<clang::CompoundLiteralExpr>(inner))
         return true;
 
-    // ── DEBUG ────────────────────────────────────────────────────────────────
-    llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
-    expr->dump();                                          // full AST subtree
-    // ─────────────────────────────────────────────────────────────────────────
+    // Don't fold enums into their underlying type. Note that we don't care if
+    // the underlying type is enum as we should use enum vals to do arith ops
+    // if the final type of the expr is an arith type
+    if (expr->getType()->isEnumeralType())
+        return true;
 
     clang::Expr::EvalResult result;
     clang::Expr::EvalResult inner_result;
@@ -647,10 +648,12 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     value.printPretty(OS, m_ctx, expr->getType());
     OS.flush();
 
-    llvm::errs() << "=== [constantFold] replacement string: ["
-                 << replacement << "]\n\n";
-
     if (expr->getSourceRange().isInvalid()) return true;
+
+    // ── DEBUG ────────────────────────────────────────────────────────────────
+    llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
+    expr->dump();                                          // full AST subtree
+    // ─────────────────────────────────────────────────────────────────────────
 
     m_rewriter.ReplaceText(
         clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
