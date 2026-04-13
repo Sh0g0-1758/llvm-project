@@ -640,7 +640,8 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         llvm::isa<clang::FixedPointLiteral>(inner)      ||
         llvm::isa<clang::UserDefinedLiteral>(inner)     ||
         llvm::isa<clang::GNUNullExpr>(inner)            ||
-        llvm::isa<clang::CompoundLiteralExpr>(inner))
+        llvm::isa<clang::CompoundLiteralExpr>(inner)    ||
+        llvm::isa<clang::InitListExpr>(inner))         
         return true;
 
     clang::QualType exprTy = expr->getType();
