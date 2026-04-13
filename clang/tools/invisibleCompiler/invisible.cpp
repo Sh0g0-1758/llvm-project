@@ -656,12 +656,35 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (exprTy->isEnumeralType())
         return true;
 
+    // The Pass will loop indefinitely if it sees a negation literal followed by a
+    // numeric expression. This is because C grammar parses it as a unop. It will then
+    // emit it as a unop only. We match on this and exit early if that is the case. 
+    // We don't need to worry about paranthesis and implicit casts as they will get removed
+    // by themselves as the pass goes to deeper expressions.
+    if (auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr->IgnoreImpCasts()))
+        if (unary->getOpcode() == clang::UO_Minus)
+            if (llvm::isa<clang::IntegerLiteral>(unary->getSubExpr()) ||
+                llvm::isa<clang::FloatingLiteral>(unary->getSubExpr()))
+                return true;
+
     clang::Expr::EvalResult result;
     clang::Expr::EvalResult inner_result;
     if (expr->isValueDependent() || inner->isValueDependent() || !expr->EvaluateAsRValue(result, m_ctx) || !inner->EvaluateAsRValue(inner_result, m_ctx))
         return true;
 
     clang::APValue value = result.Val;
+    // The resultant value can be a complex type such as a struct or an array
+    // if we are indexing into an array that is declared const static. While the compiler
+    // can determine at compile time the values that would need to be accessed via these const
+    // globals, the programmer can very well ask for their address. In that case, constant folding
+    // would lead to an error. Hence we conservatively stop such ill-transformations. We also add a
+    // check against lvalues because clang under the hood represents a const static array (arr)
+    // as &arr[0]. Now that is fine if only while printing it wrapped it in paranthesis. It does not 
+    // and that is erroneous. Consider arr[1]. This gets transformed to &arr[0][1]. Now arr is a 1D array
+    // and we are trying to derefence it twice since according to C type inference rules, [] has more
+    // precedence than &. 
+    if (value.isStruct() || value.isArray() || value.isLValue())
+        return true;
 
     std::string replacement{};
     llvm::raw_string_ostream OS(replacement);
