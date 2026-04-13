@@ -109,8 +109,12 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     llvm::outs() << ret_var << " = " << clean_call << "\n";
 
-    m_rewriter.InsertTextBefore(findInsertionLoc(call), clean_call);
-    m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
+    if(findInsertionLoc(call) == call->getSourceRange().getBegin()) {
+        m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
+    } else {
+        m_rewriter.InsertTextBefore(findInsertionLoc(call), clean_call);
+        m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
+    }
     return true;
 }
 
