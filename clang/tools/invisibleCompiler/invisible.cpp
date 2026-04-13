@@ -616,6 +616,19 @@ constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewr
 bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if(m_did_fold) return true;
 
+    // ── DEBUG ────────────────────────────────────────────────────────────────
+    llvm::errs() << "\n=== [constantFold] Checking AST of expression to fold ===\n";
+    auto& src_mgr = m_ctx.getSourceManager();
+    auto& lang_opts = m_ctx.getLangOpts();
+
+    auto expr_text = clang::Lexer::getSourceText(
+        clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
+        src_mgr, lang_opts
+    ).str();
+
+    llvm::errs() << "Source text: " << expr_text << "\n";
+    // ─────────────────────────────────────────────────────────────────────────
+
     const clang::Expr* inner = expr->IgnoreImpCasts();
     if (llvm::isa<clang::IntegerLiteral>(inner)         ||
         llvm::isa<clang::FloatingLiteral>(inner)        ||
@@ -630,15 +643,21 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         llvm::isa<clang::CompoundLiteralExpr>(inner))
         return true;
 
+    clang::QualType exprTy = expr->getType();
+
+    // Guard against null/invalid types (e.g. uninstantiated templates)
+    if (exprTy.isNull() || exprTy->isDependentType() || exprTy->isUndeducedType())
+        return true;
+
     // Don't fold enums into their underlying type. Note that we don't care if
     // the underlying type is enum as we should use enum vals to do arith ops
     // if the final type of the expr is an arith type
-    if (expr->getType()->isEnumeralType())
+    if (exprTy->isEnumeralType())
         return true;
 
     clang::Expr::EvalResult result;
     clang::Expr::EvalResult inner_result;
-    if (expr->isValueDependent() || !expr->EvaluateAsRValue(result, m_ctx) || inner->isValueDependent() || !inner->EvaluateAsRValue(inner_result, m_ctx))
+    if (expr->isValueDependent() || inner->isValueDependent() || !expr->EvaluateAsRValue(result, m_ctx) || !inner->EvaluateAsRValue(inner_result, m_ctx))
         return true;
 
     clang::APValue value = result.Val;
