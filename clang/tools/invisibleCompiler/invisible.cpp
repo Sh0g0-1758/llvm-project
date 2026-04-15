@@ -434,20 +434,21 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (!callee || !callee->hasBody())
         return true;
 
-    // TODO: Handle class methods — they may use private members
-    // that need special treatment.
-    if (llvm::isa<clang::CXXMethodDecl>(callee))
-        return true;
-
     if (m_callee != callee->getNameAsString())
         return true;
 
-    auto& ctx = callee->getASTContext();
-    auto& src_mgr = ctx.getSourceManager();
+    auto& src_mgr = m_ctx.getSourceManager();
     auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
     auto ploc = src_mgr.getPresumedLoc(loc);
 
     if (ploc.getLine() != m_call_sites[m_current_index].first)
+        return true;
+
+    m_matched = true;
+
+    // TODO: Handle class methods — they may use private members
+    // that need special treatment.
+    if (llvm::isa<clang::CXXMethodDecl>(callee))
         return true;
 
     auto& lang_opts = m_ctx.getLangOpts();
@@ -456,7 +457,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     Policy.Indentation = 2;
 
     std::string target_var{};
-    auto parents = ctx.getParents(*call);
+    auto parents = m_ctx.getParents(*call);
     const clang::Stmt* stmt_to_replace = call;
 
     std::string inlined_code{};
@@ -466,7 +467,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (!parents.empty()) {
         // xvalue cleanup
         if (const auto* expr_cleanup = parents[0].get<clang::ExprWithCleanups>())
-            parents = ctx.getParents(*expr_cleanup);
+            parents = m_ctx.getParents(*expr_cleanup);
 
         const auto& parent_node = parents[0];
 
@@ -494,7 +495,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
             added_lines += 1;
             target_var = var_decl->getNameAsString();
 
-            auto grandparents = ctx.getParents(*var_decl);
+            auto grandparents = m_ctx.getParents(*var_decl);
             if (!grandparents.empty()) {
                 if (const auto* grandparent_decl_stmt = grandparents[0].get<clang::DeclStmt>())
                     stmt_to_replace = grandparent_decl_stmt;
@@ -555,7 +556,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
 
-    InlinePrinterHelper helper(ctx, prefix, target_var, caller_params, Policy);
+    InlinePrinterHelper helper(m_ctx, prefix, target_var, caller_params, Policy);
     callee->getBody()->printPretty(stream, &helper, Policy);
     stream.flush();
 
@@ -573,8 +574,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     added_lines += std::count(raw_body.begin(), raw_body.end(), '\n');
     OS << raw_body;
-
-    m_matched = true;
 
     // ReplaceText swaps the original statement for inlined_code.
     // added_lines counts newlines in the replacement text, but the

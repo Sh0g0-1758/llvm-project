@@ -1,5 +1,7 @@
 #include "invisible.h"
 #include <fstream>
+#include <iostream>
+#include <sstream>
 
 // static std::vector<invisible::InlineEntry> marshal_entries(const py::list& py_entries) {
 //     std::vector<invisible::InlineEntry> entries;
@@ -15,6 +17,29 @@
 //     }
 //     return entries;
 // }
+
+static std::vector<invisible::InlineEntry> marshal_entries(const std::string& filepath) {
+    std::vector<invisible::InlineEntry> entries;
+    std::ifstream infile(filepath);
+    if (!infile.is_open()) {
+        std::cout << "Failed to open file: " << filepath << std::endl;
+    }
+
+    std::string line;
+    while (std::getline(infile, line)) {
+        if (line.empty()) continue;
+
+        std::istringstream iss(line);
+        invisible::InlineEntry entry;
+        std::string line_num;
+        iss >> entry.caller >> entry.callee >> line_num >> entry.file;
+
+        entry.line = std::stoull(line_num);
+        entries.push_back(std::move(entry));
+    }
+
+    return entries;
+}
 
 int main(int argc, char* argv[]) {
     const std::string pass(argv[1]);
@@ -33,6 +58,19 @@ int main(int argc, char* argv[]) {
         llvm::outs() << invisible::preprocess(source, output_file, args) << "\n";
     } else if(pass == "constant-fold") {
         llvm::outs() << invisible::constant_fold(source, output_file, args) << "\n";
+    } else if(pass == "combine") {
+        std::string half = invisible::constant_fold(source, output_file, args);
+        std::string full = invisible::preprocess(half, output_file, args);
+        std::ofstream out("output.cpp");
+        out << full;
+        out.close();
+    } else if(pass == "inline") {
+        std::string oracle_path("oracle_list.txt");
+        std::vector<invisible::InlineEntry> oracle_entries =  marshal_entries(oracle_path);
+        std::string result = invisible::inline_functions(source, output_file, oracle_entries, args).source;
+        std::ofstream out("inlined.cpp");
+        out << result;
+        out.close();
     }
 }
 
