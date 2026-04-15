@@ -436,10 +436,44 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         return true;
 
     clang::FunctionDecl* callee = call->getDirectCallee();
-    if (!callee || !callee->hasBody())
-        return true;
 
-    if (m_callee != callee->getNameAsString())
+    std::string callee_name;
+    if (callee) {
+        callee_name = callee->getNameAsString();
+    } else {
+        auto* callee_expr = call->getCallee()->IgnoreParenImpCasts();
+        if (auto* member = llvm::dyn_cast<clang::MemberExpr>(callee_expr))
+            // obj.foo() or obj->foo() — resolved member call
+            callee_name = member->getMemberNameInfo().getAsString();
+
+        else if (auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(callee_expr))
+            // foo() — resolved free function
+            callee_name = dre->getNameInfo().getAsString();
+
+        else if (auto* unresolved = llvm::dyn_cast<clang::UnresolvedLookupExpr>(callee_expr))
+            // foo<N>() — unresolved free function in uninstantiated template
+            callee_name = unresolved->getName().getAsString();
+
+        else if (auto* unresolved_member = llvm::dyn_cast<clang::UnresolvedMemberExpr>(callee_expr))
+            // obj.foo<N>() — unresolved member call in uninstantiated template
+            callee_name = unresolved_member->getMemberName().getAsString();
+
+        else if (auto* dep_member = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(callee_expr))
+            // obj->foo() where obj's type is dependent
+            callee_name = dep_member->getMember().getAsString();
+
+        else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
+            // T::foo() where T is a dependent type
+            callee_name = dep_ref->getDeclName().getAsString();
+
+        else {
+            llvm::outs() << "Unhandled callee type: " 
+                        << callee_expr->getStmtClassName() << "\n";
+            return true;
+        }
+    }
+
+    if (m_callee != callee_name)
         return true;
 
     auto& src_mgr = m_ctx.getSourceManager();
@@ -451,6 +485,12 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     m_matched = true;
 
+    // the callee might be a templated function which in turn
+    // is being called by a template function. Thus at the callsite
+    // the body is not available. The callee can also be a virtual function
+    if (!callee || !callee->hasBody())
+        return true;
+
     // TODO: Handle class methods — they may use private members
     // that need special treatment.
     if (llvm::isa<clang::CXXMethodDecl>(callee))
@@ -458,7 +498,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     auto& lang_opts = m_ctx.getLangOpts();
     clang::PrintingPolicy Policy = m_ctx.getPrintingPolicy();
-    Policy.adjustForCPlusPlus();
+    if (lang_opts.CPlusPlus)
+        Policy.adjustForCPlusPlus();
     Policy.Indentation = 2;
 
     std::string target_var{};
@@ -521,7 +562,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         }
     }
 
-    std::string callee_name = callee->getNameAsString();
     // Strip the operator suffix (+/-/*) from operator overloads
     if (llvm::dyn_cast<clang::CXXOperatorCallExpr>(call))
         callee_name = callee_name.substr(0, callee_name.size() - 2);
