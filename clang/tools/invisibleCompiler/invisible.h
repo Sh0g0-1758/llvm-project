@@ -43,14 +43,15 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
 /// time.
 class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanupVisitor> {
   public:
-    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool& did_cleanup);
+    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
 
     bool VisitCallExpr(clang::CallExpr* call);
+    bool did_cleanup();
 
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    bool& m_did_cleanup;
+    clang::SourceLocation m_last_update_loc;
 
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
@@ -130,10 +131,13 @@ class constantFoldVisitor : public clang::RecursiveASTVisitor<constantFoldVisito
 private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    bool& m_did_fold;
+    clang::SourceLocation m_last_update_loc_begin;
+    clang::SourceLocation m_last_update_loc_end;
+
 public:
-    constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool& did_fold);
+    constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitExpr(clang::Expr* expr);
+    bool did_fold();
 };
 
 // ─── Free functions ────────────────────────────────────────────────

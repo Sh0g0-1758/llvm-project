@@ -50,15 +50,16 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
 
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
-FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool& did_cleanup)
-    : m_ctx(ctx), m_rewriter(rewriter), m_did_cleanup(did_cleanup) {
+FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
-    m_did_cleanup = false;
+}
+
+bool FuncCallCleanupVisitor::did_cleanup() {
+    return m_last_update_loc.getRawEncoding() != 0;
 }
 
 bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
-    if(m_did_cleanup) return true;
-
     clang::FunctionDecl* callee = call->getDirectCallee();
     // There can be cases where the template has not been fully resolved and thus the 
     // expressions which uses operators to zero in on the result are represented as a 
@@ -67,7 +68,11 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     if(!callee) return true;
     if (isTopLevelCall(call)) return true;
 
-    m_did_cleanup = true;
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
+    if(nearest_compound_stmt == m_last_update_loc)
+        return true;
+    else
+        m_last_update_loc = nearest_compound_stmt;
 
     auto& src_mgr = m_ctx.getSourceManager();
     auto& lang_opts = m_ctx.getLangOpts();
@@ -75,7 +80,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     auto call_text =
         clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(call->getSourceRange()), src_mgr, lang_opts)
             .str();
-    
+
     std::string ret_var{};
     std::string clean_call{};
     llvm::raw_string_ostream OS(clean_call);
@@ -109,10 +114,10 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     llvm::outs() << ret_var << " = " << clean_call << "\n";
 
-    if(findInsertionLoc(call) == call->getSourceRange().getBegin()) {
+    if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
         m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
     } else {
-        m_rewriter.InsertTextBefore(findInsertionLoc(call), clean_call);
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
     return true;
@@ -607,13 +612,17 @@ bool InlineVisitor::matched() const { return m_matched; }
 
 // ─── ConstantFoldVisitor ──────────────────────────────────────────────
 
-constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter, bool& did_fold) : m_ctx(context), m_rewriter(rewriter), m_did_fold(did_fold) {
+constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter) {
     rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
-    m_did_fold = false;
+}
+
+bool constantFoldVisitor::did_fold() {
+    return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
 bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
-    if(m_did_fold) return true;
+    if (expr->getSourceRange().isInvalid()) return true;
+    if ((expr->getSourceRange().getBegin() >= m_last_update_loc_begin) && (expr->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
 
     // ── DEBUG ────────────────────────────────────────────────────────────────
     llvm::errs() << "\n=== [constantFold] Checking AST of expression to fold ===\n";
@@ -690,18 +699,17 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     value.printPretty(OS, m_ctx, expr->getType());
     OS.flush();
 
-    if (expr->getSourceRange().isInvalid()) return true;
-
     // ── DEBUG ────────────────────────────────────────────────────────────────
     llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
     expr->dump();                                          // full AST subtree
     // ─────────────────────────────────────────────────────────────────────────
 
+    m_last_update_loc_begin = expr->getSourceRange().getBegin();
+    m_last_update_loc_end = expr->getSourceRange().getEnd();
     m_rewriter.ReplaceText(
         clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
         replacement);
 
-    m_did_fold = true;
     return true;
 }
 
@@ -727,8 +735,9 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         clang::Rewriter rewriter;
         result = runInMemory(result, filename, args, [&rewriter, &did_cleanup](clang::ASTContext& ctx) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            FuncCallCleanupVisitor visitor(ctx, rewriter, did_cleanup);
+            FuncCallCleanupVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_cleanup = visitor.did_cleanup();
         }, rewriter);
     }
 
@@ -763,8 +772,9 @@ std::string constant_fold(const std::string& source, const std::string& filename
         clang::Rewriter rewriter;
         result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            constantFoldVisitor visitor(ctx, rewriter, did_fold);
+            constantFoldVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_fold = visitor.did_fold();
         }, rewriter);
     }
 
