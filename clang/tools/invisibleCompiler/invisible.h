@@ -110,6 +110,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
 
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitCallExpr(clang::CallExpr* call);
+    bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
 
     /// Whether this visitor successfully inlined a call site.
     bool matched() const;

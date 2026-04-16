@@ -431,6 +431,30 @@ bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
+bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
+    if (m_caller != m_current_func)
+        return true;
+
+    clang::CXXConstructorDecl* ctor = expr->getConstructor();
+    if (!ctor)
+        return true;
+
+    std::string callee_name = ctor->getParent()->getNameAsString();
+    if (m_callee != callee_name)
+        return true;
+
+    auto& src_mgr = m_ctx.getSourceManager();
+    auto ploc = src_mgr.getPresumedLoc(src_mgr.getSpellingLoc(expr->getExprLoc()));
+
+    if (ploc.getLine() != m_call_sites[m_current_index].first)
+        return true;
+
+    // Mark matched so the caller knows this site was found,
+    // but skip inlining for all special member functions.
+    m_matched = true;
+    return true;
+}
+
 bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (m_caller != m_current_func)
         return true;
@@ -518,6 +542,9 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         const auto& parent_node = parents[0];
 
         // int x = foo();
+        // we remove constness from the type as we first declare the variable. 
+        // This is necessary because the callee can have multiple branches with return
+        // statements
         if (const auto* var_decl = parent_node.get<clang::VarDecl>()) {
             clang::VarDecl *NewVD = clang::VarDecl::Create(
                 m_ctx,
@@ -526,7 +553,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
                 var_decl->getLocation(),
                 var_decl->getIdentifier(),
                 var_decl->getType(),
-                m_ctx.getTrivialTypeSourceInfo(var_decl->getType()),
+                m_ctx.getTrivialTypeSourceInfo(var_decl->getType().getUnqualifiedType()),
                 var_decl->getStorageClass()
             );
             NewVD->setConstexpr(var_decl->isConstexpr());
@@ -585,14 +612,16 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
             stream.flush();
         }
 
-        if (param_decl->getType()->isLValueReferenceType()) {
+        // if we are inlining a function that takes in variable number of arguments, we let it pass by reference
+        // in most real world scenarios, we are mostly just going to read values from it. 
+        if (param_decl->getType()->isLValueReferenceType() || param_decl->getOriginalType().getAsString() == "va_list") {
             caller_params[i] = arg_text;
         } else {
             auto argLoc = arg->getExprLoc();
             caller_params[i] = prefix + std::to_string(src_mgr.getSpellingLineNumber(argLoc)) + "_" 
                                   + std::to_string(src_mgr.getSpellingColumnNumber(argLoc)) + "_" 
                                   + param_decl->getNameAsString();
-            param_decl->getType().print(OS, Policy, caller_params[i]);
+            param_decl->getOriginalType().print(OS, Policy, caller_params[i]);
             OS << " = " << arg_text << ";\n";
             added_lines++;
         }
@@ -853,6 +882,13 @@ InlineResult inline_functions(const std::string& source, const std::string& file
     std::vector<bool> succeeded(oracle.size(), false);
 
     for (size_t i = 0; i < oracle.size(); i++) {
+        // opt records does contain information to inline destructors. 
+        // They however do not show up in the ast and thus can't be matched 
+        // using libtooling. Thus we instead manually identify a destructor
+        if((oracle[i].second)[0] == '~') {
+            succeeded[i] = true;
+            continue;
+        }
         clang::Rewriter rewriter;
         result = runInMemory(
             result, filename, args,
