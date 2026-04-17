@@ -20,6 +20,26 @@ CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewr
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
 }
 
+clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(*decl_stmt);
+    const clang::Stmt* last_stmt = decl_stmt;
+
+    while (true) {
+        auto parents = m_ctx.getParents(current);
+        if (parents.empty())
+            return {};
+
+        const auto& parent = parents[0];
+        if (parent.get<clang::CompoundStmt>())
+            return last_stmt->getBeginLoc();
+
+        if (const auto* stmt = parent.get<clang::Stmt>())
+            last_stmt = stmt;
+
+        current = parent;
+    }
+}
+
 bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     if (decl_stmt->isSingleDecl())
         return true;
@@ -44,7 +64,13 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     }
 
     OS.flush();
-    m_rewriter.ReplaceText(clang::CharSourceRange::getTokenRange(decl_stmt->getSourceRange()), replacement);
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(decl_stmt);
+    if(nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, replacement);
+        m_rewriter.ReplaceText(clang::CharSourceRange::getTokenRange(decl_stmt->getSourceRange()), ";");
+    } else {
+        m_rewriter.ReplaceText(clang::CharSourceRange::getTokenRange(decl_stmt->getSourceRange()), replacement);
+    }
     return true;
 }
 
@@ -69,10 +95,21 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (isTopLevelCall(call)) return true;
 
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
+    // The function is probably a nested function present as a template guard check. 
+    // We should skip such functions as they will be evaluated at compile time and have
+    // no business being inlined in the runtime code. 
+    if(nearest_compound_stmt.getRawEncoding() == 0)
+        return true;
+    // If there is an overlap between the function call that we just hoisted and the 
+    // function call that we intend to hoist
     if(nearest_compound_stmt == m_last_update_loc)
         return true;
-    else
-        m_last_update_loc = nearest_compound_stmt;
+
+    // A function that does not return anything and is being hoisted just before its call should not
+    // be hoisted as they will result in no noticeable change in the rewrite and cause a infinite loop.
+    // for eg. a class method returning void. 
+    if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
+        return true;
 
     auto& src_mgr = m_ctx.getSourceManager();
     auto& lang_opts = m_ctx.getLangOpts();
@@ -112,14 +149,22 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     OS << call_text << ";\n";
     OS.flush();
 
-    llvm::outs() << ret_var << " = " << clean_call << "\n";
+    llvm::outs() << "CLEAN CALL ==============================\n";
+    llvm::outs() << nearest_compound_stmt.getRawEncoding() << " <-[=|=]-> " << m_last_update_loc.getRawEncoding() << "\n";
+    llvm::outs() << clean_call;
+    llvm::outs() << " ================================== \n";
+    call->dump();
 
     if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
+        // This case is called when we have functions being called on the 
+        // result of the previous function
+        // ie. a().b().c()
         m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
+    m_last_update_loc = nearest_compound_stmt;
     return true;
 }
 
@@ -129,13 +174,17 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
 
     while (true) {
         auto parents = m_ctx.getParents(current);
-        if (parents.empty())
+        if (parents.empty()) {
+            llvm::outs() << "Empty Parent\n";
             return {};
+        }
 
         const auto& parent = parents[0];
         if (parent.get<clang::CompoundStmt>()) {
-            if (!last_stmt)
+            if (!last_stmt) {
+                llvm::outs() << "Parent is compound Statement but last statement does not exist. I am the top level\n";
                 return {};
+            }
             return last_stmt->getBeginLoc();
         }
         if (const auto* stmt = parent.get<clang::Stmt>())
@@ -431,6 +480,8 @@ bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
+bool InlineVisitor::shouldVisitImplicitCode() const { return true; }
+
 bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     if (m_caller != m_current_func)
         return true;
@@ -442,6 +493,7 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     std::string callee_name = ctor->getParent()->getNameAsString();
     if (m_callee != callee_name)
         return true;
+
 
     auto& src_mgr = m_ctx.getSourceManager();
     auto ploc = src_mgr.getPresumedLoc(src_mgr.getSpellingLoc(expr->getExprLoc()));
@@ -787,6 +839,22 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
 std::string preprocess(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::string result = source;
 
+    // Insert braces around single-statement control flow bodies.
+    {
+        static const auto style = []() {
+            auto s = clang::format::getLLVMStyle();
+            s.InsertBraces = true;
+            return s;
+        }();
+        auto replacements = clang::format::reformat(
+            style, result,
+            {clang::tooling::Range(0, result.size())});
+        auto formatted =
+            clang::tooling::applyAllReplacements(result, replacements);
+        if (formatted)
+            result = *formatted;
+    }
+
     // Split comma-separated declarations.
     {
         clang::Rewriter rewriter;
@@ -808,22 +876,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_cleanup = visitor.did_cleanup();
         }, rewriter);
-    }
-
-    // Insert braces around single-statement control flow bodies.
-    {
-        static const auto style = []() {
-            auto s = clang::format::getLLVMStyle();
-            s.InsertBraces = true;
-            return s;
-        }();
-        auto replacements = clang::format::reformat(
-            style, result,
-            {clang::tooling::Range(0, result.size())});
-        auto formatted =
-            clang::tooling::applyAllReplacements(result, replacements);
-        if (formatted)
-            result = *formatted;
     }
 
     return result;

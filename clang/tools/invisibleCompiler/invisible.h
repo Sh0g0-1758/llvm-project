@@ -26,6 +26,7 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
     CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
 
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
+    clang::SourceLocation findInsertionLoc(clang::DeclStmt* decl_stmt);
 
   private:
     clang::ASTContext& m_ctx;
@@ -111,6 +112,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitCallExpr(clang::CallExpr* call);
     bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
+    bool shouldVisitImplicitCode() const;
 
     /// Whether this visitor successfully inlined a call site.
     bool matched() const;
