@@ -74,6 +74,120 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     return true;
 }
 
+// ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
+
+TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+}
+
+clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::FunctionTemplateDecl *FTD,
+                                        clang::SourceManager &SM) {
+  return FTD->getSourceRange().getEnd().getLocWithOffset(1);
+}
+
+std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::FunctionDecl *Spec) {
+  clang::PrintingPolicy PP(m_ctx.getLangOpts());
+  // print the function definition
+  PP.TerseOutput        = false;
+  // print the fully qualified typenames used
+  // inside the function definition
+  PP.SuppressScope      = false;
+
+  std::string Out;
+  llvm::raw_string_ostream OS(Out);
+  OS << "\n";
+  Spec->print(OS, PP);
+  OS.flush();
+  return Out;
+}
+
+bool TemplateSpecializerVisitor::VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD) {
+  std::string Insertions;
+  for (clang::FunctionDecl *Spec : FTD->specializations()) {
+    clang::TemplateSpecializationKind TSK = Spec->getTemplateSpecializationKind();
+
+    // TSK_Undeclared                       - declaration for specialization but no definition
+    // TSK_ImplicitInstantiation            - specialization through usage
+    // TSK_ExplicitSpecialization           - specialization done explicitly
+    // TSK_ExplicitInstantiationDeclaration - specialization declared explicitly but definition in another TU
+    // TSK_ExplicitInstantiationDefinition  - specialization declared explicitly but definition in this TU
+    if (TSK != clang::TSK_ImplicitInstantiation &&
+        TSK != clang::TSK_ExplicitInstantiationDefinition)
+      continue;
+
+    if (!Spec->hasBody())
+      continue;
+
+    Insertions += emitFunctionSpecialization(Spec);
+  }
+
+  if (Insertions.empty())
+    return true;
+
+  clang::SourceLocation InsertLoc = getInsertionPoint(FTD, m_ctx.getSourceManager());
+  if (InsertLoc.isInvalid()) {
+    llvm::errs() << "Could not determine insertion point for "
+                 << FTD->getQualifiedNameAsString() << "\n";
+    return true;
+  }
+
+  m_rewriter.InsertTextAfter(InsertLoc, Insertions);
+  return true;
+}
+
+clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::ClassTemplateDecl *CTD, clang::SourceManager &SM) {
+  return CTD->getSourceRange().getEnd().getLocWithOffset(2);
+}
+
+std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec) {
+    for (clang::CXXMethodDecl *Method : Spec->methods()) {
+    llvm::outs() << Method->getNameAsString()
+                << " hasBody: " << Method->hasBody() << "\n";
+    }
+
+  clang::PrintingPolicy PP(m_ctx.getLangOpts());
+  PP.TerseOutput        = false;
+  PP.SuppressScope      = false;
+
+  std::string Out;
+  llvm::raw_string_ostream OS(Out);
+  OS << "\n";
+  Spec->print(OS, PP);
+  OS << ";";
+  OS.flush();
+  return Out;
+}
+
+bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD) {
+  std::string Insertions;
+  for (clang::ClassTemplateSpecializationDecl *Spec : CTD->specializations()) {
+    clang::TemplateSpecializationKind TSK = Spec->getSpecializationKind();
+
+    if (TSK != clang::TSK_ImplicitInstantiation &&
+        TSK != clang::TSK_ExplicitInstantiationDefinition)
+      continue;
+
+    if (!Spec->isCompleteDefinition())
+      continue;
+
+    Insertions += emitClassSpecialization(Spec);
+  }
+
+  if (Insertions.empty())
+    return true;
+
+  clang::SourceLocation InsertLoc = getInsertionPoint(CTD, m_ctx.getSourceManager());
+  if (InsertLoc.isInvalid()) {
+    llvm::errs() << "Could not determine insertion point for "
+                 << CTD->getQualifiedNameAsString() << "\n";
+    return true;
+  }
+
+  m_rewriter.InsertTextAfter(InsertLoc, Insertions);
+  return true;
+}
+
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -153,7 +267,6 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     llvm::outs() << nearest_compound_stmt.getRawEncoding() << " <-[=|=]-> " << m_last_update_loc.getRawEncoding() << "\n";
     llvm::outs() << clean_call;
     llvm::outs() << " ================================== \n";
-    call->dump();
 
     if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
         // This case is called when we have functions being called on the 
@@ -853,6 +966,16 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             clang::tooling::applyAllReplacements(result, replacements);
         if (formatted)
             result = *formatted;
+    }
+
+    // Specialize Function templates
+    {
+        clang::Rewriter rewriter;
+        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            TemplateSpecializerVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
     }
 
     // Split comma-separated declarations.

@@ -33,6 +33,24 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
     clang::Rewriter& m_rewriter;
 };
 
+// ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
+
+/// Specializes Templates so that transformations can be matched to actual source code
+class TemplateSpecializerVisitor : public clang::RecursiveASTVisitor<TemplateSpecializerVisitor> {
+  public:
+    TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD);
+    bool VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD);
+
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    std::string emitFunctionSpecialization(clang::FunctionDecl *Spec);
+    clang::SourceLocation getInsertionPoint(clang::FunctionTemplateDecl *FTD, clang::SourceManager &SM);
+    clang::SourceLocation getInsertionPoint(clang::ClassTemplateDecl *CTD, clang::SourceManager &SM);
+    std::string emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec);
+};
+
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
 /// Hoists nested function calls out of argument positions into
