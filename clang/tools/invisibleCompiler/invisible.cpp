@@ -97,7 +97,7 @@ std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::Functi
   std::string Out;
   llvm::raw_string_ostream OS(Out);
   OS << "\n";
-  Spec->print(OS, PP);
+  Spec->print(OS, PP, 2, true);
   OS.flush();
   return Out;
 }
@@ -141,11 +141,6 @@ clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::Class
 }
 
 std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec) {
-    for (clang::CXXMethodDecl *Method : Spec->methods()) {
-    llvm::outs() << Method->getNameAsString()
-                << " hasBody: " << Method->hasBody() << "\n";
-    }
-
   clang::PrintingPolicy PP(m_ctx.getLangOpts());
   PP.TerseOutput        = false;
   PP.SuppressScope      = false;
@@ -153,7 +148,7 @@ std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemp
   std::string Out;
   llvm::raw_string_ostream OS(Out);
   OS << "\n";
-  Spec->print(OS, PP);
+  Spec->print(OS, PP, 2, true);
   OS << ";";
   OS.flush();
   return Out;
@@ -221,7 +216,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     // A function that does not return anything and is being hoisted just before its call should not
     // be hoisted as they will result in no noticeable change in the rewrite and cause a infinite loop.
-    // for eg. a class method returning void. 
+    // for eg. a class method returning void.
     if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
         return true;
 
