@@ -55,7 +55,10 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> args;
     for(int i = 3; i < argc; i++) args.emplace_back(argv[i]);
     if(pass == "preprocess") {
-        llvm::outs() << invisible::preprocess(source, output_file, args) << "\n";
+        std::string result = invisible::preprocess(source, output_file, args);
+        std::ofstream out("a_couple_passes.cpp");
+        out << result;
+        out.close();
     } else if(pass == "constant-fold") {
         llvm::outs() << invisible::constant_fold(source, output_file, args) << "\n";
     } else if(pass == "combine") {

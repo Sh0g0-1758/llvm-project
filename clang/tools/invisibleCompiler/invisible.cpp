@@ -76,9 +76,14 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
 
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
-TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter) {
+TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
+    : m_ctx(ctx), m_rewriter(rewriter), m_sema(sema) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+}
+
+void TemplateSpecializerVisitor::fixDoubleAngleBrackets(std::string& str) {
+    str.erase(str.find('<', str.find('<') + 1), 1);
+    str.erase(str.rfind('>', str.find('{')), 1);
 }
 
 clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::FunctionTemplateDecl *FTD,
@@ -86,7 +91,7 @@ clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::Funct
   return FTD->getSourceRange().getEnd().getLocWithOffset(1);
 }
 
-std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::FunctionDecl *Spec) {
+std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::FunctionDecl *Spec, bool isVariadicTemplate) {
   clang::PrintingPolicy PP(m_ctx.getLangOpts());
   // print the function definition
   PP.TerseOutput        = false;
@@ -99,10 +104,13 @@ std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::Functi
   OS << "\n";
   Spec->print(OS, PP, 2, true);
   OS.flush();
+  if (isVariadicTemplate) fixDoubleAngleBrackets(Out);
   return Out;
 }
 
 bool TemplateSpecializerVisitor::VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD) {
+  if (!FTD->getTemplatedDecl()->isThisDeclarationADefinition())
+    return true;
   std::string Insertions;
   for (clang::FunctionDecl *Spec : FTD->specializations()) {
     clang::TemplateSpecializationKind TSK = Spec->getTemplateSpecializationKind();
@@ -119,7 +127,7 @@ bool TemplateSpecializerVisitor::VisitFunctionTemplateDecl(clang::FunctionTempla
     if (!Spec->hasBody())
       continue;
 
-    Insertions += emitFunctionSpecialization(Spec);
+    Insertions += emitFunctionSpecialization(Spec, FTD->getTemplateParameters()->hasParameterPack());
   }
 
   if (Insertions.empty())
@@ -140,7 +148,7 @@ clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::Class
   return CTD->getSourceRange().getEnd().getLocWithOffset(2);
 }
 
-std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec) {
+std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec, bool isVariadicTemplate) {
   clang::PrintingPolicy PP(m_ctx.getLangOpts());
   PP.TerseOutput        = false;
   PP.SuppressScope      = false;
@@ -151,10 +159,21 @@ std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemp
   Spec->print(OS, PP, 2, true);
   OS << ";";
   OS.flush();
+  if(isVariadicTemplate) fixDoubleAngleBrackets(Out);
   return Out;
 }
 
+void TemplateSpecializerVisitor::instantiate_class_vars(clang::ClassTemplateSpecializationDecl *Spec) {
+    for (auto* D : Spec->decls()) {
+        if (auto* VD = llvm::dyn_cast<clang::VarDecl>(D)) {
+            m_sema.InstantiateVariableDefinition(VD->getLocation(), VD);
+        }
+    }
+}
+
 bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD) {
+  if (!CTD->getTemplatedDecl()->isThisDeclarationADefinition())
+    return true;
   std::string Insertions;
   for (clang::ClassTemplateSpecializationDecl *Spec : CTD->specializations()) {
     clang::TemplateSpecializationKind TSK = Spec->getSpecializationKind();
@@ -166,7 +185,9 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
     if (!Spec->isCompleteDefinition())
       continue;
 
-    Insertions += emitClassSpecialization(Spec);
+    instantiate_class_vars(Spec);
+    
+    Insertions += emitClassSpecialization(Spec, CTD->getTemplateParameters()->hasParameterPack());
   }
 
   if (Insertions.empty())
@@ -186,7 +207,7 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
 }
 
@@ -194,13 +215,24 @@ bool FuncCallCleanupVisitor::did_cleanup() {
     return m_last_update_loc.getRawEncoding() != 0;
 }
 
+bool FuncCallCleanupVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if(func->isDependentContext()) m_is_uninstantiated_template = true;
+    else m_is_uninstantiated_template = false;
+
+    return true;
+}
+
 bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
-    clang::FunctionDecl* callee = call->getDirectCallee();
     // There can be cases where the template has not been fully resolved and thus the 
     // expressions which uses operators to zero in on the result are represented as a 
     // function call. To safeguard against them, we skip the pass if the call has not 
     // been fully resolved. 
+    if(m_is_uninstantiated_template) return true;
+
+    // If the callee's defintion is not present in the current TU
+    clang::FunctionDecl* callee = call->getDirectCallee();
     if(!callee) return true;
+
     if (isTopLevelCall(call)) return true;
 
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
@@ -893,6 +925,7 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (exprTy->isEnumeralType())
         return true;
 
+    // -2 -> negop (numeric literal)
     // The Pass will loop indefinitely if it sees a negation literal followed by a
     // numeric expression. This is because C grammar parses it as a unop. It will then
     // emit it as a unop only. We match on this and exit early if that is the case. 
@@ -966,9 +999,9 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     // Specialize Function templates
     {
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx) {
+        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            TemplateSpecializerVisitor visitor(ctx, rewriter);
+            TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
     }
@@ -976,7 +1009,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     // Split comma-separated declarations.
     {
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx) {
+        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             CommaInitVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
@@ -988,7 +1021,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     while (did_cleanup) {
         did_cleanup = false;
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter, &did_cleanup](clang::ASTContext& ctx) {
+        result = runInMemory(result, filename, args, [&rewriter, &did_cleanup](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             FuncCallCleanupVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
@@ -1009,7 +1042,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
     while (did_fold) {
         did_fold = false;
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx) {
+        result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             constantFoldVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
@@ -1026,7 +1059,7 @@ std::string separate_functions(const std::string& source, const std::string& fil
     std::string result;
 
     clang::Rewriter rewriter;
-    runInMemory(source, filename, args, [&rewriter, &result](clang::ASTContext& ctx) {
+    runInMemory(source, filename, args, [&rewriter, &result](clang::ASTContext& ctx, clang::Sema&) {
         rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
         FilterVisitor visitor(ctx, rewriter);
         visitor.TraverseDecl(ctx.getTranslationUnitDecl());
@@ -1062,7 +1095,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
         clang::Rewriter rewriter;
         result = runInMemory(
             result, filename, args,
-            [&rewriter, &oracle, &call_sites, &succeeded, i](clang::ASTContext& ctx) {
+            [&rewriter, &oracle, &call_sites, &succeeded, i](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());

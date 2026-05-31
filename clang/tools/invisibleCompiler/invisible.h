@@ -3,6 +3,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Sema/Sema.h"
 
 #include <map>
 #include <string>
@@ -38,17 +39,20 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
 /// Specializes Templates so that transformations can be matched to actual source code
 class TemplateSpecializerVisitor : public clang::RecursiveASTVisitor<TemplateSpecializerVisitor> {
   public:
-    TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema&);
     bool VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD);
     bool VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD);
 
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    std::string emitFunctionSpecialization(clang::FunctionDecl *Spec);
+    clang::Sema& m_sema;
+    std::string emitFunctionSpecialization(clang::FunctionDecl *Spec, bool);
     clang::SourceLocation getInsertionPoint(clang::FunctionTemplateDecl *FTD, clang::SourceManager &SM);
     clang::SourceLocation getInsertionPoint(clang::ClassTemplateDecl *CTD, clang::SourceManager &SM);
-    std::string emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec);
+    std::string emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec, bool);
+    void fixDoubleAngleBrackets(std::string&);
+    void instantiate_class_vars(clang::ClassTemplateSpecializationDecl *Spec);
 };
 
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
@@ -66,6 +70,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
 
     bool VisitCallExpr(clang::CallExpr* call);
     bool did_cleanup();
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
 
   private:
     clang::ASTContext& m_ctx;
@@ -74,6 +79,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
 
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
+    bool m_is_uninstantiated_template;
 };
 
 // ─── FilterVisitor ─────────────────────────────────────────────────

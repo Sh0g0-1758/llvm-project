@@ -23,12 +23,13 @@ namespace {
 
 class InvisibleConsumer : public clang::ASTConsumer {
   public:
-    explicit InvisibleConsumer(TUCallback callback) : m_callback(std::move(callback)) {}
+    explicit InvisibleConsumer(TUCallback callback, clang::CompilerInstance& ci) : m_callback(std::move(callback)), m_ci(ci) {}
 
-    void HandleTranslationUnit(clang::ASTContext& ctx) override { m_callback(ctx); }
+    void HandleTranslationUnit(clang::ASTContext& ctx) override { m_callback(ctx, m_ci.getSema()); }
 
   private:
     TUCallback m_callback;
+    clang::CompilerInstance& m_ci;
 };
 
 class InvisibleAction : public clang::ASTFrontendAction {
@@ -36,8 +37,8 @@ class InvisibleAction : public clang::ASTFrontendAction {
     explicit InvisibleAction(TUCallback callback) : m_callback(std::move(callback)) {}
 
   protected:
-    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance&, llvm::StringRef) override {
-        return std::make_unique<InvisibleConsumer>(m_callback);
+    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance& ci, llvm::StringRef) override {
+        return std::make_unique<InvisibleConsumer>(m_callback, ci);
     }
 
   private:
