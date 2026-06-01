@@ -53,7 +53,8 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     }
 
     clang::PrintingPolicy policy(m_ctx.getLangOpts());
-    policy.adjustForCPlusPlus();
+    if (m_ctx.getLangOpts().CPlusPlus)
+        policy.adjustForCPlusPlus();
 
     std::string replacement{};
     llvm::raw_string_ostream OS(replacement);
@@ -236,6 +237,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (isTopLevelCall(call)) return true;
 
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
+
     // The function is probably a nested function present as a template guard check. 
     // We should skip such functions as they will be evaluated at compile time and have
     // no business being inlined in the runtime code. 
@@ -248,12 +250,12 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     // A function that does not return anything and is being hoisted just before its call should not
     // be hoisted as they will result in no noticeable change in the rewrite and cause a infinite loop.
-    // for eg. a class method returning void.
+    // for eg. a class method returning void. 
     if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
         return true;
 
     auto& src_mgr = m_ctx.getSourceManager();
-    auto& lang_opts = m_ctx.getLangOpts();
+    const auto& lang_opts = m_ctx.getLangOpts();
 
     auto call_text =
         clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(call->getSourceRange()), src_mgr, lang_opts)
@@ -261,19 +263,18 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     std::string ret_var{};
     std::string clean_call{};
-    llvm::raw_string_ostream OS(clean_call);
+    llvm::raw_string_ostream out(clean_call);
 
-    if(!call->getType()->isVoidType()) {
+    if (!call->getType()->isVoidType()) {
         clang::QualType retTy = callee->getReturnType();
         clang::QualType fqTy =
             clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
 
-
         clang::PrintingPolicy policy(m_ctx.getLangOpts());
-        policy.adjustForCPlusPlus();
+        if (m_ctx.getLangOpts().CPlusPlus)
+            policy.adjustForCPlusPlus();
         policy.SuppressScope     = false;
         policy.SuppressTagKeyword = true;
-
         auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
         unsigned spelling_line = src_mgr.getSpellingLineNumber(loc);
         unsigned spelling_col = src_mgr.getSpellingColumnNumber(loc);
@@ -282,18 +283,13 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         // Strip the operator suffix (+/-/*) from operator overloads
         if (llvm::dyn_cast<clang::CXXOperatorCallExpr>(call))
             callee_name = callee_name.substr(0, callee_name.size() - 2);
-        ret_var = callee_name + "_" + std::to_string(callee->getID()) + "_" +
+        ret_var = callee_name + "_" + std::to_string(call->getID(m_ctx)) + "_" +
                           std::to_string(spelling_line) + "_" + std::to_string(spelling_col) + "_Ret";
-        fqTy.print(OS, policy, ret_var);
-        OS << " = ";
+        fqTy.print(out, policy, ret_var);
+        out << " = ";
     }
-    OS << call_text << ";\n";
-    OS.flush();
-
-    llvm::outs() << "CLEAN CALL ==============================\n";
-    llvm::outs() << nearest_compound_stmt.getRawEncoding() << " <-[=|=]-> " << m_last_update_loc.getRawEncoding() << "\n";
-    llvm::outs() << clean_call;
-    llvm::outs() << " ================================== \n";
+    out << call_text << ";\n";
+    out.flush();
 
     if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
         // This case is called when we have functions being called on the 
@@ -315,20 +311,19 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
     while (true) {
         auto parents = m_ctx.getParents(current);
         if (parents.empty()) {
-            llvm::outs() << "Empty Parent\n";
             return {};
         }
 
         const auto& parent = parents[0];
-        if (parent.get<clang::CompoundStmt>()) {
-            if (!last_stmt) {
-                llvm::outs() << "Parent is compound Statement but last statement does not exist. I am the top level\n";
+        if (parent.get<clang::CompoundStmt>() != nullptr) {
+            if (last_stmt == nullptr) {
                 return {};
             }
             return last_stmt->getBeginLoc();
         }
-        if (const auto* stmt = parent.get<clang::Stmt>())
+        if (const auto* stmt = parent.get<clang::Stmt>()) {
             last_stmt = stmt;
+        }
 
         current = parent;
     }
@@ -368,8 +363,9 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
     }
 
     auto parents = m_ctx.getParents(*call);
-    if (parents.empty())
+    if (parents.empty()) {
         return false;
+    }
 
     const auto& parent_node = parents[0];
 
@@ -381,8 +377,9 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
                 auto ds_parents = m_ctx.getParents(*decl_stmt);
                 if (!ds_parents.empty()) {
                     if (const auto* parent_stmt = ds_parents[0].get<clang::Stmt>()) {
-                        if (llvm::isa<clang::CompoundStmt>(parent_stmt))
+                        if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
                             return true;
+                        }
                     }
                 }
             }
@@ -394,8 +391,9 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
                 auto bo_parents = m_ctx.getParents(*bin_op);
                 if (!bo_parents.empty()) {
                     if (const auto* grandparent = bo_parents[0].get<clang::Stmt>()) {
-                        if (llvm::isa<clang::CompoundStmt>(grandparent))
+                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
                             return true;
+                        }
                     }
                 }
             }
@@ -931,10 +929,20 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // emit it as a unop only. We match on this and exit early if that is the case. 
     // We don't need to worry about paranthesis and implicit casts as they will get removed
     // by themselves as the pass goes to deeper expressions.
-    if (auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr->IgnoreImpCasts()))
+    if (auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr->IgnoreParenImpCasts()))
         if (unary->getOpcode() == clang::UO_Minus)
             if (llvm::isa<clang::IntegerLiteral>(unary->getSubExpr()) ||
                 llvm::isa<clang::FloatingLiteral>(unary->getSubExpr()))
+                return true;
+
+    // Don't fold builtin calls (e.g. __builtin_nanf, __builtin_inf, etc.)
+    // as they resolve to something that is internal to the compiler and will thus
+    // not be valid when sent into compilation by replacing it. For instance, 
+    // __builtin_nanf ("") resolves to nan, which clang sees as a reference to the
+    // function nan. 
+    if (auto* call = llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
+        if (auto* fn = llvm::dyn_cast_or_null<clang::FunctionDecl>(call->getCalleeDecl()))
+            if (fn->getBuiltinID() != 0)
                 return true;
 
     clang::Expr::EvalResult result;
@@ -1113,9 +1121,10 @@ InlineResult inline_functions(const std::string& source, const std::string& file
 
 /*
 export UV_CONCURRENT_DOWNLOADS=4
- export UV_CONCURRENT_INSTALLS=4
- export UV_INDEX_PRIVATE_REGISTRY_USERNAME=aws
- export UV_INDEX_PRIVATE_REGISTRY_PASSWORD=$(aws codeartifact get-authorization-token --domain reveng --domain-owner 127214196211 --query authorizationToken --output text --profile compiler-engineer-codeartifact --region eu-west-2)
- uv pip install -e . --no-cache --reinstall
-
+export UV_CONCURRENT_INSTALLS=4
+export UV_BUILD_JOBS=2
+export UV_INDEX_PRIVATE_REGISTRY_USERNAME=aws
+export UV_INDEX_PRIVATE_REGISTRY_PASSWORD=$(aws codeartifact get-authorization-token --domain reveng --domain-owner 127214196211 --query authorizationToken --output text --profile compiler-engineer-codeartifact --region eu-west-2)
+ulimit -v $((8 * 1024 * 1024))
+taskset -c 0-7 uv pip install -e . --no-cache --reinstall
 */
