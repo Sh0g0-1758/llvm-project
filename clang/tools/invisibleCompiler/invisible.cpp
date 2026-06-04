@@ -507,6 +507,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     }
 
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
+        llvm::outs() << "Inside a declStmt\n";
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
                 // arr[n] -> arr[__inline_x_y]
@@ -548,6 +549,106 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
                 }
             }
         }
+        return true;
+    }
+
+    if (auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(stmt)) {
+        stream << "for (";
+        if (auto* init = for_stmt->getInit())
+            init->printPretty(stream, this, m_policy);
+        if (auto* cond = for_stmt->getCond())
+            cond->printPretty(stream, this, m_policy);
+        stream << "; ";
+        if (auto* inc = for_stmt->getInc())
+            inc->printPretty(stream, this, m_policy);
+        stream << ") ";
+        for_stmt->getBody()->printPretty(stream, this, m_policy);
+        return true;
+    }
+
+    if (auto* if_stmt = llvm::dyn_cast<clang::IfStmt>(stmt)) {
+        stream << "if (";
+        if (auto* init = if_stmt->getInit())
+            init->printPretty(stream, this, m_policy);
+        if (auto* cond = if_stmt->getCond())
+            cond->printPretty(stream, this, m_policy);
+        stream << ") ";
+        if_stmt->getThen()->printPretty(stream, this, m_policy);
+        if (auto* else_stmt = if_stmt->getElse()) {
+            stream << " else ";
+            else_stmt->printPretty(stream, this, m_policy);
+        }
+        return true;
+    }
+
+    if (auto* switch_stmt = llvm::dyn_cast<clang::SwitchStmt>(stmt)) {
+        stream << "switch (";
+        if (auto* init = switch_stmt->getInit())
+            init->printPretty(stream, this, m_policy);
+        if (auto* cond = switch_stmt->getCond())
+            cond->printPretty(stream, this, m_policy);
+        stream << ") ";
+        switch_stmt->getBody()->printPretty(stream, this, m_policy);
+        return true;
+    }
+
+    // Clang's StmtPrinter always emits "asm" for GCCAsmStmt, but in GNU C
+    // mode only "__asm__" is valid.  Print the statement ourselves.
+    if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+        stream << "__asm__";
+        if (gcc_asm->isVolatile()) {
+            stream << " volatile";
+        }
+        if (gcc_asm->isAsmGoto()) {
+            stream << " goto";
+        }
+        stream << "(";
+        gcc_asm->getAsmStringExpr()->printPretty(stream, this, m_policy);
+
+        unsigned nOutputs = gcc_asm->getNumOutputs();
+        unsigned nInputs = gcc_asm->getNumInputs();
+        unsigned nClobbers = gcc_asm->getNumClobbers();
+
+        if (nOutputs != 0 || nInputs != 0 || nClobbers != 0) {
+            stream << " : ";
+            for (unsigned i = 0; i < nOutputs; ++i) {
+                if (i != 0) {
+                    stream << ", ";
+                }
+                llvm::StringRef name = gcc_asm->getOutputName(i);
+                if (!name.empty()) {
+                    stream << "[" << name << "] ";
+                }
+                stream << "\"" << gcc_asm->getOutputConstraint(i) << "\" (";
+                gcc_asm->getOutputExpr(i)->printPretty(stream, this, m_policy);
+                stream << ")";
+            }
+        }
+        if (nInputs != 0 || nClobbers != 0) {
+            stream << " : ";
+            for (unsigned i = 0; i < nInputs; ++i) {
+                if (i != 0) {
+                    stream << ", ";
+                }
+                llvm::StringRef name = gcc_asm->getInputName(i);
+                if (!name.empty()) {
+                    stream << "[" << name << "] ";
+                }
+                stream << "\"" << gcc_asm->getInputConstraint(i) << "\" (";
+                gcc_asm->getInputExpr(i)->printPretty(stream, this, m_policy);
+                stream << ")";
+            }
+        }
+        if (nClobbers != 0) {
+            stream << " : ";
+            for (unsigned i = 0; i < nClobbers; ++i) {
+                if (i != 0) {
+                    stream << ", ";
+                }
+                stream << "\"" << gcc_asm->getClobber(i) << "\"";
+            }
+        }
+        stream << ");\n";
         return true;
     }
 
