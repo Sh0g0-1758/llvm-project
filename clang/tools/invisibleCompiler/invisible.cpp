@@ -207,8 +207,8 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
 
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
-FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false) {
+FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
+    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
 }
 
@@ -273,18 +273,8 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         clang::PrintingPolicy policy(m_ctx.getLangOpts());
         if (m_ctx.getLangOpts().CPlusPlus)
             policy.adjustForCPlusPlus();
-        policy.SuppressScope     = false;
-        policy.SuppressTagKeyword = true;
-        auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
-        unsigned spelling_line = src_mgr.getSpellingLineNumber(loc);
-        unsigned spelling_col = src_mgr.getSpellingColumnNumber(loc);
 
-        std::string callee_name = callee->getNameAsString();
-        // Strip the operator suffix (+/-/*) from operator overloads
-        if (llvm::dyn_cast<clang::CXXOperatorCallExpr>(call))
-            callee_name = callee_name.substr(0, callee_name.size() - 2);
-        ret_var = callee_name + "_" + std::to_string(call->getID(m_ctx)) + "_" +
-                          std::to_string(spelling_line) + "_" + std::to_string(spelling_col) + "_Ret";
+        ret_var = "__inline_ret__" + std::to_string(m_current_index++);
         fqTy.print(out, policy, ret_var);
         out << " = ";
     }
@@ -443,78 +433,66 @@ std::string FilterVisitor::toJSON() {
 
 // ─── InlinePrinterHelper ───────────────────────────────────────────
 
-InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string prefix, std::string target_var,
+InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var,
                                          std::map<int, std::string> caller_params, clang::PrintingPolicy policy)
     : m_ctx(ctx),
-      m_prefix(std::move(prefix)),
       m_target_var(std::move(target_var)),
       m_caller_params(std::move(caller_params)),
       m_policy(policy) {}
 
 struct VLARenamer : clang::RecursiveASTVisitor<VLARenamer> {
-    const std::string &Prefix;
     clang::ASTContext &Ctx;
-    std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &renamed;
     std::map<int, std::string> &callerParams;
 
-    VLARenamer(const std::string &P, clang::ASTContext &C,
-            std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &R, std::map<int, std::string> &PR)
-        : Prefix(P), Ctx(C), renamed(R), callerParams(PR) {}
+    VLARenamer(clang::ASTContext &C, std::map<int, std::string> &PR)
+        : Ctx(C), callerParams(PR) {}
 
     bool VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
         if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
-            std::string newName{};
             if (clang::ParmVarDecl *PVD = llvm::dyn_cast<clang::ParmVarDecl>(VD)) {
-                unsigned idx = PVD->getFunctionScopeIndex();
-                newName = callerParams[idx];
-            } else {
-                if(!VD->isLocalVarDecl()) newName = VD->getNameAsString();
-                else newName = Prefix + VD->getNameAsString() + "_" + std::to_string(VD->getID());
+                VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(callerParams[PVD->getFunctionScopeIndex()])));
+                return true;
             }
-            clang::IdentifierInfo *oldII = VD->getIdentifier();
-            renamed.push_back({VD, oldII});
-            VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(newName)));
         }
-        return true;
+        return false;
     }
 };
 
-void InlinePrinterHelper::renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx,
-                    std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &renamed) {
+void InlinePrinterHelper::renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx) {
     const clang::Type *TP = T.getCanonicalType().getTypePtr();
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
         if (clang::Expr *size = VAT->getSizeExpr()) {
-            VLARenamer r(m_prefix, Ctx, renamed, m_caller_params);
+            VLARenamer r(Ctx, m_caller_params);
             r.TraverseStmt(size);
         }
-        renameVLASizeVars(VAT->getElementType(), Ctx, renamed);
+        renameVLASizeVars(VAT->getElementType(), Ctx);
     } else if (const auto *DSAT = llvm::dyn_cast<clang::DependentSizedArrayType>(TP)) {
         if (clang::Expr *size = DSAT->getSizeExpr()) {
-            VLARenamer r(m_prefix, Ctx, renamed, m_caller_params);
+            VLARenamer r(Ctx, m_caller_params);
             r.TraverseStmt(size);
         }
-        renameVLASizeVars(DSAT->getElementType(), Ctx, renamed);
+        renameVLASizeVars(DSAT->getElementType(), Ctx);
     } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
-        renameVLASizeVars(PT->getPointeeType(), Ctx, renamed);
+        renameVLASizeVars(PT->getPointeeType(), Ctx);
     } else if (const auto *RT = llvm::dyn_cast<clang::ReferenceType>(TP)) {
-        renameVLASizeVars(RT->getPointeeType(), Ctx, renamed);
+        renameVLASizeVars(RT->getPointeeType(), Ctx);
     } else if (const auto *AT = llvm::dyn_cast<clang::ArrayType>(TP)) {
-        renameVLASizeVars(AT->getElementType(), Ctx, renamed);
+        renameVLASizeVars(AT->getElementType(), Ctx);
     } else if (const auto *FPT = llvm::dyn_cast<clang::FunctionProtoType>(TP)) {
-        renameVLASizeVars(FPT->getReturnType(), Ctx, renamed);
+        renameVLASizeVars(FPT->getReturnType(), Ctx);
         for (auto paramType : FPT->param_types())
-            renameVLASizeVars(paramType, Ctx, renamed);
+            renameVLASizeVars(paramType, Ctx);
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType(), Ctx, renamed);
+        renameVLASizeVars(FT->getReturnType(), Ctx);
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType(), Ctx, renamed);
+        renameVLASizeVars(FT->getReturnType(), Ctx);
     } else if (const auto *MPT = llvm::dyn_cast<clang::MemberPointerType>(TP)) {
-        renameVLASizeVars(MPT->getPointeeType(), Ctx, renamed);
+        renameVLASizeVars(MPT->getPointeeType(), Ctx);
     } else if (const auto *VT = llvm::dyn_cast<clang::VectorType>(TP)) {
-        renameVLASizeVars(VT->getElementType(), Ctx, renamed);
+        renameVLASizeVars(VT->getElementType(), Ctx);
     } else if (const auto *ParenT = llvm::dyn_cast<clang::ParenType>(TP)) {
-        renameVLASizeVars(ParenT->getInnerType(), Ctx, renamed);
+        renameVLASizeVars(ParenT->getInnerType(), Ctx);
     }
 }
 
@@ -523,34 +501,21 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref->getDecl())) {
             if (auto* param_decl = llvm::dyn_cast<clang::ParmVarDecl>(var_decl)) {
                 stream << m_caller_params[param_decl->getFunctionScopeIndex()];
-            } else {
-                if (!var_decl->isLocalVarDecl()) stream << var_decl->getNameAsString();
-                else stream << m_prefix << var_decl->getNameAsString() << "_" << var_decl->getID();
+                return true;
             }
-            return true;
         }
     }
 
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
-                std::string new_name = m_prefix + var_decl->getNameAsString() + "_" + std::to_string(var_decl->getID());
-
-                clang::IdentifierInfo *oldII = var_decl->getIdentifier();
-                var_decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(new_name)));
-
-                std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> sizeRenames;
-                renameVLASizeVars(var_decl->getType(), m_ctx, sizeRenames);
+                // arr[n] -> arr[__inline_x_y]
+                renameVLASizeVars(var_decl->getType(), m_ctx);
 
                 clang::Expr *init = var_decl->getInit();
                 var_decl->setInit(nullptr);
-
                 var_decl->print(stream, m_policy);
-
                 var_decl->setInit(init);
-                var_decl->setDeclName(clang::DeclarationName(oldII));
-                for (auto &[var_decl, ii] : sizeRenames)
-                    var_decl->setDeclName(clang::DeclarationName(ii));
 
                 if (init) {
                     switch (var_decl->getInitStyle()) {
@@ -599,18 +564,102 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     return false;
 }
 
+// ─── InlineVisitor - FunctionCallCleanup ───────────────────────────
+
+bool InlineVisitor::callInLoop(const clang::CallExpr* call) {
+    // Guard: do not hoist calls that execute repeatedly —
+    // i.e. calls in a loop condition or for-increment.
+    // Handles: while(foo()), while(a = foo()),
+    //          for(; foo(); ), for(; bar(), foo(); ), for(;; foo())
+    {
+        const clang::Stmt* child = call;
+        while (true) {
+            auto parents = m_ctx.getParents(*child);
+            if (parents.empty()) break;
+            const auto* parent = parents[0].get<clang::Stmt>();
+            if (!parent) break;
+            if (llvm::isa<clang::CompoundStmt>(parent)) break;
+
+            if (const auto* fs = llvm::dyn_cast<clang::ForStmt>(parent)) {
+                if (fs->getCond() == child || fs->getInc() == child)
+                    return true;
+                break;
+            }
+            if (const auto* ws = llvm::dyn_cast<clang::WhileStmt>(parent)) {
+                if (ws->getCond() == child)
+                    return true;
+                break;
+            }
+            if (const auto* ds = llvm::dyn_cast<clang::DoStmt>(parent)) {
+                if (ds->getCond() == child)
+                    return true;
+                break;
+            }
+            child = parent;
+        }
+    }
+    return false;
+}
+
+bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
+    auto parents = m_ctx.getParents(*call);
+    if (parents.empty()) {
+        return false;
+    }
+
+    const auto& parent_node = parents[0];
+
+    // int x = foo();
+    if (const auto* var_decl = parent_node.get<clang::VarDecl>()) {
+        auto vd_parents = m_ctx.getParents(*var_decl);
+        if (!vd_parents.empty()) {
+            if (const auto* decl_stmt = vd_parents[0].get<clang::DeclStmt>()) {
+                auto ds_parents = m_ctx.getParents(*decl_stmt);
+                if (!ds_parents.empty()) {
+                    if (const auto* parent_stmt = ds_parents[0].get<clang::Stmt>()) {
+                        if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    } else if (const auto* parent_stmt = parent_node.get<clang::Stmt>()) {
+        // x = foo();
+        if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
+            if (bin_op->isAssignmentOp()) {
+                auto bo_parents = m_ctx.getParents(*bin_op);
+                if (!bo_parents.empty()) {
+                    if (const auto* grandparent = bo_parents[0].get<clang::Stmt>()) {
+                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            // foo();
+        } else if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ─── InlineVisitor ─────────────────────────────────────────────────
 
 InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
-                             std::vector<std::pair<size_t, std::string>>& call_sites, size_t current_index,
+                             std::vector<std::pair<size_t, std::string>>& call_sites, size_t& current_index,
                              clang::Rewriter& rewriter)
     : m_ctx(ctx),
       m_caller(caller),
       m_callee(callee),
       m_call_sites(call_sites),
       m_current_index(current_index),
-      m_rewriter(rewriter) {
+      m_rewriter(rewriter),
+      m_policy(m_ctx.getLangOpts()) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
 }
 
 bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -697,6 +746,12 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (ploc.getLine() != m_call_sites[m_current_index].first)
         return true;
 
+    // If the call is in a loop that we do not correctly
+    // handle inlining or the functionHositingPass failed
+    // in which case we do not inline
+    if (callInLoop(call) || !isTopLevelCall(call))
+        return true;
+
     m_matched = true;
 
     // the callee might be a templated function which in turn
@@ -709,12 +764,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // that need special treatment.
     if (llvm::isa<clang::CXXMethodDecl>(callee))
         return true;
-
-    auto& lang_opts = m_ctx.getLangOpts();
-    clang::PrintingPolicy Policy = m_ctx.getPrintingPolicy();
-    if (lang_opts.CPlusPlus)
-        Policy.adjustForCPlusPlus();
-    Policy.Indentation = 2;
 
     std::string target_var{};
     auto parents = m_ctx.getParents(*call);
@@ -753,7 +802,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
             for (clang::Attr *A : var_decl->attrs())
                 NewVD->addAttr(A->clone(m_ctx));
-            NewVD->print(OS, Policy);
+            NewVD->print(OS, m_policy);
             OS << ";\n";
             added_lines += 1;
             target_var = var_decl->getNameAsString();
@@ -771,7 +820,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
                     target_var =
                         clang::Lexer::getSourceText(
                             clang::CharSourceRange::getTokenRange(bin_op->getLHS()->getSourceRange()), src_mgr,
-                            lang_opts)
+                            m_ctx.getLangOpts())
                             .str();
                     stmt_to_replace = bin_op;
                 }
@@ -779,12 +828,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         }
     }
 
-    // Strip the operator suffix (+/-/*) from operator overloads
-    if (llvm::dyn_cast<clang::CXXOperatorCallExpr>(call))
-        callee_name = callee_name.substr(0, callee_name.size() - 2);
-
-    std::string prefix =
-        callee_name + "_" + std::to_string(callee->getID()) + "_" + std::to_string(m_current_index) + "_" + std::to_string(ploc.getLine()) + "_" + std::to_string(ploc.getColumn()) + "_";
+    OS << "{";
 
     std::map<int, std::string> caller_params;
     for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -794,11 +838,11 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         std::string arg_text;
         if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg)) {
             llvm::raw_string_ostream stream(arg_text);
-            default_arg->getExpr()->printPretty(stream, nullptr, Policy);
+            default_arg->getExpr()->printPretty(stream, nullptr, m_policy);
             stream.flush();
         } else {
             llvm::raw_string_ostream stream(arg_text);
-            arg->printPretty(stream, nullptr, Policy);
+            arg->printPretty(stream, nullptr, m_policy);
             stream.flush();
         }
 
@@ -807,11 +851,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         if (param_decl->getType()->isLValueReferenceType() || param_decl->getOriginalType().getAsString() == "va_list") {
             caller_params[i] = arg_text;
         } else {
-            auto argLoc = arg->getExprLoc();
-            caller_params[i] = prefix + std::to_string(src_mgr.getSpellingLineNumber(argLoc)) + "_" 
-                                  + std::to_string(src_mgr.getSpellingColumnNumber(argLoc)) + "_" 
-                                  + param_decl->getNameAsString();
-            param_decl->getOriginalType().print(OS, Policy, caller_params[i]);
+            caller_params[i] = "__inline_var__" + std::to_string(m_current_index) + "_" + std::to_string(i);
+            param_decl->getOriginalType().print(OS, m_policy, caller_params[i]);
             OS << " = " << arg_text << ";\n";
             added_lines++;
         }
@@ -820,8 +861,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
 
-    InlinePrinterHelper helper(m_ctx, prefix, target_var, caller_params, Policy);
-    callee->getBody()->printPretty(stream, &helper, Policy);
+    InlinePrinterHelper helper(m_ctx, target_var, caller_params, m_policy);
+    callee->getBody()->printPretty(stream, &helper, m_policy);
     stream.flush();
 
     // Strip outer braces.
@@ -851,23 +892,28 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // extra line the original statement occupied, causing cumulative
     // drift in later call-site lookups.
     auto orig_text = clang::Lexer::getSourceText(
-        clang::CharSourceRange::getTokenRange(stmt_to_replace->getSourceRange()), src_mgr, lang_opts);
+        clang::CharSourceRange::getTokenRange(stmt_to_replace->getSourceRange()), src_mgr, m_ctx.getLangOpts());
     size_t net_lines = added_lines - std::count(orig_text.begin(), orig_text.end(), '\n');
 
     // Adjust line numbers for subsequent call sites in the same file
     // that shifted due to inserted code.
-    for (size_t i = m_current_index + 1; i < m_call_sites.size(); i++) {
-        if (m_call_sites[i].second == m_call_sites[m_current_index].second &&
-            m_call_sites[i].first > m_call_sites[m_current_index].first)
-            m_call_sites[i].first += net_lines;
-    }
+    updateInlineLocInfo(net_lines);
 
+    OS << "}";
     OS.flush();
     m_rewriter.ReplaceText(stmt_to_replace->getSourceRange(), inlined_code);
     return true;
 }
 
 bool InlineVisitor::matched() const { return m_matched; }
+
+void InlineVisitor::updateInlineLocInfo(size_t net_lines) {
+    for (size_t i = m_current_index + 1; i < m_call_sites.size(); i++) {
+        if (m_call_sites[i].second == m_call_sites[m_current_index].second &&
+            m_call_sites[i].first >= m_call_sites[m_current_index].first)
+            m_call_sites[i].first += net_lines;
+    }
+}
 
 // ─── ConstantFoldVisitor ──────────────────────────────────────────────
 
@@ -1026,12 +1072,13 @@ std::string preprocess(const std::string& source, const std::string& filename, s
 
     // Hoist nested function calls (repeat until stable).
     bool did_cleanup = true;
+    size_t current_index = 0;
     while (did_cleanup) {
         did_cleanup = false;
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter, &did_cleanup](clang::ASTContext& ctx, clang::Sema&) {
+        result = runInMemory(result, filename, args, [&rewriter, &did_cleanup, &current_index](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            FuncCallCleanupVisitor visitor(ctx, rewriter);
+            FuncCallCleanupVisitor visitor(ctx, rewriter, current_index);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_cleanup = visitor.did_cleanup();
         }, rewriter);
@@ -1103,7 +1150,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
         clang::Rewriter rewriter;
         result = runInMemory(
             result, filename, args,
-            [&rewriter, &oracle, &call_sites, &succeeded, i](clang::ASTContext& ctx, clang::Sema&) {
+            [&rewriter, &oracle, &call_sites, &succeeded, &i](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());

@@ -66,7 +66,7 @@ class TemplateSpecializerVisitor : public clang::RecursiveASTVisitor<TemplateSpe
 /// time.
 class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanupVisitor> {
   public:
-    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
 
     bool VisitCallExpr(clang::CallExpr* call);
     bool did_cleanup();
@@ -80,6 +80,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
     bool m_is_uninstantiated_template;
+    size_t& m_current_index;
 };
 
 // ─── FilterVisitor ─────────────────────────────────────────────────
@@ -108,19 +109,17 @@ class FilterVisitor : public clang::RecursiveASTVisitor<FilterVisitor> {
 /// caller arguments, and rewrites return statements as assignments.
 class InlinePrinterHelper : public clang::PrinterHelper {
   public:
-    InlinePrinterHelper(clang::ASTContext& ctx, std::string prefix, std::string target_var,
+    InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var,
                         std::map<int, std::string> caller_params, clang::PrintingPolicy policy);
 
     bool handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) override;
 
   private:
     clang::ASTContext& m_ctx;
-    std::string m_prefix;
     std::string m_target_var;
     std::map<int, std::string> m_caller_params;
     clang::PrintingPolicy m_policy;
-    void renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx,
-                    std::vector<std::pair<clang::VarDecl*, clang::IdentifierInfo*>> &renamed);
+    void renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx);
 };
 
 // ─── InlineVisitor ─────────────────────────────────────────────────
@@ -130,26 +129,32 @@ class InlinePrinterHelper : public clang::PrinterHelper {
 class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
   public:
     InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
-                  std::vector<std::pair<size_t, std::string>>& call_sites, size_t current_index,
+                  std::vector<std::pair<size_t, std::string>>& call_sites, size_t& current_index,
                   clang::Rewriter& rewriter);
 
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitCallExpr(clang::CallExpr* call);
+    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
+    bool isTopLevelCall(const clang::CallExpr* call);
     bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
     bool shouldVisitImplicitCode() const;
 
     /// Whether this visitor successfully inlined a call site.
     bool matched() const;
+    bool callInLoop(const clang::CallExpr* call);
+    void updateInlineLocInfo(size_t net_lines);
 
   private:
     clang::ASTContext& m_ctx;
     std::string m_caller;
     std::string m_callee;
     std::vector<std::pair<size_t, std::string>>& m_call_sites;
-    size_t m_current_index;
+    size_t& m_current_index;
     clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
     std::string m_current_func;
     bool m_matched = false;
+    bool m_cleanup = false;
 };
 
 // ─── ConstantFoldVisitor ───────────────────────────────────────────
