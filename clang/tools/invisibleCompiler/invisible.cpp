@@ -274,7 +274,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         if (m_ctx.getLangOpts().CPlusPlus)
             policy.adjustForCPlusPlus();
 
-        ret_var = "__inline_ret__" + std::to_string(m_current_index++);
+        ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
         fqTy.print(out, policy, ret_var);
         out << " = ";
     }
@@ -438,7 +438,11 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
     : m_ctx(ctx),
       m_target_var(std::move(target_var)),
       m_caller_params(std::move(caller_params)),
-      m_policy(policy) {}
+      m_policy(policy) {
+        if (m_ctx.getLangOpts().CPlusPlus)
+            m_policy.adjustForCPlusPlus();
+        m_policy.IncludeTagDefinition = true;
+      }
 
 struct VLARenamer : clang::RecursiveASTVisitor<VLARenamer> {
     clang::ASTContext &Ctx;
@@ -556,6 +560,8 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         stream << "for (";
         if (auto* init = for_stmt->getInit())
             init->printPretty(stream, this, m_policy);
+        else
+        	stream << "; ";
         if (auto* cond = for_stmt->getCond())
             cond->printPretty(stream, this, m_policy);
         stream << "; ";
@@ -929,6 +935,18 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         }
     }
 
+    std::string dummy_inline_result_pointer{};
+    if(!target_var.empty()) {
+        dummy_inline_result_pointer = "__inline_result__" + std::to_string(m_current_index);
+        clang::QualType retTy = callee->getReturnType();
+        clang::QualType fqTy = clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
+        clang::QualType ptr_type = m_ctx.getPointerType(fqTy);
+
+        ptr_type.print(OS, m_policy, dummy_inline_result_pointer);
+        OS << " = &" << target_var << ";\n";
+        added_lines += 1;
+    }
+
     OS << "{";
 
     std::map<int, std::string> caller_params;
@@ -952,7 +970,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         if (param_decl->getType()->isLValueReferenceType() || param_decl->getOriginalType().getAsString() == "va_list") {
             caller_params[i] = arg_text;
         } else {
-            caller_params[i] = "__inline_var__" + std::to_string(m_current_index) + "_" + std::to_string(i);
+            caller_params[i] = "__inline_param__" + std::to_string(m_current_index) + "_" + std::to_string(i);
             param_decl->getOriginalType().print(OS, m_policy, caller_params[i]);
             OS << " = " << arg_text << ";\n";
             added_lines++;
@@ -962,7 +980,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
 
-    InlinePrinterHelper helper(m_ctx, target_var, caller_params, m_policy);
+    InlinePrinterHelper helper(m_ctx, dummy_inline_result_pointer, caller_params, m_policy);
     callee->getBody()->printPretty(stream, &helper, m_policy);
     stream.flush();
 
