@@ -55,4 +55,21 @@ std::string runInMemory(const std::string& source, const std::string& filename, 
     return getRewrittenSource(rewriter, source);
 }
 
+bool isCompilable(const std::string& source, const std::string& filename,
+                  const std::vector<std::string>& compiler_flags) {
+    class CheckAction : public clang::SyntaxOnlyAction {
+    public:
+        bool hasErrors = false;
+        void EndSourceFile() override {
+            hasErrors = getCompilerInstance().getDiagnostics().hasErrorOccurred();
+            clang::SyntaxOnlyAction::EndSourceFile();
+        }
+    };
+
+    auto action = std::make_unique<CheckAction>();
+    auto* raw = action.get();
+    clang::tooling::runToolOnCodeWithArgs(std::move(action), source, compiler_flags, filename);
+    return !raw->hasErrors;
+}
+
 }  // namespace invisible

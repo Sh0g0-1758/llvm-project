@@ -558,10 +558,13 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
 
     if (auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(stmt)) {
         stream << "for (";
-        if (auto* init = for_stmt->getInit())
+        if (auto* init = for_stmt->getInit()) {
             init->printPretty(stream, this, m_policy);
-        else
+            if (!(llvm::dyn_cast<clang::DeclStmt>(for_stmt->getInit())))
+                stream << "; ";
+        } else {
         	stream << "; ";
+        }
         if (auto* cond = for_stmt->getCond())
             cond->printPretty(stream, this, m_policy);
         stream << "; ";
@@ -835,7 +838,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
             // T::foo() where T is a dependent type
             callee_name = dep_ref->getDeclName().getAsString();
-
+        else if (auto* ha_ref = llvm::dyn_cast<clang::ArraySubscriptExpr>(callee_expr))
+            callee_name = "";
         else {
             llvm::outs() << "Unhandled callee type: " 
                         << callee_expr->getStmtClassName() << "\n";
@@ -1172,21 +1176,27 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     // Specialize Function templates
     {
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
     }
 
     // Split comma-separated declarations.
     {
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema&) {
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             CommaInitVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
     }
 
     // Hoist nested function calls (repeat until stable).
@@ -1195,12 +1205,16 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     while (did_cleanup) {
         did_cleanup = false;
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter, &did_cleanup, &current_index](clang::ASTContext& ctx, clang::Sema&) {
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_cleanup, &current_index](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             FuncCallCleanupVisitor visitor(ctx, rewriter, current_index);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_cleanup = visitor.did_cleanup();
         }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
     }
 
     return result;
@@ -1216,12 +1230,16 @@ std::string constant_fold(const std::string& source, const std::string& filename
     while (did_fold) {
         did_fold = false;
         clang::Rewriter rewriter;
-        result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             constantFoldVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_fold = visitor.did_fold();
         }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
     }
 
     return result;
@@ -1267,7 +1285,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             continue;
         }
         clang::Rewriter rewriter;
-        result = runInMemory(
+        std::string tmp_result = runInMemory(
             result, filename, args,
             [&rewriter, &oracle, &call_sites, &succeeded, &i](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
@@ -1278,6 +1296,11 @@ InlineResult inline_functions(const std::string& source, const std::string& file
                 succeeded[i] = visitor.matched();
             },
             rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            succeeded[i] = false;
+        }
     }
 
     return {result, succeeded};

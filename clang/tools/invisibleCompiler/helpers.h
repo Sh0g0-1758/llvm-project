@@ -20,4 +20,8 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 std::string runInMemory(const std::string& source, const std::string& filename, std::vector<std::string>& args, TUCallback callback,
                         clang::Rewriter& rewriter);
 
+/// Run what clang -fsyntax-only does using Libtooling so we can hedge ourselves from an offending 
+/// transformation and skip the edge cases. 
+bool isCompilable(const std::string& source, const std::string& filename, const std::vector<std::string>& compiler_flags);
+
 }  // namespace invisible
