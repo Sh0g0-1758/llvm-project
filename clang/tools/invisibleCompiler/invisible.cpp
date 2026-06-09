@@ -13,68 +13,6 @@
 
 namespace invisible {
 
-// ─── CommaInitVisitor ──────────────────────────────────────────────
-
-CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
-}
-
-clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
-    clang::DynTypedNode current = clang::DynTypedNode::create(*decl_stmt);
-    const clang::Stmt* last_stmt = decl_stmt;
-
-    while (true) {
-        auto parents = m_ctx.getParents(current);
-        if (parents.empty())
-            return {};
-
-        const auto& parent = parents[0];
-        if (parent.get<clang::CompoundStmt>())
-            return last_stmt->getBeginLoc();
-
-        if (const auto* stmt = parent.get<clang::Stmt>())
-            last_stmt = stmt;
-
-        current = parent;
-    }
-}
-
-bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
-    if (decl_stmt->isSingleDecl())
-        return true;
-
-    llvm::SmallVector<const clang::VarDecl*, 8> vars;
-    for (const clang::Decl* decl : decl_stmt->decls()) {
-        if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl))
-            vars.push_back(var_decl);
-        else
-            return true;
-    }
-
-    clang::PrintingPolicy policy(m_ctx.getLangOpts());
-    if (m_ctx.getLangOpts().CPlusPlus)
-        policy.adjustForCPlusPlus();
-
-    std::string replacement{};
-    llvm::raw_string_ostream OS(replacement);
-
-    for (const clang::VarDecl* var_decl : vars) {
-        var_decl->print(OS, policy);
-        OS << ";\n";
-    }
-
-    OS.flush();
-    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(decl_stmt);
-    if(nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
-        m_rewriter.InsertTextBefore(nearest_compound_stmt, replacement);
-        m_rewriter.ReplaceText(clang::CharSourceRange::getTokenRange(decl_stmt->getSourceRange()), ";");
-    } else {
-        m_rewriter.ReplaceText(clang::CharSourceRange::getTokenRange(decl_stmt->getSourceRange()), replacement);
-    }
-    return true;
-}
-
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -277,28 +215,33 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     if(m_is_uninstantiated_template) return true;
 
     // If the callee's defintion is not present in the current TU
-    clang::FunctionDecl* callee = call->getDirectCallee();
-    if(!callee) return true;
+    if(!(call->getDirectCallee())) return true;
 
     if (isTopLevelCall(call)) return true;
 
+    hoist_call_at_nearest_compound_statement(call);
+
+    return true;
+}
+
+void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::CallExpr* call) {
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
 
     // The function is probably a nested function present as a template guard check. 
     // We should skip such functions as they will be evaluated at compile time and have
     // no business being inlined in the runtime code. 
     if(nearest_compound_stmt.getRawEncoding() == 0)
-        return true;
+        return;
     // If there is an overlap between the function call that we just hoisted and the 
     // function call that we intend to hoist
     if(nearest_compound_stmt == m_last_update_loc)
-        return true;
+        return;
 
     // A function that does not return anything and is being hoisted just before its call should not
     // be hoisted as they will result in no noticeable change in the rewrite and cause a infinite loop.
     // for eg. a class method returning void. 
     if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
-        return true;
+        return;
 
     auto& src_mgr = m_ctx.getSourceManager();
     const auto& lang_opts = m_ctx.getLangOpts();
@@ -312,7 +255,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     llvm::raw_string_ostream out(clean_call);
 
     if (!call->getType()->isVoidType()) {
-        clang::QualType retTy = callee->getReturnType();
+        clang::QualType retTy = call->getDirectCallee()->getReturnType();
         clang::QualType fqTy =
             clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
 
@@ -334,9 +277,29 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
+        llvm::outs() << "Begin Loc : " << call->getSourceRange().getBegin().getRawEncoding() << " End Loc : " << call->getSourceRange().getEnd().getRawEncoding() << "\n";
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
     m_last_update_loc = nearest_compound_stmt;
+}
+
+bool FuncCallCleanupVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
+    if (decl_stmt->isSingleDecl())
+        return true;
+
+    for (const clang::Decl* decl : decl_stmt->decls()) {
+        if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            if(var_decl->hasInit()) {
+                if(auto* call_expr = llvm::dyn_cast<clang::CallExpr>(var_decl->getInit())) {
+                    hoist_call_at_nearest_compound_statement(const_cast<clang::CallExpr*>(call_expr));
+                    return true;
+                }
+            }
+        } else {
+            return true;
+        }
+    }
+
     return true;
 }
 
@@ -854,7 +817,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (m_caller != m_current_func)
         return true;
 
-    clang::FunctionDecl* callee = call->getDirectCallee();
     auto& src_mgr = m_ctx.getSourceManager();
     auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
     auto ploc = src_mgr.getPresumedLoc(loc);
@@ -868,11 +830,10 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (callInLoop(call) || !isTopLevelCall(call))
         return true;
 
-    m_matched = true;
-
     // the callee might be a templated function which in turn
     // is being called by a template function. Thus at the callsite
     // the body is not available. The callee can also be a virtual function
+    clang::FunctionDecl* callee = call->getDirectCallee();
     if (!callee || !callee->hasBody())
         return true;
 
@@ -880,6 +841,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // that need special treatment.
     if (llvm::isa<clang::CXXMethodDecl>(callee))
         return true;
+    
+    m_matched = true;
 
     std::string target_var{};
     auto parents = m_ctx.getParents(*call);
@@ -1204,19 +1167,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             auto& SM = ctx.getSourceManager();
             auto endOfFile = SM.getLocForEndOfFile(SM.getMainFileID());
             rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
-        }, rewriter);
-        if(isCompilable(tmp_result, filename, args)) {
-            result = std::move(tmp_result);
-        }
-    }
-
-    // Split comma-separated declarations.
-    {
-        clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema&) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            CommaInitVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
