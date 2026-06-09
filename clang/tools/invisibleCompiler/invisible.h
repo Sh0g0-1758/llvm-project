@@ -34,6 +34,21 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
     clang::Rewriter& m_rewriter;
 };
 
+// ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
+
+/// Puts all function declarations before all function definitions 
+class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisitor> {
+  public:
+    DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
+    std::string getDeferredDefinitions();
+  private:
+    std::vector<std::string> m_deferred_definitions;
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 /// Specializes Templates so that transformations can be matched to actual source code

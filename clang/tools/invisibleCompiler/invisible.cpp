@@ -75,6 +75,52 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     return true;
 }
 
+// ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
+
+DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+}
+
+bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    std::string def;
+    llvm::raw_string_ostream def_out(def);
+    func->print(def_out, m_policy);
+    def_out.flush();
+    m_deferred_definitions.push_back(def);
+
+    clang::PrintingPolicy declPolicy = m_policy;
+    declPolicy.TerseOutput = true;
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    func->print(decl_out, declPolicy);
+    decl_out.flush();
+    decl += ";";
+
+    m_rewriter.ReplaceText(func->getSourceRange(), decl);
+    return true;
+}
+
+std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
+    std::string all_defs;
+    size_t total = 1;
+    for (const auto& def : m_deferred_definitions)
+        total += def.size() + 2;
+    all_defs.reserve(total);
+
+    all_defs += '\n';
+    for (auto& def : m_deferred_definitions) {
+        all_defs += std::move(def);
+        all_defs += "\n\n";
+    }
+    return all_defs;
+}
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
@@ -809,51 +855,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         return true;
 
     clang::FunctionDecl* callee = call->getDirectCallee();
-
-    std::string callee_name;
-    if (callee) {
-        callee_name = callee->getNameAsString();
-    } else {
-        auto* callee_expr = call->getCallee()->IgnoreParenImpCasts();
-        if (auto* member = llvm::dyn_cast<clang::MemberExpr>(callee_expr))
-            // obj.foo() or obj->foo() — resolved member call
-            callee_name = member->getMemberNameInfo().getAsString();
-
-        else if (auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(callee_expr))
-            // foo() — resolved free function
-            callee_name = dre->getNameInfo().getAsString();
-
-        else if (auto* unresolved = llvm::dyn_cast<clang::UnresolvedLookupExpr>(callee_expr))
-            // foo<N>() — unresolved free function in uninstantiated template
-            callee_name = unresolved->getName().getAsString();
-
-        else if (auto* unresolved_member = llvm::dyn_cast<clang::UnresolvedMemberExpr>(callee_expr))
-            // obj.foo<N>() — unresolved member call in uninstantiated template
-            callee_name = unresolved_member->getMemberName().getAsString();
-
-        else if (auto* dep_member = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(callee_expr))
-            // obj->foo() where obj's type is dependent
-            callee_name = dep_member->getMember().getAsString();
-
-        else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
-            // T::foo() where T is a dependent type
-            callee_name = dep_ref->getDeclName().getAsString();
-        else if(auto* c_cast_ref = llvm::dyn_cast<clang::CStyleCastExpr>(callee_expr))
-            // typedef T(*ptr)(U, V)
-            // ((ptr)func1->ptr)(a, b)
-            callee_name = "";
-        else if (auto* ha_ref = llvm::dyn_cast<clang::ArraySubscriptExpr>(callee_expr))
-            callee_name = "";
-        else {
-            llvm::errs() << "Unhandled callee type: " << callee_expr->getStmtClassName() << " in " << m_call_sites[m_current_index].second << ":" << m_call_sites[m_current_index].first << " Caller = " << m_caller << " Callee = " << m_callee << "\n";
-            callee_expr->dump();
-            return true;
-        }
-    }
-
-    if (m_callee != callee_name)
-        return true;
-
     auto& src_mgr = m_ctx.getSourceManager();
     auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
     auto ploc = src_mgr.getPresumedLoc(loc);
@@ -1185,6 +1186,24 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
+    }
+
+    // Gather function definitions and move them after all function
+    // declarations. 
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            DeclBeforeDefVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+
+            auto& SM = ctx.getSourceManager();
+            auto endOfFile = SM.getLocForEndOfFile(SM.getMainFileID());
+            rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
