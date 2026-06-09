@@ -838,11 +838,15 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
             // T::foo() where T is a dependent type
             callee_name = dep_ref->getDeclName().getAsString();
+        else if(auto* c_cast_ref = llvm::dyn_cast<clang::CStyleCastExpr>(callee_expr))
+            // typedef T(*ptr)(U, V)
+            // ((ptr)func1->ptr)(a, b)
+            callee_name = "";
         else if (auto* ha_ref = llvm::dyn_cast<clang::ArraySubscriptExpr>(callee_expr))
             callee_name = "";
         else {
-            llvm::outs() << "Unhandled callee type: " 
-                        << callee_expr->getStmtClassName() << "\n";
+            llvm::errs() << "Unhandled callee type: " << callee_expr->getStmtClassName() << " in " << m_call_sites[m_current_index].second << ":" << m_call_sites[m_current_index].first << " Caller = " << m_caller << " Callee = " << m_callee << "\n";
+            callee_expr->dump();
             return true;
         }
     }
@@ -1162,6 +1166,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         static const auto style = []() {
             auto s = clang::format::getLLVMStyle();
             s.InsertBraces = true;
+            s.ColumnLimit = 0;
             return s;
         }();
         auto replacements = clang::format::reformat(
@@ -1170,7 +1175,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         auto formatted =
             clang::tooling::applyAllReplacements(result, replacements);
         if (formatted)
-            result = *formatted;
+            result = std::move(*formatted);
     }
 
     // Specialize Function templates
