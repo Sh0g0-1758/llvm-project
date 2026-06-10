@@ -142,7 +142,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     /// Whether this visitor successfully inlined a call site.
     bool matched() const;
     bool callInLoop(const clang::CallExpr* call);
-    void updateInlineLocInfo(size_t net_lines);
+    size_t get_net_change();
 
   private:
     clang::ASTContext& m_ctx;
@@ -154,7 +154,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     clang::PrintingPolicy m_policy;
     std::string m_current_func;
     bool m_matched = false;
-    bool m_cleanup = false;
+    size_t m_net_lines = 0;
 };
 
 // ─── ConstantFoldVisitor ───────────────────────────────────────────

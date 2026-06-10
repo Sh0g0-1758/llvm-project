@@ -789,6 +789,8 @@ bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 bool InlineVisitor::shouldVisitImplicitCode() const { return true; }
 
 bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
+    if (m_matched) return true;
+
     if (m_caller != m_current_func)
         return true;
 
@@ -814,6 +816,9 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
 }
 
 bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
+    if (m_matched)
+        return true;
+
     if (m_caller != m_current_func)
         return true;
 
@@ -984,11 +989,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // drift in later call-site lookups.
     auto orig_text = clang::Lexer::getSourceText(
         clang::CharSourceRange::getTokenRange(stmt_to_replace->getSourceRange()), src_mgr, m_ctx.getLangOpts());
-    size_t net_lines = added_lines - std::count(orig_text.begin(), orig_text.end(), '\n');
-
-    // Adjust line numbers for subsequent call sites in the same file
-    // that shifted due to inserted code.
-    updateInlineLocInfo(net_lines);
+    m_net_lines = added_lines - std::count(orig_text.begin(), orig_text.end(), '\n');
 
     OS << "}";
     OS.flush();
@@ -998,13 +999,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
 bool InlineVisitor::matched() const { return m_matched; }
 
-void InlineVisitor::updateInlineLocInfo(size_t net_lines) {
-    for (size_t i = m_current_index + 1; i < m_call_sites.size(); i++) {
-        if (m_call_sites[i].second == m_call_sites[m_current_index].second &&
-            m_call_sites[i].first >= m_call_sites[m_current_index].first)
-            m_call_sites[i].first += net_lines;
-    }
-}
+size_t InlineVisitor::get_net_change() { return m_net_lines; }
 
 // ─── ConstantFoldVisitor ──────────────────────────────────────────────
 
@@ -1237,6 +1232,14 @@ std::string separate_functions(const std::string& source, const std::string& fil
 
 // ─── inline_functions ──────────────────────────────────────────────
 
+void updateInlineLocInfo(std::vector<std::pair<size_t, std::string>>& m_call_sites, size_t m_current_index, size_t m_net_lines) {
+    for (size_t i = m_current_index + 1; i < m_call_sites.size(); i++) {
+        if (m_call_sites[i].second == m_call_sites[m_current_index].second &&
+            m_call_sites[i].first >= m_call_sites[m_current_index].first)
+            m_call_sites[i].first += m_net_lines;
+    }
+}
+
 InlineResult inline_functions(const std::string& source, const std::string& filename,
                               const std::vector<InlineEntry>& entries, std::vector<std::string>& args) {
     std::vector<std::pair<std::string, std::string>> oracle;
@@ -1259,19 +1262,24 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             continue;
         }
         clang::Rewriter rewriter;
+        size_t net_lines;
         std::string tmp_result = runInMemory(
             result, filename, args,
-            [&rewriter, &oracle, &call_sites, &succeeded, &i](clang::ASTContext& ctx, clang::Sema&) {
+            [&rewriter, &oracle, &call_sites, &succeeded, &i, &net_lines](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 if(!visitor.matched())
                     llvm::outs() << "could not find any matching pair for this: " << oracle[i].first << " " << oracle[i].second << " " << call_sites[i].first << "\n";
                 succeeded[i] = visitor.matched();
+                net_lines = visitor.get_net_change();
             },
             rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+            // Adjust line numbers for subsequent call sites in the same file
+            // that shifted due to inserted code.
+            updateInlineLocInfo(call_sites, i, net_lines);
         } else {
             succeeded[i] = false;
         }
