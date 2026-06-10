@@ -822,6 +822,58 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (m_caller != m_current_func)
         return true;
 
+    clang::FunctionDecl* callee = call->getDirectCallee();
+
+    std::string callee_name;
+    if (callee) {
+        callee_name = callee->getNameAsString();
+    } else {
+        auto* callee_expr = call->getCallee()->IgnoreParenImpCasts();
+        if (auto* member = llvm::dyn_cast<clang::MemberExpr>(callee_expr))
+            // obj.foo() or obj->foo() — resolved member call
+            callee_name = member->getMemberNameInfo().getAsString();
+
+        else if (auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(callee_expr))
+            // foo() — resolved free function
+            callee_name = dre->getNameInfo().getAsString();
+
+        else if (auto* unresolved = llvm::dyn_cast<clang::UnresolvedLookupExpr>(callee_expr))
+            // foo<N>() — unresolved free function in uninstantiated template
+            callee_name = unresolved->getName().getAsString();
+
+        else if (auto* unresolved_member = llvm::dyn_cast<clang::UnresolvedMemberExpr>(callee_expr))
+            // obj.foo<N>() — unresolved member call in uninstantiated template
+            callee_name = unresolved_member->getMemberName().getAsString();
+
+        else if (auto* dep_member = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(callee_expr))
+            // obj->foo() where obj's type is dependent
+            callee_name = dep_member->getMember().getAsString();
+
+        else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
+            // T::foo() where T is a dependent type
+            callee_name = dep_ref->getDeclName().getAsString();
+        else if(auto* c_cast_ref = llvm::dyn_cast<clang::CStyleCastExpr>(callee_expr))
+            // typedef T(*ptr)(U, V)
+            // ((ptr)func1->ptr)(a, b)
+            callee_name = "";
+        else if (auto* ha_ref = llvm::dyn_cast<clang::ArraySubscriptExpr>(callee_expr))
+            callee_name = "";
+        else {
+            llvm::errs() << "Unhandled callee type: " << callee_expr->getStmtClassName() << " at: " << m_call_sites[m_current_index] << " Caller = " << m_caller << " Callee = " << m_callee << "\n";
+            callee_name = "";
+        }
+    }
+
+    // This check is required in case the function hoisting pass failed. Because then we can
+    // have foo(bar()) and we can match with foo instead.  
+    if (m_callee != callee_name)
+        return true;
+
+    // This check safeguards against a segfault further down the line. Once the preprocessing
+    // is good enough, we remove this check though. 
+    if(call->getNumArgs() != callee->getNumParams())
+        return true;
+
     auto& src_mgr = m_ctx.getSourceManager();
     auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
     auto ploc = src_mgr.getPresumedLoc(loc);
@@ -838,7 +890,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // the callee might be a templated function which in turn
     // is being called by a template function. Thus at the callsite
     // the body is not available. The callee can also be a virtual function
-    clang::FunctionDecl* callee = call->getDirectCallee();
     if (!callee || !callee->hasBody())
         return true;
 
