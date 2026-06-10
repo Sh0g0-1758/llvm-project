@@ -672,7 +672,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
 
     if (auto* return_stmt = llvm::dyn_cast<clang::ReturnStmt>(stmt)) {
         if (!m_target_var.empty()) {
-            stream << m_target_var << " = ";
+            stream << "*" << m_target_var << " = ";
             if (clang::Expr* ret_val = return_stmt->getRetValue())
                 ret_val->printPretty(stream, this, m_policy);
             stream << ";\n";
