@@ -767,7 +767,7 @@ bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
 // ─── InlineVisitor ─────────────────────────────────────────────────
 
 InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
-                             std::vector<std::pair<size_t, std::string>>& call_sites, size_t& current_index,
+                             std::vector<size_t>& call_sites, size_t& current_index,
                              clang::Rewriter& rewriter)
     : m_ctx(ctx),
       m_caller(caller),
@@ -806,7 +806,7 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     auto& src_mgr = m_ctx.getSourceManager();
     auto ploc = src_mgr.getPresumedLoc(src_mgr.getSpellingLoc(expr->getExprLoc()));
 
-    if (ploc.getLine() != m_call_sites[m_current_index].first)
+    if (ploc.getLine() != m_call_sites[m_current_index])
         return true;
 
     // Mark matched so the caller knows this site was found,
@@ -826,7 +826,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
     auto ploc = src_mgr.getPresumedLoc(loc);
 
-    if (ploc.getLine() != m_call_sites[m_current_index].first)
+    if (ploc.getLine() != m_call_sites[m_current_index])
         return true;
 
     // If the call is in a loop that we do not correctly
@@ -1232,22 +1232,22 @@ std::string separate_functions(const std::string& source, const std::string& fil
 
 // ─── inline_functions ──────────────────────────────────────────────
 
-void updateInlineLocInfo(std::vector<std::pair<size_t, std::string>>& m_call_sites, size_t m_current_index, size_t m_net_lines) {
+void updateInlineLocInfo(std::vector<size_t>& m_call_sites, size_t m_current_index, size_t m_net_lines) {
     for (size_t i = m_current_index + 1; i < m_call_sites.size(); i++) {
-        if (m_call_sites[i].second == m_call_sites[m_current_index].second &&
-            m_call_sites[i].first >= m_call_sites[m_current_index].first)
-            m_call_sites[i].first += m_net_lines;
+        if (m_call_sites[i] >= m_call_sites[m_current_index]) {
+                m_call_sites[i] += m_net_lines;
+        }
     }
 }
 
 InlineResult inline_functions(const std::string& source, const std::string& filename,
                               const std::vector<InlineEntry>& entries, std::vector<std::string>& args) {
     std::vector<std::pair<std::string, std::string>> oracle;
-    std::vector<std::pair<size_t, std::string>> call_sites;
+    std::vector<size_t> call_sites;
 
     for (const auto& entry : entries) {
         oracle.emplace_back(entry.caller, entry.callee);
-        call_sites.emplace_back(entry.line, entry.file);
+        call_sites.emplace_back(entry.line);
     }
 
     std::string result = source;
@@ -1270,7 +1270,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 if(!visitor.matched())
-                    llvm::outs() << "could not find any matching pair for this: " << oracle[i].first << " " << oracle[i].second << " " << call_sites[i].first << "\n";
+                    llvm::outs() << "could not find any matching pair for this: " << oracle[i].first << " " << oracle[i].second << " " << call_sites[i] << "\n";
                 succeeded[i] = visitor.matched();
                 net_lines = visitor.get_net_change();
             },
@@ -1283,6 +1283,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
         } else {
             succeeded[i] = false;
         }
+        llvm::outs() << "Done with Number -> " << i << "\n";
     }
 
     return {result, succeeded};

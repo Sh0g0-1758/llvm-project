@@ -129,7 +129,7 @@ class InlinePrinterHelper : public clang::PrinterHelper {
 class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
   public:
     InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
-                  std::vector<std::pair<size_t, std::string>>& call_sites, size_t& current_index,
+                  std::vector<size_t>& call_sites, size_t& current_index,
                   clang::Rewriter& rewriter);
 
     bool VisitFunctionDecl(clang::FunctionDecl* func);
@@ -148,7 +148,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     clang::ASTContext& m_ctx;
     std::string m_caller;
     std::string m_callee;
-    std::vector<std::pair<size_t, std::string>>& m_call_sites;
+    std::vector<size_t>& m_call_sites;
     size_t& m_current_index;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
