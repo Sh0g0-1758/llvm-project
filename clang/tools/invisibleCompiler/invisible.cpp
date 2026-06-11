@@ -266,6 +266,8 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
         fqTy.print(out, policy, ret_var);
         out << " = ";
+    } else {
+        ret_var = "(void)0";
     }
     out << call_text << ";\n";
     out.flush();
@@ -520,7 +522,6 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     }
 
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
-        llvm::outs() << "Inside a declStmt\n";
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
                 // arr[n] -> arr[__inline_x_y]
@@ -823,6 +824,11 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         return true;
 
     clang::FunctionDecl* callee = call->getDirectCallee();
+    // the callee might be a templated function which in turn
+    // is being called by a template function. Thus at the callsite
+    // the body is not available. The callee can also be a virtual function
+    if (!callee || !callee->hasBody())
+        return true;
 
     std::string callee_name;
     if (callee) {
@@ -885,12 +891,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // handle inlining or the functionHositingPass failed
     // in which case we do not inline
     if (callInLoop(call) || !isTopLevelCall(call))
-        return true;
-
-    // the callee might be a templated function which in turn
-    // is being called by a template function. Thus at the callsite
-    // the body is not available. The callee can also be a virtual function
-    if (!callee || !callee->hasBody())
         return true;
 
     // TODO: Handle class methods — they may use private members
@@ -999,7 +999,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
             caller_params[i] = arg_text;
         } else {
             caller_params[i] = "__inline_param__" + std::to_string(m_current_index) + "_" + std::to_string(i);
-            param_decl->getOriginalType().print(OS, m_policy, caller_params[i]);
+            param_decl->getType().print(OS, m_policy, caller_params[i]);
             OS << " = " << arg_text << ";\n";
             added_lines++;
         }
