@@ -445,11 +445,12 @@ std::string FilterVisitor::toJSON() {
 // ─── InlinePrinterHelper ───────────────────────────────────────────
 
 InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var,
-                                         std::map<int, std::string> caller_params, clang::PrintingPolicy policy)
+                                         std::map<int, std::string> caller_params, clang::PrintingPolicy policy,
+                                         size_t current_index)
     : m_ctx(ctx),
       m_target_var(std::move(target_var)),
       m_caller_params(std::move(caller_params)),
-      m_policy(policy) {
+      m_policy(policy), m_current_index(current_index), m_goto_labels({}) {
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
@@ -608,6 +609,28 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
             cond->printPretty(stream, this, m_policy);
         stream << ") ";
         switch_stmt->getBody()->printPretty(stream, this, m_policy);
+        return true;
+    }
+
+    if (auto* label_stmt = llvm::dyn_cast<clang::LabelStmt>(stmt)) {
+        std::string label = label_stmt->getDecl()->getName().str();
+        if(m_goto_labels.find(label) == m_goto_labels.end()) {
+            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index);   
+        }
+        stream << m_goto_labels.at(label) << ":\n";
+        label_stmt->getSubStmt()->printPretty(stream, this, m_policy);
+        stream << ";";
+        return true;
+    }
+
+    if (auto* goto_stmt = llvm::dyn_cast<clang::GotoStmt>(stmt)) {
+        std::string label = goto_stmt->getLabel()->getName().str();
+        if(m_goto_labels.find(label) == m_goto_labels.end()) {
+            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index);   
+        }
+        stream << "goto ";
+        stream << m_goto_labels.at(label);
+        stream << ";\n";
         return true;
     }
 
@@ -1008,7 +1031,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
 
-    InlinePrinterHelper helper(m_ctx, dummy_inline_result_pointer, caller_params, m_policy);
+    InlinePrinterHelper helper(m_ctx, dummy_inline_result_pointer, caller_params, m_policy, m_current_index);
     callee->getBody()->printPretty(stream, &helper, m_policy);
     stream.flush();
 

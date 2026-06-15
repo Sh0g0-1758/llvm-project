@@ -110,7 +110,8 @@ class FilterVisitor : public clang::RecursiveASTVisitor<FilterVisitor> {
 class InlinePrinterHelper : public clang::PrinterHelper {
   public:
     InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var,
-                        std::map<int, std::string> caller_params, clang::PrintingPolicy policy);
+                        std::map<int, std::string> caller_params, clang::PrintingPolicy policy,
+                        size_t current_index);
 
     bool handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) override;
 
@@ -119,6 +120,8 @@ class InlinePrinterHelper : public clang::PrinterHelper {
     std::string m_target_var;
     std::map<int, std::string> m_caller_params;
     clang::PrintingPolicy m_policy;
+    size_t m_current_index;
+    std::map<std::string, std::string> m_goto_labels;
     void renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx);
 };
 
