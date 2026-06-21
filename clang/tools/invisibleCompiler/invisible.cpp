@@ -10,6 +10,7 @@
 #include "llvm/Support/JSON.h"
 
 #include <string>
+#include <queue>
 
 namespace invisible {
 
@@ -57,6 +58,437 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         all_defs += "\n\n";
     }
     return all_defs;
+}
+
+// ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────────────
+
+ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_current_index(current_index), m_last_update_loc(0) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+}
+
+bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
+    return m_last_update_loc != 0;
+}
+
+bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
+    if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LAnd) {
+        if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
+        /**
+         * `var = expr1 && expr2;`
+         * is transformed to
+         * int __short_circuit_result_#id = 0;
+         * if (expr1) {
+         *     if (expr2) {
+         *         __short_circuit_result_#id = 1;
+         *     }
+         * }
+         * var = __short_circuit_result_#id;
+         * 
+         * Its okay to store the result as an int because any arith ops
+         * would anyways convert the bool to an int
+         * 
+         * Another transformation would be to store the individual
+         * results of expr1 and expr2 as variables and then emit
+         * the short-circuiting in its IR form as well as it is. 
+         * The current design introduced the least amount of variables
+         * in another scope and does not introduce another short-circuit
+         * operation as well
+         */
+        clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
+        if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+        else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
+
+        std::string ir_form{};
+        llvm::raw_string_ostream out(ir_form);
+
+        std::string lexpr;
+        llvm::raw_string_ostream lexpr_out(lexpr);
+        binary_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
+        lexpr_out.flush();
+
+        std::string rexpr;
+        llvm::raw_string_ostream rexpr_out(rexpr);
+        binary_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
+        rexpr_out.flush();
+
+
+        std::string short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
+
+        out << "int " << short_circuit_result << " = 0" << ";\n";
+        out << "if (" << lexpr << ") " << "{\n";
+        out << "    if (" << rexpr << ") {\n" << "        " << short_circuit_result << " = 1;\n}\n}\n";
+        out.flush();
+
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
+        m_rewriter.ReplaceText(binary_op->getSourceRange(), short_circuit_result);
+    } else if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LOr) {
+        if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
+        /**
+         * `var = expr1 || expr2`
+         * is transformed to
+         * int __short_circuit_result_#id = 1;
+         * if (!(expr1)) {
+         *     if (!(expr2)) {
+         *         __short_circuit_result_#id = 0;
+         *     }
+         * }
+         * var = __short_circuit_result_#id;
+         */
+        clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
+        if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+        else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
+
+        std::string ir_form{};
+        llvm::raw_string_ostream out(ir_form);
+
+        std::string lexpr;
+        llvm::raw_string_ostream lexpr_out(lexpr);
+        binary_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
+        lexpr_out.flush();
+
+        std::string rexpr;
+        llvm::raw_string_ostream rexpr_out(rexpr);
+        binary_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
+        rexpr_out.flush();
+
+
+        std::string short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
+
+        out << "int " << short_circuit_result << " = 1" << ";\n";
+        out << "if (!(" << lexpr << ")) " << "{\n";
+        out << "    if (!(" << rexpr << ")) {\n" << "        " << short_circuit_result << " = 0;\n}\n}\n";
+        out.flush();
+
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
+        m_rewriter.ReplaceText(binary_op->getSourceRange(), short_circuit_result);
+    }
+    return true;
+}
+
+bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
+    if(!exprHasFuncCall(conditional_op->getLHS()) && !exprHasFuncCall(conditional_op->getRHS())) return true;
+    /**
+     * .. `cond ? expr1 : expr2` ..
+     * is transformed to
+     * T __short_circuit_result_#id = 1;
+     * if (cond) {
+     *     __short_circuit_result_#id = expr1;
+     * } else {
+     *     __short_circuit_result_#id = expr2;
+     * }
+     * .. __short_circuit_result_#id ..
+     */
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(conditional_op);
+    if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+    else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
+
+    std::string ir_form{};
+    llvm::raw_string_ostream out(ir_form);
+
+    std::string lexpr;
+    llvm::raw_string_ostream lexpr_out(lexpr);
+    conditional_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
+    lexpr_out.flush();
+
+    std::string rexpr;
+    llvm::raw_string_ostream rexpr_out(rexpr);
+    conditional_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
+    rexpr_out.flush();
+
+    std::string cond;
+    llvm::raw_string_ostream cond_out(cond);
+    conditional_op->getCond()->printPretty(cond_out, nullptr, m_policy);
+    cond_out.flush();
+
+    std::string short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
+    clang::QualType resType = clang::TypeName::getFullyQualifiedType(conditional_op->getLHS()->getType(), m_ctx, false);
+
+    resType.print(out, m_policy, short_circuit_result);
+    out << ";\n";
+    out << "if (" << cond << ") {\n";
+    out << short_circuit_result << " = " << lexpr << ";\n";
+    out << "} else {\n";
+    out << short_circuit_result << " = " << rexpr << ";\n";
+    out << "}\n";
+    out.flush();
+
+    m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
+    m_rewriter.ReplaceText(conditional_op->getSourceRange(), short_circuit_result);
+
+    return true;
+}
+
+clang::SourceLocation ShortCircuitOperatorToIRVisitor::findInsertionLoc(const clang::ConditionalOperator* conditional_op) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(*conditional_op);
+    const clang::Stmt* last_stmt = nullptr;
+
+    while (true) {
+        auto parents = m_ctx.getParents(current);
+        if (parents.empty()) {
+            return {};
+        }
+
+        const auto& parent = parents[0];
+        if (parent.get<clang::CompoundStmt>() != nullptr) {
+            if (last_stmt == nullptr) {
+                return {};
+            }
+            return last_stmt->getBeginLoc();
+        }
+        if (const auto* stmt = parent.get<clang::Stmt>()) {
+            last_stmt = stmt;
+        }
+
+        current = parent;
+    }
+}
+
+clang::SourceLocation ShortCircuitOperatorToIRVisitor::findInsertionLoc(const clang::BinaryOperator* binary_op) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(*binary_op);
+    const clang::Stmt* last_stmt = nullptr;
+
+    while (true) {
+        auto parents = m_ctx.getParents(current);
+        if (parents.empty()) {
+            return {};
+        }
+
+        const auto& parent = parents[0];
+        if (parent.get<clang::CompoundStmt>() != nullptr) {
+            if (last_stmt == nullptr) {
+                return {};
+            }
+            return last_stmt->getBeginLoc();
+        }
+        if (const auto* stmt = parent.get<clang::Stmt>()) {
+            last_stmt = stmt;
+        }
+
+        current = parent;
+    }
+}
+
+bool ShortCircuitOperatorToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
+    expr = expr->IgnoreParenImpCasts();
+    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
+    clang::Stmt* stmt = expr;
+    std::queue<clang::Stmt*> children;
+    for (const clang::Stmt* child : stmt->children()) {
+        if (child == nullptr) continue;
+        children.push(const_cast<clang::Stmt*>(child));
+    }
+    bool stmtIsFuncCall = false;
+    while(!children.empty()) {
+        clang::Stmt* child = children.front();
+        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
+            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
+                stmtIsFuncCall = true;
+        if(!stmtIsFuncCall) {
+            for (const clang::Stmt* grandChild : child->children()) {
+                if (grandChild == nullptr) continue;
+                children.push(const_cast<clang::Stmt*>(grandChild));
+            }
+        } else break;
+        children.pop();
+    }
+    return stmtIsFuncCall;
+}
+
+// ─── BreakElseIfVisitor ──────────────────────────────────────────────
+
+BreakElseIfVisitor::BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+}
+
+bool BreakElseIfVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
+    if (!if_stmt->hasElseStorage()) return true;
+    if (clang::IfStmt* inner_if_stmt = llvm::dyn_cast<clang::IfStmt>(if_stmt->getElse())) {
+        if (!exprHasFuncCall(inner_if_stmt->getCond())) return true;
+
+        m_rewriter.InsertTextBefore(inner_if_stmt->getSourceRange().getBegin(), "{\n");
+        m_rewriter.InsertTextBefore(inner_if_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
+    }
+    return true;
+}
+
+bool BreakElseIfVisitor::exprHasFuncCall(clang::Expr* expr) {
+    expr = expr->IgnoreParenImpCasts();
+    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
+    clang::Stmt* stmt = expr;
+    std::queue<clang::Stmt*> children;
+    for (const clang::Stmt* child : stmt->children()) {
+        if (child == nullptr) continue;
+        children.push(const_cast<clang::Stmt*>(child));
+    }
+    bool stmtIsFuncCall = false;
+    while(!children.empty()) {
+        clang::Stmt* child = children.front();
+        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
+            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
+                stmtIsFuncCall = true;
+        if(!stmtIsFuncCall) {
+            for (const clang::Stmt* grandChild : child->children()) {
+                if (grandChild == nullptr) continue;
+                children.push(const_cast<clang::Stmt*>(grandChild));
+            }
+        } else break;
+        children.pop();
+    }
+    return stmtIsFuncCall;
+}
+
+// ─── MarkSwitchCaseVisitor ──────────────────────────────────────────────
+
+MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+}
+
+bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {
+    m_rewriter.InsertTextBefore(case_stmt->getSubStmt()->getSourceRange().getBegin(), ";\n");
+    return true;
+}
+
+// ─── LoopToIRVisitor ──────────────────────────────────────────────
+
+LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+}
+
+bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
+    /**
+     * `for (init, cond, inc) body`
+     * is transformed into
+     * for (init;;) {
+     *   if (!(cond)) { break; }
+     *   body [stripped of surrounding braces]
+     *   expr
+     * }
+     */
+    bool hasCond = for_stmt->getCond() != nullptr;
+    bool hasInc  = for_stmt->getInc() != nullptr;
+    if(!hasCond && !hasInc) return true;
+    if(hasCond && !exprHasFuncCall(for_stmt->getCond())) return true;
+    if(hasInc && !exprHasFuncCall(for_stmt->getInc())) return true;
+
+    std::string cond;
+    llvm::raw_string_ostream cond_out(cond);
+    if(hasCond) for_stmt->getCond()->printPretty(cond_out, nullptr, m_policy);
+    cond_out.flush();
+
+    std::string inc;
+    llvm::raw_string_ostream inc_out(inc);
+    if(hasInc) {
+        for_stmt->getInc()->printPretty(inc_out, nullptr, m_policy);
+        inc_out << ";";
+    }
+    inc_out.flush();
+
+    if (hasCond) m_rewriter.ReplaceText(for_stmt->getCond()->getSourceRange(), "");
+    if (hasInc) m_rewriter.ReplaceText(for_stmt->getInc()->getSourceRange(), "");
+
+    std::string cond_wrapped_in_if;
+    llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
+    if(hasCond) cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
+    cond_wrapped_out.flush();
+    
+    if(hasCond) m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
+    if(hasInc) m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getEnd(), inc);
+
+    return true;
+}
+
+bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
+    /**
+     * `while (cond) body`
+     * is transformed into
+     * while (1) {
+     *   if (!(cond)) { break; }
+     *   body [stripped of surrounding braces]
+     * }
+     */
+    if (!exprHasFuncCall(while_stmt->getCond())) return true;
+
+    std::string cond;
+    llvm::raw_string_ostream cond_out(cond);
+    while_stmt->getCond()->printPretty(cond_out, nullptr, m_policy);
+    cond_out.flush();
+
+    m_rewriter.ReplaceText(while_stmt->getCond()->getSourceRange(), "1");
+
+    std::string cond_wrapped_in_if;
+    llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
+    cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
+    cond_wrapped_out.flush();
+
+    m_rewriter.InsertTextBefore(while_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
+
+    return true;
+}
+
+bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
+    /**
+     * `do body while (cond);`
+     * is transformed into
+     * do {
+     *   body [stripped of surrounding braces]
+     *   if (!(cond)) { break; }
+     * } while(1);
+     */
+    if (!exprHasFuncCall(do_stmt->getCond())) return true;
+
+    std::string cond;
+    llvm::raw_string_ostream cond_out(cond);
+    do_stmt->getCond()->printPretty(cond_out, nullptr, m_policy);
+    cond_out.flush();
+
+    m_rewriter.ReplaceText(do_stmt->getCond()->getSourceRange(), "1");
+
+    std::string cond_wrapped_in_if;
+    llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
+    cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
+    cond_wrapped_out.flush();
+
+    m_rewriter.InsertTextBefore(do_stmt->getBody()->getSourceRange().getEnd(), cond_wrapped_in_if);
+
+    return true;
+}
+
+bool LoopToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
+    expr = expr->IgnoreParenImpCasts();
+    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
+    clang::Stmt* stmt = expr;
+    std::queue<clang::Stmt*> children;
+    for (const clang::Stmt* child : stmt->children()) {
+        if (child == nullptr) continue;
+        children.push(const_cast<clang::Stmt*>(child));
+    }
+    bool stmtIsFuncCall = false;
+    while(!children.empty()) {
+        clang::Stmt* child = children.front();
+        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
+            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
+                stmtIsFuncCall = true;
+        if(!stmtIsFuncCall) {
+            for (const clang::Stmt* grandChild : child->children()) {
+                if (grandChild == nullptr) continue;
+                children.push(const_cast<clang::Stmt*>(grandChild));
+            }
+        } else break;
+        children.pop();
+    }
+    return stmtIsFuncCall;
 }
 
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
@@ -1242,9 +1674,70 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    // Marks the beginning of every case statement with a semi-colon so
+    // that any function call present at the start of the set of statements
+    // for case is hoisted as part of the case and not above it.
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            MarkSwitchCaseVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
+    }
+
+    // Breaks `else if` statements into `else { if  }` statements if 
+    // the expr in `if(expr)` contains a function-call. 
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            BreakElseIfVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
+    }
+
+    // Writes Loops in their IR form at the source code level. 
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            LoopToIRVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        }
+    }
+
+    size_t current_index;
+
+    /// rewrite short-circuit operations into their IR form at the source code level
+    bool didConvertToIR = true;
+    current_index = 0;
+    while (didConvertToIR) {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &current_index, &didConvertToIR](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            ShortCircuitOperatorToIRVisitor visitor(ctx, rewriter, current_index);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            didConvertToIR = visitor.didConvertToIR();
+        }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
+    }
+
     // Hoist nested function calls (repeat until stable).
     bool did_cleanup = true;
-    size_t current_index = 0;
+    current_index = 0;
     while (did_cleanup) {
         did_cleanup = false;
         clang::Rewriter rewriter;

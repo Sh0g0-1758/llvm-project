@@ -33,6 +33,72 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::PrintingPolicy m_policy;
 };
 
+// ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────
+
+/// Writes short-circuit operations in their IR form at the source code level
+class ShortCircuitOperatorToIRVisitor : public clang::RecursiveASTVisitor<ShortCircuitOperatorToIRVisitor> {
+  public:
+    ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
+    bool VisitBinaryOperator(clang::BinaryOperator* binary_op);
+    bool VisitConditionalOperator(clang::ConditionalOperator* conditional_op);
+    clang::SourceLocation findInsertionLoc(const clang::BinaryOperator* binary_op);
+    clang::SourceLocation findInsertionLoc(const clang::ConditionalOperator* conditional_op);
+    bool exprHasFuncCall(clang::Expr* expr);
+    bool didConvertToIR();
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    size_t& m_current_index;
+    size_t m_last_update_loc;
+};
+
+// ─── BreakElseIfVisitor ──────────────────────────────────────
+
+/// Breaks `else if` statements into `else { if  }` statements if 
+/// the expr in `if(expr)` contains a function-call. 
+class BreakElseIfVisitor : public clang::RecursiveASTVisitor<BreakElseIfVisitor> {
+  public:
+    BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitIfStmt(clang::IfStmt* if_stmt);
+    bool exprHasFuncCall(clang::Expr* expr);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
+// ─── MarkSwitchCaseVisitor ──────────────────────────────────────
+
+/// Marks the beginning of every case statement with a semi-colon so
+/// that any function call present at the start of the set of statements
+/// for case is hoisted as part of the case and not above it. 
+class MarkSwitchCaseVisitor : public clang::RecursiveASTVisitor<MarkSwitchCaseVisitor> {
+  public:
+    MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitCaseStmt(clang::CaseStmt* case_stmt);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
+// ─── LoopToIRVisitor ──────────────────────────────────────
+
+/// Writes Loops in their IR form at the source code level
+class LoopToIRVisitor : public clang::RecursiveASTVisitor<LoopToIRVisitor> {
+  public:
+    LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitForStmt(clang::ForStmt* for_stmt);
+    bool VisitWhileStmt(clang::WhileStmt* while_stmt);
+    bool VisitDoStmt(clang::DoStmt* do_stmt);
+    bool exprHasFuncCall(clang::Expr* expr);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 /// Specializes Templates so that transformations can be matched to actual source code
