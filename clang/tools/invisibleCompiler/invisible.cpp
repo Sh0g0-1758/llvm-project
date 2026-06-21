@@ -959,44 +959,20 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
                 // arr[n] -> arr[__inline_x_y]
                 renameVLASizeVars(var_decl->getType(), m_ctx);
-
-                clang::Expr *init = var_decl->getInit();
-                var_decl->setInit(nullptr);
-                var_decl->print(stream, m_policy);
-                var_decl->setInit(init);
-
-                if (init) {
-                    switch (var_decl->getInitStyle()) {
-                        case clang::VarDecl::CInit:
-                            stream << " = ";
-                            init->printPretty(stream, this, m_policy);
-                            stream << ";\n";
-                            break;
-                        case clang::VarDecl::CallInit:
-                            if (auto *CCE = llvm::dyn_cast<clang::CXXConstructExpr>(init); CCE && CCE->getNumArgs() == 0) {
-                                stream << ";\n";
-                            } else {
-                                stream << "(";
-                                init->printPretty(stream, this, m_policy);
-                                stream << ");\n";
-                            }
-                            break;
-                        case clang::VarDecl::ListInit:
-                            init->printPretty(stream, this, m_policy);
-                            stream << ";\n";
-                            break;
-                        case clang::VarDecl::ParenListInit:
-                            stream  << "(";
-                            init->printPretty(stream, this, m_policy);
-                            stream << ");\n";
-                            break;
-                    }
-                } else {
-                    stream << ";\n";
-                }
             }
         }
-        return true;
+        // we let the printer figure out how to print the declarations
+        // as there can be comma separated decls which we can't handle ourselves. 
+        // One solution is to separate them into different lines but this would not
+        // work when these decls are present in a for loop. The VLA type need to be
+        // renamed separately because it is not a DeclRefExpr, rather its a part of the
+        // type itself. Here we take a slightly controversial approach of modifying the AST
+        // itself instead of doing the tweaks using the rewriter. The perils of such is 
+        // usually descried as accidently changing a node which might be shared by some
+        // other subtree. But for our case, the type of a VLA need to be renamed if it
+        // uses a function param, hence even if its shared, its okay because the latter
+        // would anyways need to be renamed to reflect the inlined function params. 
+        return false;
     }
 
     if (auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(stmt)) {
