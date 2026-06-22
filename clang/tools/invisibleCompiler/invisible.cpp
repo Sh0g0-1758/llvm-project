@@ -379,8 +379,8 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     bool hasCond = for_stmt->getCond() != nullptr;
     bool hasInc  = for_stmt->getInc() != nullptr;
     if(!hasCond && !hasInc) return true;
-    if(hasCond && !exprHasFuncCall(for_stmt->getCond())) return true;
-    if(hasInc && !exprHasFuncCall(for_stmt->getInc())) return true;
+    if(hasCond && !exprHasFuncCall(for_stmt->getCond()) &&
+      (hasInc && !exprHasFuncCall(for_stmt->getInc()))) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
@@ -897,7 +897,8 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
       m_policy(policy), 
       m_current_index(current_index), 
       m_goto_labels({}),
-      m_func_param_renamer(m_ctx, m_caller_params) {
+      m_func_param_renamer(m_ctx, m_caller_params),
+      m_goto_label_index(0) {
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
@@ -987,7 +988,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     if (auto* label_stmt = llvm::dyn_cast<clang::LabelStmt>(stmt)) {
         std::string label = label_stmt->getDecl()->getName().str();
         if(m_goto_labels.find(label) == m_goto_labels.end()) {
-            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index);   
+            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index) + "__" + std::to_string(m_goto_label_index++);   
         }
         stream << m_goto_labels.at(label) << ":\n";
         label_stmt->getSubStmt()->printPretty(stream, this, m_policy);
@@ -998,7 +999,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     if (auto* goto_stmt = llvm::dyn_cast<clang::GotoStmt>(stmt)) {
         std::string label = goto_stmt->getLabel()->getName().str();
         if(m_goto_labels.find(label) == m_goto_labels.end()) {
-            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index);   
+            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index++) + "__" + std::to_string(m_goto_label_index++);
         }
         stream << "goto ";
         stream << m_goto_labels.at(label);
@@ -1611,6 +1612,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Declarations Before Definitions Preprocessing failed\n";
         }
     }
 
@@ -1626,6 +1629,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Switch-case Preprocessing failed\n";
         }
     }
 
@@ -1640,6 +1645,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Else If Preprocessing failed\n";
         }
     }
 
@@ -1653,6 +1660,9 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Loops Preprocessing failed\n";
+            return tmp_result;
         }
     }
 
@@ -1670,6 +1680,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             didConvertToIR = visitor.didConvertToIR();
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
+            llvm::outs() << "Short-circuit Preprocessing failed\n";
             break;
         }
         result = std::move(tmp_result);
@@ -1688,6 +1699,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             did_cleanup = visitor.did_cleanup();
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
+            llvm::outs() << "Function Hoisting Preprocessing failed\n";
             break;
         }
         result = std::move(tmp_result);

@@ -204,6 +204,7 @@ class InlinePrinterHelper : public clang::PrinterHelper {
     std::map<std::string, std::string> m_goto_labels;
     void renameVLASizeVars(clang::QualType T);
     FunctionParamRenamer m_func_param_renamer;
+    size_t m_goto_label_index;
 };
 
 // ─── InlineVisitor ─────────────────────────────────────────────────
