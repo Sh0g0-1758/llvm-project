@@ -880,13 +880,10 @@ FunctionParamRenamer::FunctionParamRenamer(clang::ASTContext &C, std::map<int, s
     : Ctx(C), callerParams(PR) {}
 
 bool FunctionParamRenamer::VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
-    if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
-        if (clang::ParmVarDecl *PVD = llvm::dyn_cast<clang::ParmVarDecl>(VD)) {
+    if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl()))
+        if (clang::ParmVarDecl *PVD = llvm::dyn_cast<clang::ParmVarDecl>(VD))
             VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(callerParams[PVD->getFunctionScopeIndex()])));
-            return true;
-        }
-    }
-    return false;
+    return true;
 }
 
 // ─── InlinePrinterHelper ───────────────────────────────────────────
