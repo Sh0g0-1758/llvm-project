@@ -874,6 +874,21 @@ std::string FilterVisitor::toJSON() {
     return result;
 }
 
+// ─── FunctionParamRenamer ───────────────────────────────────────────
+
+FunctionParamRenamer::FunctionParamRenamer(clang::ASTContext &C, std::map<int, std::string> &PR)
+    : Ctx(C), callerParams(PR) {}
+
+bool FunctionParamRenamer::VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
+    if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
+        if (clang::ParmVarDecl *PVD = llvm::dyn_cast<clang::ParmVarDecl>(VD)) {
+            VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(callerParams[PVD->getFunctionScopeIndex()])));
+            return true;
+        }
+    }
+    return false;
+}
+
 // ─── InlinePrinterHelper ───────────────────────────────────────────
 
 InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var,
@@ -882,83 +897,62 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
     : m_ctx(ctx),
       m_target_var(std::move(target_var)),
       m_caller_params(std::move(caller_params)),
-      m_policy(policy), m_current_index(current_index), m_goto_labels({}) {
+      m_policy(policy), 
+      m_current_index(current_index), 
+      m_goto_labels({}),
+      m_func_param_renamer(m_ctx, m_caller_params) {
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
       }
 
-struct VLARenamer : clang::RecursiveASTVisitor<VLARenamer> {
-    clang::ASTContext &Ctx;
-    std::map<int, std::string> &callerParams;
-
-    VLARenamer(clang::ASTContext &C, std::map<int, std::string> &PR)
-        : Ctx(C), callerParams(PR) {}
-
-    bool VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
-        if (clang::VarDecl *VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
-            if (clang::ParmVarDecl *PVD = llvm::dyn_cast<clang::ParmVarDecl>(VD)) {
-                VD->setDeclName(clang::DeclarationName(&Ctx.Idents.get(callerParams[PVD->getFunctionScopeIndex()])));
-                return true;
-            }
-        }
-        return false;
-    }
-};
-
-void InlinePrinterHelper::renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx) {
+void InlinePrinterHelper::renameVLASizeVars(clang::QualType T) {
     const clang::Type *TP = T.getCanonicalType().getTypePtr();
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
-        if (clang::Expr *size = VAT->getSizeExpr()) {
-            VLARenamer r(Ctx, m_caller_params);
-            r.TraverseStmt(size);
-        }
-        renameVLASizeVars(VAT->getElementType(), Ctx);
+        if (clang::Expr *size = VAT->getSizeExpr())
+            m_func_param_renamer.TraverseStmt(size);
+        renameVLASizeVars(VAT->getElementType());
     } else if (const auto *DSAT = llvm::dyn_cast<clang::DependentSizedArrayType>(TP)) {
-        if (clang::Expr *size = DSAT->getSizeExpr()) {
-            VLARenamer r(Ctx, m_caller_params);
-            r.TraverseStmt(size);
-        }
-        renameVLASizeVars(DSAT->getElementType(), Ctx);
+        if (clang::Expr *size = DSAT->getSizeExpr())
+            m_func_param_renamer.TraverseStmt(size);
+        renameVLASizeVars(DSAT->getElementType());
     } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
-        renameVLASizeVars(PT->getPointeeType(), Ctx);
+        renameVLASizeVars(PT->getPointeeType());
     } else if (const auto *RT = llvm::dyn_cast<clang::ReferenceType>(TP)) {
-        renameVLASizeVars(RT->getPointeeType(), Ctx);
+        renameVLASizeVars(RT->getPointeeType());
     } else if (const auto *AT = llvm::dyn_cast<clang::ArrayType>(TP)) {
-        renameVLASizeVars(AT->getElementType(), Ctx);
+        renameVLASizeVars(AT->getElementType());
     } else if (const auto *FPT = llvm::dyn_cast<clang::FunctionProtoType>(TP)) {
-        renameVLASizeVars(FPT->getReturnType(), Ctx);
+        renameVLASizeVars(FPT->getReturnType());
         for (auto paramType : FPT->param_types())
-            renameVLASizeVars(paramType, Ctx);
+            renameVLASizeVars(paramType);
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType(), Ctx);
+        renameVLASizeVars(FT->getReturnType());
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType(), Ctx);
+        renameVLASizeVars(FT->getReturnType());
     } else if (const auto *MPT = llvm::dyn_cast<clang::MemberPointerType>(TP)) {
-        renameVLASizeVars(MPT->getPointeeType(), Ctx);
+        renameVLASizeVars(MPT->getPointeeType());
     } else if (const auto *VT = llvm::dyn_cast<clang::VectorType>(TP)) {
-        renameVLASizeVars(VT->getElementType(), Ctx);
+        renameVLASizeVars(VT->getElementType());
     } else if (const auto *ParenT = llvm::dyn_cast<clang::ParenType>(TP)) {
-        renameVLASizeVars(ParenT->getInnerType(), Ctx);
+        renameVLASizeVars(ParenT->getInnerType());
     }
 }
 
 bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {
     if (auto* decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
-        if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref->getDecl())) {
-            if (auto* param_decl = llvm::dyn_cast<clang::ParmVarDecl>(var_decl)) {
-                stream << m_caller_params[param_decl->getFunctionScopeIndex()];
-                return true;
-            }
-        }
+        m_func_param_renamer.TraverseStmt(decl_ref);
+        return false;
     }
 
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
                 // arr[n] -> arr[__inline_x_y]
-                renameVLASizeVars(var_decl->getType(), m_ctx);
+                renameVLASizeVars(var_decl->getType());
+                if (clang::Expr *init = var_decl->getInit())
+                    m_func_param_renamer.TraverseStmt(init);
             }
         }
         // we let the printer figure out how to print the declarations
@@ -976,48 +970,21 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     }
 
     if (auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(stmt)) {
-        stream << "for (";
-        if (auto* init = for_stmt->getInit()) {
-            init->printPretty(stream, this, m_policy);
-            if (!(llvm::dyn_cast<clang::DeclStmt>(for_stmt->getInit())))
-                stream << "; ";
-        } else {
-        	stream << "; ";
-        }
-        if (auto* cond = for_stmt->getCond())
-            cond->printPretty(stream, this, m_policy);
-        stream << "; ";
-        if (auto* inc = for_stmt->getInc())
-            inc->printPretty(stream, this, m_policy);
-        stream << ") ";
-        for_stmt->getBody()->printPretty(stream, this, m_policy);
-        return true;
+        if (auto* init = for_stmt->getInit())
+            m_func_param_renamer.TraverseStmt(init);
+        return false;
     }
 
     if (auto* if_stmt = llvm::dyn_cast<clang::IfStmt>(stmt)) {
-        stream << "if (";
         if (auto* init = if_stmt->getInit())
-            init->printPretty(stream, this, m_policy);
-        if (auto* cond = if_stmt->getCond())
-            cond->printPretty(stream, this, m_policy);
-        stream << ") ";
-        if_stmt->getThen()->printPretty(stream, this, m_policy);
-        if (auto* else_stmt = if_stmt->getElse()) {
-            stream << " else ";
-            else_stmt->printPretty(stream, this, m_policy);
-        }
-        return true;
+            m_func_param_renamer.TraverseStmt(init);
+        return false;
     }
 
     if (auto* switch_stmt = llvm::dyn_cast<clang::SwitchStmt>(stmt)) {
-        stream << "switch (";
         if (auto* init = switch_stmt->getInit())
-            init->printPretty(stream, this, m_policy);
-        if (auto* cond = switch_stmt->getCond())
-            cond->printPretty(stream, this, m_policy);
-        stream << ") ";
-        switch_stmt->getBody()->printPretty(stream, this, m_policy);
-        return true;
+            m_func_param_renamer.TraverseStmt(init);
+        return false;
     }
 
     if (auto* label_stmt = llvm::dyn_cast<clang::LabelStmt>(stmt)) {

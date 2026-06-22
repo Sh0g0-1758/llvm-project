@@ -168,6 +168,20 @@ class FilterVisitor : public clang::RecursiveASTVisitor<FilterVisitor> {
     std::map<std::string, std::string> m_functions;
 };
 
+// ─── FunctionParamRenamer ───────────────────────────────────────────
+
+/// incorporates function param changes within the AST itself. This is because
+/// llvm's printerHelper is structured in such a way that does not allow the 
+/// declStmt varDecl's init expression to be hijacked by a custom printer. 
+struct FunctionParamRenamer : clang::RecursiveASTVisitor<FunctionParamRenamer> {
+public:
+    FunctionParamRenamer(clang::ASTContext &C, std::map<int, std::string> &PR);
+    bool VisitDeclRefExpr(clang::DeclRefExpr *DRE);
+private:
+    clang::ASTContext &Ctx;
+    std::map<int, std::string> &callerParams;
+};
+
 // ─── InlinePrinterHelper ───────────────────────────────────────────
 
 /// Custom PrinterHelper that renames local variables with a prefix
@@ -188,7 +202,8 @@ class InlinePrinterHelper : public clang::PrinterHelper {
     clang::PrintingPolicy m_policy;
     size_t m_current_index;
     std::map<std::string, std::string> m_goto_labels;
-    void renameVLASizeVars(clang::QualType T, clang::ASTContext &Ctx);
+    void renameVLASizeVars(clang::QualType T);
+    FunctionParamRenamer m_func_param_renamer;
 };
 
 // ─── InlineVisitor ─────────────────────────────────────────────────
