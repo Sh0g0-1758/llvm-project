@@ -1795,6 +1795,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             },
             rewriter);
         if(isCompilable(tmp_result, filename, args)) {
+            llvm::outs() << "Inlined failed for -> " << i << "\n";
             result = std::move(tmp_result);
             // Adjust line numbers for subsequent call sites in the same file
             // that shifted due to inserted code.
