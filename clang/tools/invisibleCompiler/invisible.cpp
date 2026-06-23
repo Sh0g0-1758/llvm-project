@@ -908,37 +908,33 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
         m_policy.IncludeTagDefinition = true;
       }
 
-void InlinePrinterHelper::renameVLASizeVars(clang::QualType T) {
+void InlinePrinterHelper::renameFuncParamInType(clang::QualType T) {
     const clang::Type *TP = T.getCanonicalType().getTypePtr();
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
         if (clang::Expr *size = VAT->getSizeExpr())
             m_func_param_renamer.TraverseStmt(size);
-        renameVLASizeVars(VAT->getElementType());
-    } else if (const auto *DSAT = llvm::dyn_cast<clang::DependentSizedArrayType>(TP)) {
-        if (clang::Expr *size = DSAT->getSizeExpr())
-            m_func_param_renamer.TraverseStmt(size);
-        renameVLASizeVars(DSAT->getElementType());
+        renameFuncParamInType(VAT->getElementType());
     } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
-        renameVLASizeVars(PT->getPointeeType());
+        renameFuncParamInType(PT->getPointeeType());
     } else if (const auto *RT = llvm::dyn_cast<clang::ReferenceType>(TP)) {
-        renameVLASizeVars(RT->getPointeeType());
+        renameFuncParamInType(RT->getPointeeType());
     } else if (const auto *AT = llvm::dyn_cast<clang::ArrayType>(TP)) {
-        renameVLASizeVars(AT->getElementType());
+        renameFuncParamInType(AT->getElementType());
     } else if (const auto *FPT = llvm::dyn_cast<clang::FunctionProtoType>(TP)) {
-        renameVLASizeVars(FPT->getReturnType());
+        renameFuncParamInType(FPT->getReturnType());
         for (auto paramType : FPT->param_types())
-            renameVLASizeVars(paramType);
+            renameFuncParamInType(paramType);
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType());
+        renameFuncParamInType(FT->getReturnType());
     } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
-        renameVLASizeVars(FT->getReturnType());
+        renameFuncParamInType(FT->getReturnType());
     } else if (const auto *MPT = llvm::dyn_cast<clang::MemberPointerType>(TP)) {
-        renameVLASizeVars(MPT->getPointeeType());
+        renameFuncParamInType(MPT->getPointeeType());
     } else if (const auto *VT = llvm::dyn_cast<clang::VectorType>(TP)) {
-        renameVLASizeVars(VT->getElementType());
+        renameFuncParamInType(VT->getElementType());
     } else if (const auto *ParenT = llvm::dyn_cast<clang::ParenType>(TP)) {
-        renameVLASizeVars(ParenT->getInnerType());
+        renameFuncParamInType(ParenT->getInnerType());
     }
 }
 
@@ -952,7 +948,13 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
                 // arr[n] -> arr[__inline_x_y]
-                renameVLASizeVars(var_decl->getType());
+                // typeof(arr[n]) -> typeof(arr[__inline_x_y])
+                renameFuncParamInType(var_decl->getType());
+                // typeof(... n ...) -> typeof(... __inline_x_y ...)
+                if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(var_decl->getType().getTypePtr()))
+                    if (clang::Expr *e = TOE->getUnderlyingExpr())
+                        m_func_param_renamer.TraverseStmt(e);
+                // T x = ... n ... -> T x = ... __inline_x_y ...
                 if (clang::Expr *init = var_decl->getInit())
                     m_func_param_renamer.TraverseStmt(init);
             }
