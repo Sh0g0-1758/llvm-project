@@ -147,6 +147,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     bool isTopLevelCall(const clang::CallExpr* call);
     bool m_is_uninstantiated_template;
     size_t& m_current_index;
+    clang::PrintingPolicy m_policy;
 };
 
 // ─── FilterVisitor ─────────────────────────────────────────────────

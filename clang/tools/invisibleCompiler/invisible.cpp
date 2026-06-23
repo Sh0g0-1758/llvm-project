@@ -21,6 +21,7 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -67,6 +68,7 @@ ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTConte
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
@@ -304,6 +306,7 @@ BreakElseIfVisitor::BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& 
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool BreakElseIfVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
@@ -350,6 +353,7 @@ MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewr
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {
@@ -364,6 +368,7 @@ LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewrit
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
@@ -624,8 +629,11 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
-    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index), m_policy(m_ctx.getLangOpts()) {
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool FuncCallCleanupVisitor::did_cleanup() {
@@ -688,15 +696,10 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
 
     if (!call->getType()->isVoidType()) {
         clang::QualType retTy = call->getDirectCallee()->getReturnType();
-        clang::QualType fqTy =
-            clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
-
-        clang::PrintingPolicy policy(m_ctx.getLangOpts());
-        if (m_ctx.getLangOpts().CPlusPlus)
-            policy.adjustForCPlusPlus();
+        clang::QualType fqTy  = clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
 
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
-        fqTy.print(out, policy, ret_var);
+        fqTy.print(out, m_policy, ret_var);
         out << " = ";
     } else {
         ret_var = "(void)0";
@@ -905,6 +908,7 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
       m_goto_label_index(0) {
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
+        m_policy.IncludeTagDefinition = true;
       }
 
 void InlinePrinterHelper::renameVLASizeVars(clang::QualType T) {
@@ -1526,6 +1530,17 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
                 llvm::isa<clang::FloatingLiteral>(unary->getSubExpr()))
                 return true;
 
+    // If this expr's address is being taken, folding would turn `&arr[i]` into
+    // `&<constant>`, which is invalid (can't take the address of an rvalue literal
+    auto parents = m_ctx.getParents(*expr);
+    for (const auto& parent : parents) {
+        if (const auto* unary = parent.get<clang::UnaryOperator>()) {
+            if (unary->getOpcode() == clang::UO_AddrOf) {
+                return true;
+            }
+        }
+    }
+
     // Don't fold comma expressions. The operands other than the last one
     // are evaluated purely for side effects (e.g. (0, funcCall(), 4)).
     // Folding would silently discard those side effects.
@@ -1700,6 +1715,24 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
             llvm::outs() << "Short-circuit Preprocessing failed\n";
+            break;
+        }
+        result = std::move(tmp_result);
+    }
+
+    // constant fold mathematical expressions into their simplified form
+    bool did_fold = true;
+    while (did_fold) {
+        did_fold = false;
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            constantFoldVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_fold = visitor.did_fold();
+        }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            llvm::outs() << "Constant Folding Preprocessing failed\n";
             break;
         }
         result = std::move(tmp_result);
