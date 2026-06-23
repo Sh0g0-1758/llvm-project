@@ -714,7 +714,6 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
-        llvm::outs() << "Begin Loc : " << call->getSourceRange().getBegin().getRawEncoding() << " End Loc : " << call->getSourceRange().getEnd().getRawEncoding() << "\n";
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
     m_last_update_loc = nearest_compound_stmt;
@@ -1479,16 +1478,16 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if ((expr->getSourceRange().getBegin() >= m_last_update_loc_begin) && (expr->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
 
     // ── DEBUG ────────────────────────────────────────────────────────────────
-    llvm::errs() << "\n=== [constantFold] Checking AST of expression to fold ===\n";
-    auto& src_mgr = m_ctx.getSourceManager();
-    auto& lang_opts = m_ctx.getLangOpts();
+    // llvm::errs() << "\n=== [constantFold] Checking AST of expression to fold ===\n";
+    // auto& src_mgr = m_ctx.getSourceManager();
+    // auto& lang_opts = m_ctx.getLangOpts();
 
-    auto expr_text = clang::Lexer::getSourceText(
-        clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
-        src_mgr, lang_opts
-    ).str();
+    // auto expr_text = clang::Lexer::getSourceText(
+    //     clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
+    //     src_mgr, lang_opts
+    // ).str();
 
-    llvm::errs() << "Source text: " << expr_text << "\n";
+    // llvm::errs() << "Source text: " << expr_text << "\n";
     // ─────────────────────────────────────────────────────────────────────────
 
     const clang::Expr* inner = expr->IgnoreImpCasts();
@@ -1583,8 +1582,8 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     OS.flush();
 
     // ── DEBUG ────────────────────────────────────────────────────────────────
-    llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
-    expr->dump();                                          // full AST subtree
+    // llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
+    // expr->dump();                                          // full AST subtree
     // ─────────────────────────────────────────────────────────────────────────
 
     m_last_update_loc_begin = expr->getSourceRange().getBegin();
