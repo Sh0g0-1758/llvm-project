@@ -819,8 +819,12 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
         }
     } else if (const auto* parent_stmt = parent_node.get<clang::Stmt>()) {
         // x = foo();
+        // note that x += foo() would need to be hoisted because x can be a pointer
+        // and the way we inline right now means that the pointer update can get awry
+        // if we take a pointer to the pointer with the type of the return value of the
+        // the function and then dereference it to update. 
         if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
-            if (bin_op->isAssignmentOp()) {
+            if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) {
                 auto bo_parents = m_ctx.getParents(*bin_op);
                 if (!bo_parents.empty()) {
                     if (const auto* grandparent = bo_parents[0].get<clang::Stmt>()) {
@@ -1142,8 +1146,12 @@ bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
         }
     } else if (const auto* parent_stmt = parent_node.get<clang::Stmt>()) {
         // x = foo();
+        // note that x += foo() would need to be hoisted because x can be a pointer
+        // and the way we inline right now means that the pointer update can get awry
+        // if we take a pointer to the pointer with the type of the return value of the
+        // the function and then dereference it to update. 
         if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
-            if (bin_op->isAssignmentOp()) {
+            if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) {
                 auto bo_parents = m_ctx.getParents(*bin_op);
                 if (!bo_parents.empty()) {
                     if (const auto* grandparent = bo_parents[0].get<clang::Stmt>()) {
@@ -1345,9 +1353,13 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
             }
         }
         // x = foo();
+        // note that x += foo() would need to be hoisted because x can be a pointer
+        // and the way we inline right now means that the pointer update can get awry
+        // if we take a pointer to the pointer with the type of the return value of the
+        // the function and then dereference it to update. 
         else if (const auto* parent_stmt = parent_node.get<clang::Stmt>()) {
             if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
-                if (bin_op->isAssignmentOp()) {
+                if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) {
                     target_var =
                         clang::Lexer::getSourceText(
                             clang::CharSourceRange::getTokenRange(bin_op->getLHS()->getSourceRange()), src_mgr,
@@ -1513,6 +1525,13 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
             if (llvm::isa<clang::IntegerLiteral>(unary->getSubExpr()) ||
                 llvm::isa<clang::FloatingLiteral>(unary->getSubExpr()))
                 return true;
+
+    // Don't fold comma expressions. The operands other than the last one
+    // are evaluated purely for side effects (e.g. (0, funcCall(), 4)).
+    // Folding would silently discard those side effects.
+    if (auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(expr->IgnoreParenImpCasts()))
+        if (bin_op->getOpcode() == clang::BO_Comma)
+            return true;
 
     // Don't fold builtin calls (e.g. __builtin_nanf, __builtin_inf, etc.)
     // as they resolve to something that is internal to the compiler and will thus
