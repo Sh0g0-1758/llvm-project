@@ -905,7 +905,6 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
       m_goto_label_index(0) {
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
-        m_policy.IncludeTagDefinition = true;
       }
 
 void InlinePrinterHelper::renameVLASizeVars(clang::QualType T) {
@@ -1184,6 +1183,7 @@ InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, 
     m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
 }
 
 bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -1814,12 +1814,12 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             },
             rewriter);
         if(isCompilable(tmp_result, filename, args)) {
-            llvm::outs() << "Inlined failed for -> " << i << "\n";
             result = std::move(tmp_result);
             // Adjust line numbers for subsequent call sites in the same file
             // that shifted due to inserted code.
             updateInlineLocInfo(call_sites, i, net_lines);
         } else {
+            llvm::outs() << "Inlined failed for -> " << i << "\n";
             succeeded[i] = false;
         }
         llvm::outs() << "Done with Number -> " << i << "\n";
