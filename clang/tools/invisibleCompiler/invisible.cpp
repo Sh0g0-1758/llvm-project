@@ -28,18 +28,16 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
-    std::string def;
-    llvm::raw_string_ostream def_out(def);
-    func->print(def_out, m_policy);
-    def_out.flush();
+    clang::SourceRange func_range = func->getSourceRange();
+    std::string def = clang::Lexer::getSourceText(
+                      clang::CharSourceRange::getTokenRange(func_range), m_ctx.getSourceManager(),
+                      m_ctx.getLangOpts()).str();
     m_deferred_definitions.push_back(def);
 
-    clang::PrintingPolicy declPolicy = m_policy;
-    declPolicy.TerseOutput = true;
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    func->print(decl_out, declPolicy);
-    decl_out.flush();
+    func_range.setEnd(func->getBody()->getSourceRange().getBegin().getLocWithOffset(-1));
+    std::string decl = clang::Lexer::getSourceText(
+                      clang::CharSourceRange::getTokenRange(func_range), m_ctx.getSourceManager(),
+                      m_ctx.getLangOpts()).str();
     decl += ";";
 
     m_rewriter.ReplaceText(func->getSourceRange(), decl);
@@ -1013,63 +1011,11 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         return true;
     }
 
-    // Clang's StmtPrinter always emits "asm" for GCCAsmStmt, but in GNU C
-    // mode only "__asm__" is valid.  Print the statement ourselves.
     if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
-        stream << "__asm__";
-        if (gcc_asm->isVolatile()) {
-            stream << " volatile";
-        }
-        if (gcc_asm->isAsmGoto()) {
-            stream << " goto";
-        }
-        stream << "(";
-        gcc_asm->getAsmStringExpr()->printPretty(stream, this, m_policy);
-
-        unsigned nOutputs = gcc_asm->getNumOutputs();
-        unsigned nInputs = gcc_asm->getNumInputs();
-        unsigned nClobbers = gcc_asm->getNumClobbers();
-
-        if (nOutputs != 0 || nInputs != 0 || nClobbers != 0) {
-            stream << " : ";
-            for (unsigned i = 0; i < nOutputs; ++i) {
-                if (i != 0) {
-                    stream << ", ";
-                }
-                llvm::StringRef name = gcc_asm->getOutputName(i);
-                if (!name.empty()) {
-                    stream << "[" << name << "] ";
-                }
-                stream << "\"" << gcc_asm->getOutputConstraint(i) << "\" (";
-                gcc_asm->getOutputExpr(i)->printPretty(stream, this, m_policy);
-                stream << ")";
-            }
-        }
-        if (nInputs != 0 || nClobbers != 0) {
-            stream << " : ";
-            for (unsigned i = 0; i < nInputs; ++i) {
-                if (i != 0) {
-                    stream << ", ";
-                }
-                llvm::StringRef name = gcc_asm->getInputName(i);
-                if (!name.empty()) {
-                    stream << "[" << name << "] ";
-                }
-                stream << "\"" << gcc_asm->getInputConstraint(i) << "\" (";
-                gcc_asm->getInputExpr(i)->printPretty(stream, this, m_policy);
-                stream << ")";
-            }
-        }
-        if (nClobbers != 0) {
-            stream << " : ";
-            for (unsigned i = 0; i < nClobbers; ++i) {
-                if (i != 0) {
-                    stream << ", ";
-                }
-                stream << "\"" << gcc_asm->getClobber(i) << "\"";
-            }
-        }
-        stream << ");\n";
+        std::string asm_stmt = clang::Lexer::getSourceText(
+                        clang::CharSourceRange::getTokenRange(gcc_asm->getSourceRange()), m_ctx.getSourceManager(),
+                        m_ctx.getLangOpts()).str();
+        stream << asm_stmt << ";";
         return true;
     }
 
