@@ -909,7 +909,18 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
       }
 
 void InlinePrinterHelper::renameFuncParamInType(clang::QualType T) {
-    const clang::Type *TP = T.getCanonicalType().getTypePtr();
+    const clang::Type *TP = T.getTypePtr();
+
+    if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(TP)) {
+        if (clang::Expr *e = TOE->getUnderlyingExpr()) {
+            m_func_param_renamer.TraverseStmt(e);
+        }
+        renameFuncParamInType(TOE->desugar());
+        return;
+    } else if (const auto *TOT = llvm::dyn_cast<clang::TypeOfType>(TP)) {
+        renameFuncParamInType(TOT->desugar());
+        return;
+    }
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
         if (clang::Expr *size = VAT->getSizeExpr())
@@ -947,13 +958,12 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
         for (auto it = decl_stmt->decl_begin(); it != decl_stmt->decl_end(); ++it) {
             if (auto* var_decl = llvm::dyn_cast<clang::VarDecl>(*it)) {
-                // arr[n] -> arr[__inline_x_y]
-                // typeof(arr[n]) -> typeof(arr[__inline_x_y])
-                renameFuncParamInType(var_decl->getType());
+                // renames function parameters used in types, for eg. :
+                // T arr[n] -> T arr[__inline_x_y]
+                // typeof(T[n]) -> typeof(T[__inline_x_y])
                 // typeof(... n ...) -> typeof(... __inline_x_y ...)
-                if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(var_decl->getType().getTypePtr()))
-                    if (clang::Expr *e = TOE->getUnderlyingExpr())
-                        m_func_param_renamer.TraverseStmt(e);
+                renameFuncParamInType(var_decl->getType());
+
                 // T x = ... n ... -> T x = ... __inline_x_y ...
                 if (clang::Expr *init = var_decl->getInit())
                     m_func_param_renamer.TraverseStmt(init);
