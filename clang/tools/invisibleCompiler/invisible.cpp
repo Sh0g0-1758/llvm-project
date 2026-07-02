@@ -528,6 +528,69 @@ bool CompoundStmtWrapperVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt)
     return true;
 }
 
+// ─── CommaInitVisitor ──────────────────────────────────────────────
+
+CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+}
+
+clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(*decl_stmt);
+    const clang::Stmt* last_stmt = decl_stmt;
+
+    while (true) {
+        auto parents = m_ctx.getParents(current);
+        if (parents.empty())
+            return {};
+
+        const auto& parent = parents[0];
+        if (parent.get<clang::CompoundStmt>())
+            return last_stmt->getBeginLoc();
+
+        if (const auto* stmt = parent.get<clang::Stmt>())
+            last_stmt = stmt;
+
+        current = parent;
+    }
+}
+
+bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
+    if (decl_stmt->isSingleDecl()) {
+        return true;
+    }
+
+    llvm::SmallVector<const clang::VarDecl*, 8> vars;
+    for (const clang::Decl* decl : decl_stmt->decls()) {
+        if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            vars.push_back(var_decl);
+        } else {
+            return true;
+        }
+    }
+
+    std::string replacement{};
+    llvm::raw_string_ostream out(replacement);
+
+    for (const clang::VarDecl* var_decl : vars) {
+        var_decl->print(out, m_policy);
+        out << ";\n";
+    }
+    out.flush();
+
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(decl_stmt);
+    if (nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, replacement);
+        m_rewriter.ReplaceText(decl_stmt->getSourceRange(), ";");
+    } else {
+        m_rewriter.ReplaceText(decl_stmt->getSourceRange(), replacement);
+    }
+    return true;
+}
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
@@ -1660,7 +1723,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "Loops Preprocessing failed\n";
-            return tmp_result;
         }
     }
 
@@ -1676,8 +1738,22 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
         } else {
-            llvm::outs() << "Loops Preprocessing failed\n";
-            return tmp_result;
+            llvm::outs() << "CompoundStmtWrapperVisitor failed\n";
+        }
+    }
+
+    // Splits comma-separated variable declarations into individual statements
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            CommaInitVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "CommaInitVisitor failed\n";
         }
     }
 

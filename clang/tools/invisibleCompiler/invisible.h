@@ -115,6 +115,23 @@ class CompoundStmtWrapperVisitor : public clang::RecursiveASTVisitor<CompoundStm
     clang::PrintingPolicy m_policy;
 };
 
+// ─── CommaInitVisitor ──────────────────────────────────────────────
+
+/// Splits comma-separated variable declarations into individual
+/// statements (e.g. `int a, b = 1;` → `int a;\nint b = 1;\n`).
+class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
+  public:
+    CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+
+    bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
+    clang::SourceLocation findInsertionLoc(clang::DeclStmt* decl_stmt);
+
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 /// Specializes Templates so that transformations can be matched to actual source code
