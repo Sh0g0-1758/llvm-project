@@ -177,9 +177,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
 }
 
 bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
-    llvm::outs() << "Checking cond\n";
     if(!exprHasFuncCall(conditional_op->getLHS()) && !exprHasFuncCall(conditional_op->getRHS())) return true;
-    llvm::outs() << "Ok enter cond\n";
     /**
      * .. `cond ? expr1 : expr2` ..
      * is transformed to
@@ -192,7 +190,6 @@ bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::Conditiona
      * .. __short_circuit_result_#id ..
      */
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(conditional_op);
-    llvm::outs() << m_last_update_loc << " " << nearest_compound_stmt.getRawEncoding() << "\n";
     if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
     else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
