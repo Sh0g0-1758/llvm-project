@@ -99,6 +99,22 @@ class LoopToIRVisitor : public clang::RecursiveASTVisitor<LoopToIRVisitor> {
     clang::PrintingPolicy m_policy;
 };
 
+// ─── CompoundStmtWrapperVisitor ──────────────────────────────────────
+
+/// Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
+/// This helps provide a valid space to hoist a comma separated declarator list
+class CompoundStmtWrapperVisitor : public clang::RecursiveASTVisitor<CompoundStmtWrapperVisitor> {
+  public:
+    CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitForStmt(clang::ForStmt* for_stmt);
+    bool VisitIfStmt(clang::IfStmt* if_stmt);
+    bool VisitSwitchStmt(clang::SwitchStmt* switch_stmt);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 /// Specializes Templates so that transformations can be matched to actual source code
@@ -136,7 +152,6 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     bool VisitCallExpr(clang::CallExpr* call);
     bool did_cleanup();
     bool VisitFunctionDecl(clang::FunctionDecl* func);
-    bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
     void hoist_call_at_nearest_compound_statement(clang::CallExpr* call);
   private:
     clang::ASTContext& m_ctx;

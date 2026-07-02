@@ -500,6 +500,34 @@ bool LoopToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
     return stmtIsFuncCall;
 }
 
+// ─── CompoundStmtWrapperVisitor ──────────────────────────────────────────────
+
+CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+}
+
+bool CompoundStmtWrapperVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
+    m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getBegin(), "{\n");
+    m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
+    return true;
+}
+
+bool CompoundStmtWrapperVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
+    m_rewriter.InsertTextBefore(if_stmt->getSourceRange().getBegin(), "{\n");
+    m_rewriter.InsertTextBefore(if_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
+    return true;
+}
+
+bool CompoundStmtWrapperVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
+    m_rewriter.InsertTextBefore(switch_stmt->getSourceRange().getBegin(), "{\n");
+    m_rewriter.InsertTextBefore(switch_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
+    return true;
+}
+
 // ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
 
 TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
@@ -721,26 +749,6 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
     m_last_update_loc = nearest_compound_stmt;
-}
-
-bool FuncCallCleanupVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
-    if (decl_stmt->isSingleDecl())
-        return true;
-
-    for (const clang::Decl* decl : decl_stmt->decls()) {
-        if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
-            if(var_decl->hasInit()) {
-                if(auto* call_expr = llvm::dyn_cast<clang::CallExpr>(var_decl->getInit())) {
-                    hoist_call_at_nearest_compound_statement(const_cast<clang::CallExpr*>(call_expr));
-                    return true;
-                }
-            }
-        } else {
-            return true;
-        }
-    }
-
-    return true;
 }
 
 clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call) {
@@ -1646,6 +1654,23 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             LoopToIRVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Loops Preprocessing failed\n";
+            return tmp_result;
+        }
+    }
+
+    // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
+    // This helps provide a valid space to hoist a comma separated declarator list
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            CompoundStmtWrapperVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
