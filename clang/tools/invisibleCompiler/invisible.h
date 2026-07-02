@@ -77,6 +77,7 @@ class MarkSwitchCaseVisitor : public clang::RecursiveASTVisitor<MarkSwitchCaseVi
   public:
     MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitCaseStmt(clang::CaseStmt* case_stmt);
+    bool VisitDefaultStmt(clang::DefaultStmt* default_stmt);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
@@ -109,6 +110,8 @@ class CompoundStmtWrapperVisitor : public clang::RecursiveASTVisitor<CompoundStm
     bool VisitForStmt(clang::ForStmt* for_stmt);
     bool VisitIfStmt(clang::IfStmt* if_stmt);
     bool VisitSwitchStmt(clang::SwitchStmt* switch_stmt);
+    bool VisitWhileStmt(clang::WhileStmt* while_stmt);
+    bool VisitDoStmt(clang::DoStmt* do_stmt);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;

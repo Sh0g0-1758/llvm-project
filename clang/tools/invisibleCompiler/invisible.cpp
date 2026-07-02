@@ -365,6 +365,11 @@ bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {
     return true;
 }
 
+bool MarkSwitchCaseVisitor::VisitDefaultStmt(clang::DefaultStmt* default_stmt) {
+    m_rewriter.InsertTextBefore(default_stmt->getSubStmt()->getSourceRange().getBegin(), ";\n");
+    return true;
+}
+
 // ─── LoopToIRVisitor ──────────────────────────────────────────────
 
 LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -513,6 +518,17 @@ CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, c
 bool CompoundStmtWrapperVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getBegin(), "{\n");
     m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
+    if(llvm::dyn_cast<clang::NullStmt>(for_stmt->getBody())) m_rewriter.ReplaceText(for_stmt->getBody()->getSourceRange(), "{}");
+    return true;
+}
+
+bool CompoundStmtWrapperVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
+    if(llvm::dyn_cast<clang::NullStmt>(while_stmt->getBody())) m_rewriter.ReplaceText(while_stmt->getBody()->getSourceRange(), "{}");
+    return true;
+}
+
+bool CompoundStmtWrapperVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
+    if(llvm::dyn_cast<clang::NullStmt>(do_stmt->getBody())) m_rewriter.ReplaceText(do_stmt->getBody()->getSourceRange(), "{}");
     return true;
 }
 
@@ -1655,6 +1671,9 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Specialize Function Templates Pass Failed\n";
+            return tmp_result;
         }
     }
 
@@ -1675,6 +1694,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "Declarations Before Definitions Preprocessing failed\n";
+            return tmp_result;
         }
     }
 
@@ -1692,6 +1712,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "Switch-case Preprocessing failed\n";
+            return tmp_result;
         }
     }
 
@@ -1708,6 +1729,25 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "Else If Preprocessing failed\n";
+            return tmp_result;
+        }
+    }
+
+    // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
+    // This helps provide a valid space to hoist a comma separated declarator list
+    // and also valid space for any loop rewrite. 
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            CompoundStmtWrapperVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "CompoundStmtWrapperVisitor failed\n";
+            return tmp_result;
         }
     }
 
@@ -1723,22 +1763,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "Loops Preprocessing failed\n";
-        }
-    }
-
-    // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
-    // This helps provide a valid space to hoist a comma separated declarator list
-    {
-        clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            CompoundStmtWrapperVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-        }, rewriter);
-        if(isCompilable(tmp_result, filename, args)) {
-            result = std::move(tmp_result);
-        } else {
-            llvm::outs() << "CompoundStmtWrapperVisitor failed\n";
+            return tmp_result;
         }
     }
 
@@ -1754,6 +1779,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "CommaInitVisitor failed\n";
+            return tmp_result;
         }
     }
 
@@ -1772,7 +1798,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
             llvm::outs() << "Short-circuit Preprocessing failed\n";
-            break;
+            return tmp_result;
         }
         result = std::move(tmp_result);
     }
@@ -1790,7 +1816,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
             llvm::outs() << "Constant Folding Preprocessing failed\n";
-            break;
+            return tmp_result;
         }
         result = std::move(tmp_result);
     }
@@ -1809,7 +1835,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
             llvm::outs() << "Function Hoisting Preprocessing failed\n";
-            break;
+            return tmp_result;
         }
         result = std::move(tmp_result);
     }
