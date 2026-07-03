@@ -898,10 +898,8 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
 
     if (!call->getType()->isVoidType()) {
         clang::QualType retTy = call->getDirectCallee()->getReturnType();
-        clang::QualType fqTy  = clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
-
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
-        fqTy.print(out, m_policy, ret_var);
+        retTy.print(out, m_policy, ret_var);
         out << " = ";
     } else {
         ret_var = "(void)0";
@@ -1211,7 +1209,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
 
     if (auto* return_stmt = llvm::dyn_cast<clang::ReturnStmt>(stmt)) {
         if (!m_target_var.empty()) {
-            stream << "*" << m_target_var << " = ";
+            stream << m_target_var << " = ";
             if (clang::Expr* ret_val = return_stmt->getRetValue())
                 ret_val->printPretty(stream, this, m_policy);
             stream << ";\n";
@@ -1511,17 +1509,6 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
         }
     }
 
-    std::string dummy_inline_result_pointer{};
-    if(!target_var.empty()) {
-        dummy_inline_result_pointer = "__inline_result__" + std::to_string(m_current_index);
-        clang::QualType retTy = callee->getReturnType();
-        clang::QualType ptr_type = m_ctx.getPointerType(retTy);
-
-        ptr_type.print(OS, m_policy, dummy_inline_result_pointer);
-        OS << " = &" << target_var << ";\n";
-        added_lines += 1;
-    }
-
     OS << "{";
 
     std::map<int, std::string> caller_params;
@@ -1555,7 +1542,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
 
-    InlinePrinterHelper helper(m_ctx, dummy_inline_result_pointer, caller_params, m_policy, m_current_index);
+    InlinePrinterHelper helper(m_ctx, target_var, caller_params, m_policy, m_current_index);
     callee->getBody()->printPretty(stream, &helper, m_policy);
     stream.flush();
 
