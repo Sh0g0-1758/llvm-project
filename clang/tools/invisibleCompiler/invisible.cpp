@@ -22,6 +22,8 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -67,6 +69,8 @@ ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTConte
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
@@ -311,6 +315,8 @@ BreakElseIfVisitor::BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& 
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool BreakElseIfVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
@@ -358,6 +364,8 @@ MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewr
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {
@@ -378,6 +386,8 @@ LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewrit
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
@@ -513,6 +523,8 @@ CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, c
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool CompoundStmtWrapperVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
@@ -552,6 +564,8 @@ CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewr
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
@@ -745,6 +759,8 @@ FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Re
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool FuncCallCleanupVisitor::did_cleanup() {
@@ -992,6 +1008,8 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
+        m_policy.PrintAsCanonical   = true;
+        m_policy.SuppressTagKeyword = false;
       }
 
 void InlinePrinterHelper::renameFuncParamInType(clang::QualType T) {
@@ -1231,6 +1249,8 @@ InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, 
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
 }
 
 bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
