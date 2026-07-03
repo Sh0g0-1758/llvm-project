@@ -84,7 +84,7 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 }
 
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
-    if (glob_decl->getDeclContext()->isFunctionOrMethod()) return true;
+    if (glob_decl->isLocalVarDeclOrParm()) return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
