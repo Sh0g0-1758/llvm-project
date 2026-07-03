@@ -18,6 +18,21 @@ struct InlineEntry {
     std::string file;
 };
 
+// ─── DeclBeforeDefPrinterHelper ───────────────────────────────────────────
+
+/// Custom PrinterHelper to print function definitions keeping 
+/// inline assembly intact
+class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
+  public:
+    DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy);
+
+    bool handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) override;
+
+  private:
+    clang::ASTContext& m_ctx;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 /// Puts all function declarations before all function definitions 
@@ -25,12 +40,31 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
   public:
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
+    bool VisitVarDecl(clang::VarDecl* decl);
     std::string getDeferredDefinitions();
   private:
-    std::vector<std::string> m_deferred_definitions;
+  clang::ASTContext& m_ctx;
+  clang::Rewriter& m_rewriter;
+  clang::PrintingPolicy m_policy;
+  DeclBeforeDefPrinterHelper m_custom_printer;
+  std::vector<std::string> m_deferred_definitions;
+};
+
+// ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
+
+/// Canonicalize all local / global variables defined in a translation unit. 
+/// The trick here is to make the changes within the AST so that the changes 
+/// propagate to the DeclRefExpr. 
+class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<CanonicalizeVarDeclVisitor> {
+  public:
+    CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitVarDecl(clang::VarDecl* decl);
+    bool VisitParmVarDecl(clang::ParmVarDecl* decl);
+  private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    size_t uniqueIndx;
 };
 
 // ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────

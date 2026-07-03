@@ -14,15 +14,36 @@
 
 namespace invisible {
 
+// ─── DeclBeforeDefPrinterHelper ──────────────────────────────────────────────
+
+DeclBeforeDefPrinterHelper::DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy)
+    : m_ctx(ctx),
+      m_policy(policy) {
+        if (m_ctx.getLangOpts().CPlusPlus)
+            m_policy.adjustForCPlusPlus();
+        m_policy.IncludeTagDefinition = true;
+        m_policy.SuppressTagKeyword = false;
+      }
+
+bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {
+    if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+        std::string asm_stmt = clang::Lexer::getSourceText(
+                        clang::CharSourceRange::getTokenRange(gcc_asm->getSourceRange()), m_ctx.getSourceManager(),
+                        m_ctx.getLangOpts()).str();
+        stream << asm_stmt << ";";
+        return true;
+    }
+
+    return false;
+}
+
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -30,19 +51,20 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
-    clang::SourceRange func_range = func->getSourceRange();
-    std::string def = clang::Lexer::getSourceText(
-                      clang::CharSourceRange::getTokenRange(func_range), m_ctx.getSourceManager(),
-                      m_ctx.getLangOpts()).str();
-    m_deferred_definitions.push_back(def);
+    std::string def;
+    llvm::raw_string_ostream def_out(def);
+    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
+    def_out.flush();
 
-    func_range.setEnd(func->getBody()->getSourceRange().getBegin().getLocWithOffset(-1));
-    std::string decl = clang::Lexer::getSourceText(
-                      clang::CharSourceRange::getTokenRange(func_range), m_ctx.getSourceManager(),
-                      m_ctx.getLangOpts()).str();
-    decl += ";";
+    clang::PrintingPolicy declPolicy = m_policy;
+    declPolicy.TerseOutput = true;
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    func->print(decl_out, declPolicy);
+    decl_out.flush();
 
-    m_rewriter.ReplaceText(func->getSourceRange(), decl);
+    m_deferred_definitions.push_back(decl + def);
+    m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
     return true;
 }
 
@@ -61,15 +83,47 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     return all_defs;
 }
 
+bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
+    if (glob_decl->isLocalVarDecl()) return true;
+
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    glob_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl + ";");
+    return true;
+}
+
+// ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────────────
+
+CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), uniqueIndx(0) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
+    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
+    decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
+    return true;
+}
+
+bool CanonicalizeVarDeclVisitor::VisitParmVarDecl(clang::ParmVarDecl* decl) {
+    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
+    decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
+    return true;
+}
+
 // ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────────────
 
 ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_current_index(current_index), m_last_update_loc(0) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -219,7 +273,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::Conditiona
     std::string short_circuit_result{};
     if (!isVoidType) {
         short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
-        clang::QualType resType = clang::TypeName::getFullyQualifiedType(conditional_op->getLHS()->getType(), m_ctx, false);
+        clang::QualType resType = conditional_op->getLHS()->getType();
         resType.print(out, m_policy, short_circuit_result);
         out << ";\n";
     } else {
@@ -311,11 +365,10 @@ bool ShortCircuitOperatorToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
 
 BreakElseIfVisitor::BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -360,11 +413,10 @@ bool BreakElseIfVisitor::exprHasFuncCall(clang::Expr* expr) {
 
 MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -382,11 +434,10 @@ bool MarkSwitchCaseVisitor::VisitDefaultStmt(clang::DefaultStmt* default_stmt) {
 
 LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -519,11 +570,10 @@ bool LoopToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
 
 CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -560,11 +610,9 @@ bool CompoundStmtWrapperVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt)
 
 ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -589,11 +637,10 @@ bool ParenExprWrapperVisitor::isWrappedWithParenExpr(const clang::BinaryOperator
 
 CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -654,7 +701,7 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
 
 TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
     : m_ctx(ctx), m_rewriter(rewriter), m_sema(sema) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
 }
 
 void TemplateSpecializerVisitor::fixDoubleAngleBrackets(std::string& str) {
@@ -784,11 +831,10 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
     : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index), m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -976,7 +1022,7 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
 // ─── FilterVisitor ─────────────────────────────────────────────────
 
 FilterVisitor::FilterVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter) : m_ctx(ctx), m_rewriter(rewriter) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
 }
 
 bool FilterVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -1037,7 +1083,6 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
-        m_policy.PrintAsCanonical   = true;
         m_policy.SuppressTagKeyword = false;
       }
 
@@ -1274,11 +1319,10 @@ InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, 
       m_current_index(current_index),
       m_rewriter(rewriter),
       m_policy(m_ctx.getLangOpts()) {
-    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.PrintAsCanonical   = true;
     m_policy.SuppressTagKeyword = false;
 }
 
@@ -1471,8 +1515,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if(!target_var.empty()) {
         dummy_inline_result_pointer = "__inline_result__" + std::to_string(m_current_index);
         clang::QualType retTy = callee->getReturnType();
-        clang::QualType fqTy = clang::TypeName::getFullyQualifiedType(retTy, m_ctx, false);
-        clang::QualType ptr_type = m_ctx.getPointerType(fqTy);
+        clang::QualType ptr_type = m_ctx.getPointerType(retTy);
 
         ptr_type.print(OS, m_policy, dummy_inline_result_pointer);
         OS << " = &" << target_var << ";\n";
@@ -1711,27 +1754,34 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     }
 
     // Specialize Function templates
-    {
-        clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-        }, rewriter);
-        if(isCompilable(tmp_result, filename, args)) {
-            result = std::move(tmp_result);
-        } else {
-            llvm::outs() << "Specialize Function Templates Pass Failed\n";
-            return tmp_result;
-        }
-    }
+    // run conditionally if the compiler flags indicates we
+    // have to treat the source code as C++
+    // {
+    //     clang::Rewriter rewriter;
+    //     std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+    //         rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+    //         TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
+    //         visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+    //     }, rewriter);
+    //     if(isCompilable(tmp_result, filename, args)) {
+    //         result = std::move(tmp_result);
+    //     } else {
+    //         llvm::outs() << "Specialize Function Templates Pass Failed\n";
+    //         return tmp_result;
+    //     }
+    // }
 
     // Gather function definitions and move them after all function
-    // declarations. 
+    // declarations and Canonicalize all local / global variables defined 
+    // in a translation unit. 
     {
         clang::Rewriter rewriter;
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            // The trick here is to make the changes within the AST
+            CanonicalizeVarDeclVisitor _visitor(ctx, rewriter);
+            _visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+
             DeclBeforeDefVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
 
