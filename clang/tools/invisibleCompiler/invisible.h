@@ -118,6 +118,20 @@ class CompoundStmtWrapperVisitor : public clang::RecursiveASTVisitor<CompoundStm
     clang::PrintingPolicy m_policy;
 };
 
+// ─── ParenExprWrapperVisitor ──────────────────────────────────────
+
+/// Wraps binary operator (,) with a paranthesis
+class ParenExprWrapperVisitor : public clang::RecursiveASTVisitor<ParenExprWrapperVisitor> {
+  public:
+    ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitBinaryOperator(clang::BinaryOperator* bin_op);
+    bool isWrappedWithParenExpr(const clang::BinaryOperator* binary_op);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+};
+
 // ─── CommaInitVisitor ──────────────────────────────────────────────
 
 /// Splits comma-separated variable declarations into individual

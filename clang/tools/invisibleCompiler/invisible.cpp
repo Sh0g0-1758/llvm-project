@@ -556,6 +556,35 @@ bool CompoundStmtWrapperVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt)
     return true;
 }
 
+// ─── ParenExprWrapperVisitor ──────────────────────────────────────────────
+
+ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    m_rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical   = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool ParenExprWrapperVisitor::VisitBinaryOperator(clang::BinaryOperator* bin_op) {
+    if(bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma) {
+        if (isWrappedWithParenExpr(bin_op)) return true;
+
+        m_rewriter.InsertTextBefore(bin_op->getSourceRange().getBegin(), "(");
+        m_rewriter.InsertTextAfterToken(bin_op->getSourceRange().getEnd(), ")");
+    }
+    return true;
+}
+
+bool ParenExprWrapperVisitor::isWrappedWithParenExpr(const clang::BinaryOperator* binary_op) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(*binary_op);
+    const auto& parent = m_ctx.getParents(current)[0];
+    if(parent.get<clang::ParenExpr>() != nullptr) return true;
+    else return false;
+}
+
 // ─── CommaInitVisitor ──────────────────────────────────────────────
 
 CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -1767,6 +1796,23 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(tmp_result);
         } else {
             llvm::outs() << "CompoundStmtWrapperVisitor failed\n";
+            return tmp_result;
+        }
+    }
+
+    // Wraps binary operator (,) with a paranthesis. Because the binary operator
+    // can occur without any wrapper as well which can lead to errors while inlining
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            ParenExprWrapperVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "ParenExprWrapperVisitor failed\n";
             return tmp_result;
         }
     }
