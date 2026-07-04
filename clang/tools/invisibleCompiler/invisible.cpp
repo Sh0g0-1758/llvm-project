@@ -1011,7 +1011,14 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
             }
             // foo();
         } else if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
-            return true;
+            // we still hoist function calls that have a valid return value. 
+            // This is because the function call can occur as the last expr
+            // in a Expression Statement. 
+            // int res = ({
+            //    foo(); // returns an int
+            // })
+            if (call->getType()->isVoidType())
+                return true;
         }
     }
     return false;
@@ -1208,12 +1215,11 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     }
 
     if (auto* return_stmt = llvm::dyn_cast<clang::ReturnStmt>(stmt)) {
-        if (!m_target_var.empty()) {
+        if (!m_target_var.empty())
             stream << m_target_var << " = ";
-            if (clang::Expr* ret_val = return_stmt->getRetValue())
-                ret_val->printPretty(stream, this, m_policy);
-            stream << ";\n";
-        }
+        if (clang::Expr* ret_val = return_stmt->getRetValue())
+            ret_val->printPretty(stream, this, m_policy);
+        stream << ";\n";
         return true;
     }
 
