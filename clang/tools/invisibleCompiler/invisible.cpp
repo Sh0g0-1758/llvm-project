@@ -76,13 +76,22 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     size_t total = 1;
     for (const auto& def : m_deferred_definitions)
         total += def.size() + 2;
+    for (const auto& global : m_deferred_globals)
+        total += global.size() + 1;
     all_defs.reserve(total);
 
     all_defs += '\n';
+
+    for(auto& glob : m_deferred_globals) {
+        all_defs += std::move(glob);
+        all_defs += "\n";
+    }
+
     for (auto& def : m_deferred_definitions) {
         all_defs += std::move(def);
         all_defs += "\n\n";
     }
+
     return all_defs;
 }
 
@@ -94,7 +103,8 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     glob_decl->print(decl_out, m_policy);
     decl_out.flush();
 
-    m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl);
+    m_deferred_globals.push_back(decl + ";");
+    m_rewriter.ReplaceText(glob_decl->getSourceRange(), "");
     return true;
 }
 
@@ -1210,9 +1220,14 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     }
 
     if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
-        std::string asm_stmt = clang::Lexer::getSourceText(
-                        clang::CharSourceRange::getTokenRange(gcc_asm->getSourceRange()), m_ctx.getSourceManager(),
-                        m_ctx.getLangOpts()).str();
+        m_func_param_renamer.TraverseStmt(gcc_asm);
+
+        std::string asm_stmt;
+        llvm::raw_string_ostream asm_out(asm_stmt);
+        gcc_asm->printPretty(asm_out, nullptr, m_policy);
+        asm_out.flush();
+
+        asm_stmt.replace(0, 3, "__asm__");
         stream << asm_stmt << ";";
         return true;
     }

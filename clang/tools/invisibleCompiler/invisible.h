@@ -43,11 +43,12 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     bool VisitVarDecl(clang::VarDecl* decl);
     std::string getDeferredDefinitions();
   private:
-  clang::ASTContext& m_ctx;
-  clang::Rewriter& m_rewriter;
-  clang::PrintingPolicy m_policy;
-  DeclBeforeDefPrinterHelper m_custom_printer;
-  std::vector<std::string> m_deferred_definitions;
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    DeclBeforeDefPrinterHelper m_custom_printer;
+    std::vector<std::string> m_deferred_definitions;
+    std::vector<std::string> m_deferred_globals;
 };
 
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
