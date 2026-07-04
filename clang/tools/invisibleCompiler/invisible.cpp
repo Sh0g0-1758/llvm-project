@@ -43,7 +43,7 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -72,21 +72,20 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 }
 
 std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
+    for(const auto& it : m_deferred_globals) {
+        clang::SourceRange decl_range;
+        decl_range.setBegin(it.first);
+        decl_range.setEnd(it.second.second);
+        m_rewriter.ReplaceText(decl_range, it.second.first);
+    }
+
     std::string all_defs;
     size_t total = 1;
     for (const auto& def : m_deferred_definitions)
         total += def.size() + 2;
-    for (const auto& global : m_deferred_globals)
-        total += global.size() + 1;
     all_defs.reserve(total);
 
     all_defs += '\n';
-
-    for(auto& glob : m_deferred_globals) {
-        all_defs += std::move(glob);
-        all_defs += "\n";
-    }
-
     for (auto& def : m_deferred_definitions) {
         all_defs += std::move(def);
         all_defs += "\n\n";
@@ -103,8 +102,48 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     glob_decl->print(decl_out, m_policy);
     decl_out.flush();
 
-    m_deferred_globals.push_back(decl + ";");
-    m_rewriter.ReplaceText(glob_decl->getSourceRange(), "");
+    clang::SourceRange decl_range = glob_decl->getSourceRange();
+
+    if (m_deferred_globals.find(decl_range.getBegin()) != m_deferred_globals.end())
+        m_deferred_globals[decl_range.getBegin()].first += (decl + ";\n");
+    else
+        m_deferred_globals[decl_range.getBegin()].first = (decl + ";\n");
+    m_deferred_globals[decl_range.getBegin()].second = decl_range.getEnd();
+    return true;
+}
+
+// ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
+
+NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    std::string def;
+    llvm::raw_string_ostream def_out(def);
+    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
+    def_out.flush();
+
+    m_rewriter.ReplaceText(func->getBody()->getSourceRange(), def);
+    return true;
+}
+
+bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
+    if (glob_decl->isLocalVarDeclOrParm()) return true;
+
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    glob_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl);
     return true;
 }
 
@@ -686,8 +725,6 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     for (const clang::Decl* decl : decl_stmt->decls()) {
         if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
             vars.push_back(var_decl);
-        } else {
-            return true;
         }
     }
 
@@ -1800,6 +1837,17 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             auto endOfFile = SM.getLocForEndOfFile(SM.getMainFileID());
             rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
         }, rewriter);
+        // Remove redefinitions of any record that might have been
+        // introduced because of separating Multiple Declarators
+        // onto separate statements.
+        {
+            clang::Rewriter rewriter;
+            tmp_result = runInMemory(tmp_result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+                rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+                NormalizeMultipleRecordDeclVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }, rewriter);
+        }
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
         } else {
@@ -1902,6 +1950,17 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             CommaInitVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
         }, rewriter);
+        // Remove redefinitions of any record that might have been
+        // introduced because of separating Multiple Declarators
+        // onto separate statements.
+        {
+            clang::Rewriter rewriter;
+            tmp_result = runInMemory(tmp_result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+                rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+                NormalizeMultipleRecordDeclVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }, rewriter);
+        }
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
         } else {

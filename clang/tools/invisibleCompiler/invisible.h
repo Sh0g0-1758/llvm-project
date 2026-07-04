@@ -48,7 +48,22 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::PrintingPolicy m_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
-    std::vector<std::string> m_deferred_globals;
+    std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
+};
+
+// ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
+
+/// Puts all function declarations before all function definitions 
+class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<NormalizeMultipleRecordDeclVisitor> {
+  public:
+    NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
+    bool VisitVarDecl(clang::VarDecl* decl);
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    DeclBeforeDefPrinterHelper m_custom_printer;
 };
 
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
