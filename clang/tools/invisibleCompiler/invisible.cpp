@@ -27,9 +27,12 @@ DeclBeforeDefPrinterHelper::DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, c
 
 bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {
     if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
-        std::string asm_stmt = clang::Lexer::getSourceText(
-                        clang::CharSourceRange::getTokenRange(gcc_asm->getSourceRange()), m_ctx.getSourceManager(),
-                        m_ctx.getLangOpts()).str();
+        std::string asm_stmt;
+        llvm::raw_string_ostream asm_out(asm_stmt);
+        gcc_asm->printPretty(asm_out, nullptr, m_policy);
+        asm_out.flush();
+
+        asm_stmt.replace(0, 3, "__asm__");
         stream << asm_stmt << ";";
         return true;
     }
