@@ -113,6 +113,8 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
 }
 
 bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
+    if (!enum_decl->getDeclContext()->isFileContext()) return true;
+
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
     enum_decl->print(decl_out, m_policy);
