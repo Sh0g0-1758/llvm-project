@@ -881,7 +881,6 @@ bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
     : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index), m_policy(m_ctx.getLangOpts()) {
-    
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -935,6 +934,14 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
     if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
         return;
 
+    // A function that occurs as a param in another function call should not be hoisted 
+    // as it would mess up the markers that rewriter uses to process the changes. Although
+    // this case should be caught early on for most of the cases since they would share the
+    // same nearest_compound_stmt loc but there are cases where this may not be entirely true. 
+    // for instance, Expression Statements. 
+    if((call->getSourceRange().getBegin() >= m_last_call_loc.getBegin()) && (call->getSourceRange().getEnd() <= m_last_call_loc.getEnd()))
+       return;
+
     auto& src_mgr = m_ctx.getSourceManager();
     const auto& lang_opts = m_ctx.getLangOpts();
 
@@ -967,6 +974,7 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
     }
     m_last_update_loc = nearest_compound_stmt;
+    m_last_call_loc = call->getSourceRange();
 }
 
 clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call) {

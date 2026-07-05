@@ -241,6 +241,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::SourceLocation m_last_update_loc;
+    clang::SourceRange m_last_call_loc;
 
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
