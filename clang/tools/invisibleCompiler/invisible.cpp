@@ -112,6 +112,16 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     return true;
 }
 
+bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    enum_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(enum_decl->getSourceRange(), decl);
+    return true;
+}
+
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
 
 NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)

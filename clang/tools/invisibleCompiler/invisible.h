@@ -41,6 +41,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitVarDecl(clang::VarDecl* decl);
+    bool VisitEnumDecl(clang::EnumDecl* enum_decl);
     std::string getDeferredDefinitions();
   private:
     clang::ASTContext& m_ctx;
