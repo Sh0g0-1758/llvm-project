@@ -124,6 +124,30 @@ bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
     return true;
 }
 
+bool DeclBeforeDefVisitor::VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl) {
+    if (!static_assert_decl->getDeclContext()->isFileContext()) return true;
+
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    static_assert_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(static_assert_decl->getSourceRange(), decl);
+    return true;
+}
+
+bool DeclBeforeDefVisitor::VisitTypedefDecl(clang::TypedefDecl* typdef_decl) {
+    if (!typdef_decl->getDeclContext()->isFileContext()) return true;
+
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    typdef_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(typdef_decl->getSourceRange(), decl);
+    return true;
+}
+
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
 
 NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
