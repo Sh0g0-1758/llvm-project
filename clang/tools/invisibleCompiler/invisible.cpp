@@ -59,11 +59,29 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
     def_out.flush();
 
-    clang::PrintingPolicy declPolicy = m_policy;
-    declPolicy.TerseOutput = true;
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
-    func->print(decl_out, declPolicy);
+
+    if (!func->hasWrittenPrototype() && func->getNumParams() > 0) {
+        std::string proto = func->getNameAsString();
+        proto += "(";
+        for (unsigned i = 0; i < func->getNumParams(); ++i) {
+            if (i > 0) proto += ", ";
+            clang::ParmVarDecl* param_decl = func->getParamDecl(i);
+            std::string param;
+            llvm::raw_string_ostream param_out(param);
+            param_decl->getType().print(param_out, m_policy, param_decl->getNameAsString());
+            param_out.flush();
+            proto += param;
+        }
+        proto += ")";
+
+        func->getReturnType().print(decl_out, m_policy, proto);
+    } else {
+        clang::PrintingPolicy declPolicy = m_policy;
+        declPolicy.TerseOutput = true;
+        func->print(decl_out, declPolicy);
+    }
     decl_out.flush();
 
     m_deferred_definitions.push_back(decl + def);
@@ -82,13 +100,13 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     std::string all_defs;
     size_t total = 1;
     for (const auto& def : m_deferred_definitions)
-        total += def.size() + 2;
+        total += def.size() + 1;
     all_defs.reserve(total);
 
     all_defs += '\n';
     for (auto& def : m_deferred_definitions) {
         all_defs += std::move(def);
-        all_defs += "\n\n";
+        all_defs += "\n";
     }
 
     return all_defs;
