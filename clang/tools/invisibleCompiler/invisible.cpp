@@ -2166,6 +2166,15 @@ void updateInlineLocInfo(std::vector<size_t>& m_call_sites, size_t m_current_ind
 
 InlineResult inline_functions(const std::string& source, const std::string& filename,
                               const std::vector<InlineEntry>& entries, std::vector<std::string>& args) {
+    // Suppress Clang's implicit builtin declarations so that hoisted
+    // temporaries use the type names from the user's headers (e.g.
+    // `size_t`) rather than Clang-internal typedefs (`__size_t`).
+    args.emplace_back("-fno-builtin");
+    // Suppress warnings that show up as errors while parsing using
+    // libtooling but are otherwise benign as still compiles the TU. 
+    // For eg. -Wincompatible-pointer-types
+    args.emplace_back("-Wno-everything");
+    
     std::vector<std::pair<std::string, std::string>> oracle;
     std::vector<size_t> call_sites;
 
