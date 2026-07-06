@@ -320,11 +320,9 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
   public:
     InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
                   std::vector<size_t>& call_sites, size_t& current_index,
-                  clang::Rewriter& rewriter);
-
+                  clang::Rewriter& rewriter, std::map<std::string, clang::FunctionDecl*>& decl_map);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitCallExpr(clang::CallExpr* call);
-    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
     bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
     bool shouldVisitImplicitCode() const;
@@ -345,6 +343,24 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     std::string m_current_func;
     bool m_matched = false;
     size_t m_net_lines = 0;
+    std::map<std::string, clang::FunctionDecl*>& m_function_decl_map;
+};
+
+// ─── FunctionDeclMapVisitor ─────────────────────────────────────────────────
+
+/// Inlines a specific callee into a caller at a given call site,
+/// guided by an oracle file.
+class FunctionDeclMapVisitor : public clang::RecursiveASTVisitor<FunctionDeclMapVisitor> {
+  public:
+    FunctionDeclMapVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
+    std::map<std::string, clang::FunctionDecl*>& get_function_decl_map();
+
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    std::map<std::string, clang::FunctionDecl*> m_function_decl_map;
 };
 
 // ─── ConstantFoldVisitor ───────────────────────────────────────────

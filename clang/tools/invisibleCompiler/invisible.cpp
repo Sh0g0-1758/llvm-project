@@ -972,9 +972,6 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     // been fully resolved. 
     if(m_is_uninstantiated_template) return true;
 
-    // If the callee's defintion is not present in the current TU
-    if(!(call->getDirectCallee())) return true;
-
     if (isTopLevelCall(call)) return true;
 
     hoist_call_at_nearest_compound_statement(call);
@@ -1021,7 +1018,7 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
     llvm::raw_string_ostream out(clean_call);
 
     if (!call->getType()->isVoidType()) {
-        clang::QualType retTy = call->getDirectCallee()->getReturnType();
+        clang::QualType retTy = call->getType();
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
         retTy.print(out, m_policy, ret_var);
         out << " = ";
@@ -1445,15 +1442,15 @@ bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
 
 InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
                              std::vector<size_t>& call_sites, size_t& current_index,
-                             clang::Rewriter& rewriter)
+                             clang::Rewriter& rewriter, std::map<std::string, clang::FunctionDecl*>& decl_map)
     : m_ctx(ctx),
       m_caller(caller),
       m_callee(callee),
       m_call_sites(call_sites),
       m_current_index(current_index),
       m_rewriter(rewriter),
-      m_policy(m_ctx.getLangOpts()) {
-    
+      m_policy(m_ctx.getLangOpts()),
+      m_function_decl_map(decl_map) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -1501,11 +1498,27 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (m_caller != m_current_func)
         return true;
 
+    auto& src_mgr = m_ctx.getSourceManager();
+    auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
+    auto ploc = src_mgr.getPresumedLoc(loc);
+
+    if (ploc.getLine() != m_call_sites[m_current_index])
+        return true;
+
+    // If the call is in a loop that we do not correctly
+    // handle inlining or the functionHositingPass failed
+    // in which case we do not inline
+    if (callInLoop(call) || !isTopLevelCall(call))
+        return true;
+
     clang::FunctionDecl* callee = call->getDirectCallee();
-    // the callee might be a templated function which in turn
-    // is being called by a template function. Thus at the callsite
-    // the body is not available. The callee can also be a virtual function
-    if (!callee || !callee->hasBody())
+    // the callee might be a function pointer. In the AST for such callsites,
+    // the callee is not available so we query a map that stores the function_name
+    // -> function_decl information.
+    if (!callee)
+        callee = m_function_decl_map[m_callee];
+
+    if(!callee->hasBody())
         return true;
 
     std::string callee_name;
@@ -1549,26 +1562,13 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     }
 
     // This check is required in case the function hoisting pass failed. Because then we can
-    // have foo(bar()) and we can match with foo instead.  
+    // have foo(bar()) and we can match with foo instead.
     if (m_callee != callee_name)
         return true;
 
     // This check safeguards against a segfault further down the line. Once the preprocessing
-    // is good enough, we remove this check though. 
+    // is good enough, we remove this check though.
     if(call->getNumArgs() != callee->getNumParams())
-        return true;
-
-    auto& src_mgr = m_ctx.getSourceManager();
-    auto loc = src_mgr.getSpellingLoc(call->getExprLoc());
-    auto ploc = src_mgr.getPresumedLoc(loc);
-
-    if (ploc.getLine() != m_call_sites[m_current_index])
-        return true;
-
-    // If the call is in a loop that we do not correctly
-    // handle inlining or the functionHositingPass failed
-    // in which case we do not inline
-    if (callInLoop(call) || !isTopLevelCall(call))
         return true;
 
     // TODO: Handle class methods — they may use private members
@@ -1721,6 +1721,28 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 bool InlineVisitor::matched() const { return m_matched; }
 
 size_t InlineVisitor::get_net_change() { return m_net_lines; }
+
+// ─── FunctionDeclMapVisitor ──────────────────────────────────────────────
+
+FunctionDeclMapVisitor::FunctionDeclMapVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool FunctionDeclMapVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    m_function_decl_map[func->getNameAsString()] = func;
+    return true;
+}
+
+std::map<std::string, clang::FunctionDecl*>& FunctionDeclMapVisitor::get_function_decl_map()  {
+    return m_function_decl_map;
+}
 
 // ─── ConstantFoldVisitor ──────────────────────────────────────────────
 
@@ -2200,7 +2222,10 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             result, filename, args,
             [&rewriter, &oracle, &call_sites, &succeeded, &i, &net_lines](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-                InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter);
+                FunctionDeclMapVisitor _visitor(ctx, rewriter);
+                _visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+
+                InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter, _visitor.get_function_decl_map());
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 if(!visitor.matched())
                     llvm::outs() << "could not find any matching pair for this: " << oracle[i].first << " " << oracle[i].second << " " << call_sites[i] << "\n";
