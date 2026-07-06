@@ -52,6 +52,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
+    std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
 };
 
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────

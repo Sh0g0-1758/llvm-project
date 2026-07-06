@@ -97,6 +97,13 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         m_rewriter.ReplaceText(decl_range, it.second.first);
     }
 
+    for(const auto& it : m_deferred_typedefs) {
+        clang::SourceRange decl_range;
+        decl_range.setBegin(it.first);
+        decl_range.setEnd(it.second.second);
+        m_rewriter.ReplaceText(decl_range, it.second.first);
+    }
+
     std::string all_defs;
     size_t total = 1;
     for (const auto& def : m_deferred_definitions)
@@ -162,7 +169,13 @@ bool DeclBeforeDefVisitor::VisitTypedefDecl(clang::TypedefDecl* typdef_decl) {
     typdef_decl->print(decl_out, m_policy);
     decl_out.flush();
 
-    m_rewriter.ReplaceText(typdef_decl->getSourceRange(), decl);
+    clang::SourceRange decl_range = typdef_decl->getSourceRange();
+
+    if (m_deferred_typedefs.find(decl_range.getBegin()) != m_deferred_typedefs.end())
+        m_deferred_typedefs[decl_range.getBegin()].first += (decl + ";\n");
+    else
+        m_deferred_typedefs[decl_range.getBegin()].first = (decl + ";\n");
+    m_deferred_typedefs[decl_range.getBegin()].second = decl_range.getEnd();
     return true;
 }
 
