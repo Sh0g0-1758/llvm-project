@@ -1838,10 +1838,13 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
             if (fn->getBuiltinID() != 0)
                 return true;
 
-    clang::Expr::EvalResult result;
-    clang::Expr::EvalResult inner_result;
-    if (expr->isValueDependent() || inner->isValueDependent() || !expr->EvaluateAsRValue(result, m_ctx) || !inner->EvaluateAsRValue(inner_result, m_ctx))
+    if (expr->isValueDependent() || inner->isValueDependent())
         return true;
+    if (!expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_NoSideEffects) || !inner->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_NoSideEffects))
+        return true;
+
+    clang::Expr::EvalResult result;
+    expr->EvaluateAsRValue(result, m_ctx);
 
     clang::APValue value = result.Val;
     // The resultant value can be a complex type such as a struct or an array
@@ -2142,7 +2145,9 @@ std::string constant_fold(const std::string& source, const std::string& filename
 
     // constant fold mathematical expressions into their simplified form
     bool did_fold = true;
+    int iter = 0;
     while (did_fold) {
+        llvm::outs() << "Current Iter> " << iter++ << " : ";
         did_fold = false;
         clang::Rewriter rewriter;
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
