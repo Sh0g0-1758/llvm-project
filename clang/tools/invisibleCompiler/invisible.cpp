@@ -1887,6 +1887,15 @@ bool deadCodeElimVisitor::did_elim() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
+bool deadCodeElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
+
+    mapped_cfg->dump(m_ctx.getLangOpts(), true);
+}
+
 // TODO: Need to change the assignment operator into a comma separated list 
 //       with the end result as the last element of the list. This goes for 
 //       a couple other compound operators as well. Maybe we will need to shift
@@ -1986,6 +1995,36 @@ bool deadCodeElimVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
         m_rewriter.ReplaceText(while_stmt->getSourceRange(), reduced);
     }
 
+    return true;
+}
+
+bool deadCodeElimVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
+    if ((conditional_op->getSourceRange().getBegin() >= m_last_update_loc_begin) && (conditional_op->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+
+    clang::Expr* __cond = conditional_op->getCond();
+    // allowSideEffects let statements like (a = 45, 45) pass which
+    // are then caught later and added to the replacement string. 
+    if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
+        return true;
+    bool __cond_val;
+    if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+
+    clang::Expr* result;
+    if (__cond_val) result = conditional_op->getTrueExpr();
+    else result = conditional_op->getFalseExpr();
+
+    std::string reduced{};
+    llvm::raw_string_ostream reduced_stream(reduced);
+
+    if (clang::ImplicitCastExpr* ice = clang::dyn_cast<clang::ImplicitCastExpr>(result))
+        reduced_stream << "(" << ice->getType().getAsString(m_policy) << ")";
+
+    result->printPretty(reduced_stream, nullptr, m_policy);
+    reduced_stream.flush();
+
+    m_last_update_loc_begin = conditional_op->getSourceRange().getBegin();
+    m_last_update_loc_end = conditional_op->getSourceRange().getEnd();
+    m_rewriter.ReplaceText(conditional_op->getSourceRange(), reduced);
     return true;
 }
 

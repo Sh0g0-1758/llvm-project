@@ -4,6 +4,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/Sema.h"
+#include "clang/Analysis/CFG.h"
 
 #include <map>
 #include <string>
@@ -387,6 +388,7 @@ private:
     clang::SourceLocation m_last_update_loc_begin;
     clang::SourceLocation m_last_update_loc_end;
     clang::PrintingPolicy m_policy;
+    clang::CFG::BuildOptions m_cfg_options;
 
 public:
     deadCodeElimVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
@@ -394,6 +396,8 @@ public:
     virtual bool VisitForStmt(clang::ForStmt* for_stmt);
     virtual bool VisitWhileStmt(clang::WhileStmt* while_stmt);
     virtual bool VisitDoStmt(clang::DoStmt* do_stmt);
+    virtual bool VisitConditionalOperator(clang::ConditionalOperator* conditional_op);
+    virtual bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool did_elim();
 };
 
