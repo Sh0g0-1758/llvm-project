@@ -61,6 +61,8 @@ int main(int argc, char* argv[]) {
         out.close();
     } else if(pass == "constant-fold") {
         llvm::outs() << invisible::constant_fold(source, output_file, args) << "\n";
+    } else if (pass == "dce") {
+        llvm::outs() << invisible::deadCodeElim(source, output_file, args) << "\n";
     } else if(pass == "combine") {
         std::string half = invisible::constant_fold(source, output_file, args);
         std::string full = invisible::preprocess(half, output_file, args);

@@ -1708,8 +1708,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     // Using added_lines directly would over-count by one for every
     // extra line the original statement occupied, causing cumulative
     // drift in later call-site lookups.
-    auto orig_text = clang::Lexer::getSourceText(
-        clang::CharSourceRange::getTokenRange(stmt_to_replace->getSourceRange()), src_mgr, m_ctx.getLangOpts());
+    auto orig_text = clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(stmt_to_replace->getSourceRange()), src_mgr, m_ctx.getLangOpts());
     m_net_lines = added_lines - std::count(orig_text.begin(), orig_text.end(), '\n');
 
     OS << "}";
@@ -1746,9 +1745,7 @@ std::map<std::string, clang::FunctionDecl*>& FunctionDeclMapVisitor::get_functio
 
 // ─── ConstantFoldVisitor ──────────────────────────────────────────────
 
-constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter) {
-    rewriter.setSourceMgr(m_ctx.getSourceManager(), m_ctx.getLangOpts());
-}
+constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter) { }
 
 bool constantFoldVisitor::did_fold() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
@@ -1844,7 +1841,7 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         return true;
 
     clang::Expr::EvalResult result;
-    expr->EvaluateAsRValue(result, m_ctx);
+    if(!expr->EvaluateAsRValue(result, m_ctx)) return true;
 
     clang::APValue value = result.Val;
     // The resultant value can be a complex type such as a struct or an array
@@ -1872,9 +1869,154 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
 
     m_last_update_loc_begin = expr->getSourceRange().getBegin();
     m_last_update_loc_end = expr->getSourceRange().getEnd();
-    m_rewriter.ReplaceText(
-        clang::CharSourceRange::getTokenRange(expr->getSourceRange()),
-        replacement);
+    m_rewriter.ReplaceText(expr->getSourceRange(), replacement);
+
+    return true;
+}
+
+// ─── deadCodeElimVisitor ──────────────────────────────────────────────
+
+deadCodeElimVisitor::deadCodeElimVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool deadCodeElimVisitor::did_elim() {
+    return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
+}
+
+// TODO: Need to change the assignment operator into a comma separated list 
+//       with the end result as the last element of the list. This goes for 
+//       a couple other compound operators as well. Maybe we will need to shift
+//       this to the preprocessor step. 
+bool deadCodeElimVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
+    if ((if_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (if_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+
+    clang::Expr* __cond = if_stmt->getCond();
+    // allowSideEffects let statements like (a = 45, 45) pass which
+    // are then caught later and added to the replacement string. 
+    if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
+        return true;
+    bool __cond_val;
+    if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+    bool __cond_has_side_effects =  __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+
+    std::string reduced{};
+    llvm::raw_string_ostream reduced_stream(reduced);
+
+    if (__cond_has_side_effects) {
+        __cond->printPretty(reduced_stream, nullptr, m_policy);
+        reduced_stream << ";";
+    }
+
+    if (__cond_val) {
+        if_stmt->getThen()->printPretty(reduced_stream, nullptr, m_policy);
+    } else {
+        if(clang::Stmt* else_stmt = if_stmt->getElse()) {
+            else_stmt->printPretty(reduced_stream, nullptr, m_policy);
+        }
+    }
+
+    reduced_stream.flush();
+
+    m_last_update_loc_begin = if_stmt->getSourceRange().getBegin();
+    m_last_update_loc_end = if_stmt->getSourceRange().getEnd();
+    m_rewriter.ReplaceText(if_stmt->getSourceRange(), reduced);
+
+    return true;
+}
+
+bool deadCodeElimVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
+    if ((for_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (for_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+
+    clang::Expr* __cond = for_stmt->getCond();
+    // allowSideEffects let statements like (a = 45, 45) pass which
+    // are then caught later and added to the replacement string. 
+    if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
+        return true;
+    bool __cond_val;
+    if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+    if (!__cond_val) {
+        std::string reduced{};
+        llvm::raw_string_ostream reduced_stream(reduced);
+        for_stmt->getInit()->printPretty(reduced_stream, nullptr, m_policy);
+        
+        bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+        if (__cond_has_side_effects) {
+            __cond->printPretty(reduced_stream, nullptr, m_policy);
+            reduced_stream << ";";
+        }
+
+        reduced_stream.flush();
+
+        m_last_update_loc_begin = for_stmt->getSourceRange().getBegin();
+        m_last_update_loc_end = for_stmt->getSourceRange().getEnd();
+        m_rewriter.ReplaceText(for_stmt->getSourceRange(), reduced);
+    }
+
+    return true;
+}
+
+bool deadCodeElimVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
+    if ((while_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (while_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+
+    clang::Expr* __cond = while_stmt->getCond();
+    // allowSideEffects let statements like (a = 45, 45) pass which
+    // are then caught later and added to the replacement string. 
+    if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
+        return true;
+    bool __cond_val;
+    if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+    if (!__cond_val) {
+        std::string reduced{};
+        llvm::raw_string_ostream reduced_stream(reduced);
+        
+        bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+        if (__cond_has_side_effects) {
+            __cond->printPretty(reduced_stream, nullptr, m_policy);
+            reduced_stream << ";";
+        }
+
+        reduced_stream.flush();
+
+        m_last_update_loc_begin = while_stmt->getSourceRange().getBegin();
+        m_last_update_loc_end = while_stmt->getSourceRange().getEnd();
+        m_rewriter.ReplaceText(while_stmt->getSourceRange(), reduced);
+    }
+
+    return true;
+}
+
+bool deadCodeElimVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
+    if ((do_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (do_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+
+    clang::Expr* __cond = do_stmt->getCond();
+    // allowSideEffects let statements like (a = 45, 45) pass which
+    // are then caught later and added to the replacement string. 
+    if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
+        return true;
+    bool __cond_val;
+    if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+    if (!__cond_val) {
+        std::string reduced{};
+        llvm::raw_string_ostream reduced_stream(reduced);
+
+        do_stmt->getBody()->printPretty(reduced_stream, nullptr, m_policy);
+
+        bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+        if (__cond_has_side_effects) {
+            __cond->printPretty(reduced_stream, nullptr, m_policy);
+            reduced_stream << ";";
+        }
+
+        reduced_stream.flush();
+
+        m_last_update_loc_begin = do_stmt->getSourceRange().getBegin();
+        m_last_update_loc_end = do_stmt->getSourceRange().getEnd();
+        m_rewriter.ReplaceText(do_stmt->getSourceRange(), reduced);
+    }
 
     return true;
 }
@@ -2145,9 +2287,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
 
     // constant fold mathematical expressions into their simplified form
     bool did_fold = true;
-    int iter = 0;
     while (did_fold) {
-        llvm::outs() << "Current Iter> " << iter++ << " : ";
         did_fold = false;
         clang::Rewriter rewriter;
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
@@ -2251,6 +2391,31 @@ InlineResult inline_functions(const std::string& source, const std::string& file
     }
 
     return {result, succeeded};
+}
+
+// ─── dead-code-elimination ────────────────────────────────────────────
+
+std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+    std::string result = source;
+
+    // constant fold mathematical expressions into their simplified form
+    bool did_elim = true;
+    while (did_elim) {
+        did_elim = false;
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_elim](clang::ASTContext& ctx, clang::Sema&) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            deadCodeElimVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_elim = visitor.did_elim();
+        }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
+    }
+
+    return result;
 }
 
 }  // namespace invisible

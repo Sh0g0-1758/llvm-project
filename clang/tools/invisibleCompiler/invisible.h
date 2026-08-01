@@ -378,6 +378,25 @@ public:
     bool did_fold();
 };
 
+// ─── deadCodeElimVisitor ───────────────────────────────────────────
+
+class deadCodeElimVisitor : public clang::RecursiveASTVisitor<deadCodeElimVisitor> {
+private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::SourceLocation m_last_update_loc_begin;
+    clang::SourceLocation m_last_update_loc_end;
+    clang::PrintingPolicy m_policy;
+
+public:
+    deadCodeElimVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    virtual bool VisitIfStmt(clang::IfStmt* if_stmt);
+    virtual bool VisitForStmt(clang::ForStmt* for_stmt);
+    virtual bool VisitWhileStmt(clang::WhileStmt* while_stmt);
+    virtual bool VisitDoStmt(clang::DoStmt* do_stmt);
+    bool did_elim();
+};
+
 // ─── Free functions ────────────────────────────────────────────────
 
 /// Split comma-separated declarations into individual statements and
@@ -386,6 +405,8 @@ public:
 std::string preprocess(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
 std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args);
+
+std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
 /// Extract all function definitions from @p source and return them
 /// as a JSON string mapping function names to their printed bodies.
