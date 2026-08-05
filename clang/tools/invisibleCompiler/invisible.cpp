@@ -1887,15 +1887,6 @@ bool deadCodeElimVisitor::did_elim() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
-bool deadCodeElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    if (!func->hasBody()) return true;
-    if (!func->isThisDeclarationADefinition()) return true;
-
-    std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
-
-    mapped_cfg->dump(m_ctx.getLangOpts(), true);
-}
-
 // TODO: Need to change the assignment operator into a comma separated list 
 //       with the end result as the last element of the list. This goes for 
 //       a couple other compound operators as well. Maybe we will need to shift
@@ -2056,6 +2047,96 @@ bool deadCodeElimVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
         m_last_update_loc_end = do_stmt->getSourceRange().getEnd();
         m_rewriter.ReplaceText(do_stmt->getSourceRange(), reduced);
     }
+
+    return true;
+}
+
+// ─── deadCodeElimCfgAnalysisVisitor ──────────────────────────────────────────────
+
+deadCodeElimCfgAnalysisVisitor::deadCodeElimCfgAnalysisVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), did_remove(false) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool deadCodeElimCfgAnalysisVisitor::did_elim() {
+    return did_remove;
+}
+
+bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
+    std::unordered_map<clang::CFGBlock*, bool> reachable_block;
+    std::queue<clang::CFGBlock*> reachability_queue;
+    reachability_queue.push(&(mapped_cfg->getEntry()));
+    std::unordered_map<clang::CFGBlock*, bool> block_visited;
+
+    for (clang::CFGBlock *_block : *mapped_cfg) {
+        reachable_block[_block] = false;
+        block_visited[_block] = false;
+    }
+
+    while (!reachability_queue.empty()) {
+        clang::CFGBlock *_block = reachability_queue.front();
+        reachable_block[_block] = true;
+        block_visited[_block] = true;
+        reachability_queue.pop();
+        for (auto succ : _block->succs())
+            if (succ and !block_visited[succ])
+                reachability_queue.push(succ);
+    }
+
+    std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>> unreachable_locs;
+    for(auto block_status : reachable_block) {
+        if (!block_status.second) {
+            clang::CFGBlock* _block = block_status.first;
+            if (clang::Stmt* terminator_stmt = _block->getTerminatorStmt())
+                unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
+            for (clang::CFGElement &Elem : *_block)
+                if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>())
+                    if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt()))
+                        unreachable_locs.push_back({stmt->getSourceRange().getBegin(), stmt->getSourceRange().getEnd()});
+        }
+    }
+
+    if(unreachable_locs.empty()) return true;
+
+    std::sort(unreachable_locs.begin(), unreachable_locs.end(), [](std::pair<clang::SourceLocation, clang::SourceLocation> a, std::pair<clang::SourceLocation, clang::SourceLocation> b) {
+        return a.first.getRawEncoding() < b.first.getRawEncoding();
+    });
+
+    std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>> merged_unreachable_locs;
+
+    clang::SourceLocation rewrite_min_unreachable_loc = unreachable_locs[0].first;
+    unsigned min_unreachable_loc = unreachable_locs[0].first.getRawEncoding();
+
+    clang::SourceLocation rewrite_max_unreachable_loc = unreachable_locs[0].second;
+    unsigned max_unreachable_loc = unreachable_locs[0].second.getRawEncoding();
+
+    for(int i = 1; i < unreachable_locs.size(); i++) {
+        unsigned start = unreachable_locs[i].first.getRawEncoding();
+        unsigned end = unreachable_locs[i].second.getRawEncoding();
+
+        // overlap if the start lies in between the max and min unreachable_loc
+        if((min_unreachable_loc <= start) and (start <= max_unreachable_loc)) {
+            max_unreachable_loc = std::max(end, max_unreachable_loc);
+            if (end == max_unreachable_loc)
+                rewrite_max_unreachable_loc = unreachable_locs[i].second;
+        } else {
+            merged_unreachable_locs.push_back({rewrite_min_unreachable_loc, rewrite_max_unreachable_loc});
+            min_unreachable_loc = start;
+            max_unreachable_loc = end;
+            rewrite_min_unreachable_loc = unreachable_locs[i].first;
+            rewrite_max_unreachable_loc = unreachable_locs[i].second;
+        }
+    }
+    merged_unreachable_locs.push_back({rewrite_min_unreachable_loc, rewrite_max_unreachable_loc});
+
+    for(auto& unreachable_loc : merged_unreachable_locs)
+        m_rewriter.RemoveText({unreachable_loc.first, unreachable_loc.second});
 
     return true;
 }
@@ -2449,6 +2530,19 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             did_elim = visitor.did_elim();
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
+
+        // cfg analysis
+        rewriter = clang::Rewriter();
+        tmp_result = runInMemory(result, filename, args, [&rewriter, &did_elim](clang::ASTContext& ctx, clang::Sema&) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            deadCodeElimCfgAnalysisVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_elim = did_elim ? true : visitor.did_elim();
+        }, rewriter);
+        if (!isCompilable(tmp_result, filename, args)) {
             break;
         }
         result = std::move(tmp_result);

@@ -7,6 +7,7 @@
 #include "clang/Analysis/CFG.h"
 
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -388,7 +389,6 @@ private:
     clang::SourceLocation m_last_update_loc_begin;
     clang::SourceLocation m_last_update_loc_end;
     clang::PrintingPolicy m_policy;
-    clang::CFG::BuildOptions m_cfg_options;
 
 public:
     deadCodeElimVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
@@ -397,6 +397,21 @@ public:
     virtual bool VisitWhileStmt(clang::WhileStmt* while_stmt);
     virtual bool VisitDoStmt(clang::DoStmt* do_stmt);
     virtual bool VisitConditionalOperator(clang::ConditionalOperator* conditional_op);
+    bool did_elim();
+};
+
+// ─── deadCodeElimCfgAnalysisVisitor ───────────────────────────────────────────
+
+class deadCodeElimCfgAnalysisVisitor : public clang::RecursiveASTVisitor<deadCodeElimCfgAnalysisVisitor> {
+private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    clang::CFG::BuildOptions m_cfg_options;
+    bool did_remove;
+
+public:
+    deadCodeElimCfgAnalysisVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool did_elim();
 };
