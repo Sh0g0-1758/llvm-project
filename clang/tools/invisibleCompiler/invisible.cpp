@@ -1932,6 +1932,7 @@ bool deadCodeElimVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     if ((for_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (for_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
 
     clang::Expr* __cond = for_stmt->getCond();
+    if (!__cond) return true;
     // allowSideEffects let statements like (a = 45, 45) pass which
     // are then caught later and added to the replacement string. 
     if(__cond->isValueDependent() || !(__cond->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)))
@@ -2103,6 +2104,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     }
 
     if(unreachable_locs.empty()) return true;
+    did_remove = true;
 
     std::sort(unreachable_locs.begin(), unreachable_locs.end(), [](std::pair<clang::SourceLocation, clang::SourceLocation> a, std::pair<clang::SourceLocation, clang::SourceLocation> b) {
         return a.first.getRawEncoding() < b.first.getRawEncoding();
