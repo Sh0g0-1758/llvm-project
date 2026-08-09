@@ -1973,7 +1973,7 @@ bool deadCodeElimVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
     if (!__cond_val) {
         std::string reduced{};
         llvm::raw_string_ostream reduced_stream(reduced);
-        
+
         bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
         if (__cond_has_side_effects) {
             __cond->printPretty(reduced_stream, nullptr, m_policy);
@@ -2143,6 +2143,48 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     return true;
 }
 
+// ─── transferStmtVisitor ──────────────────────────────────────────────
+
+transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies) { }
+
+bool transferStmtVisitor::shouldTraversePostOrder() { return true; }
+
+bool transferStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
+    // if its an assignment type op, invalidate the copy of the variable
+    // on the lhs. If the rhs is a copyable expr, store it. 
+    if (binary_op->isAssignmentOp()) {
+        clang::Expr* lhs = binary_op->getLHS();
+    }
+}
+
+bool transferStmtVisitor::VisitUnaryOperator(clang::UnaryOperator* unary_op) {
+    typedef clang::UnaryOperator::Opcode un_opcode;
+    un_opcode unop = unary_op->getOpcode();
+    /**
+     * possible flavors => 
+     *     1. post/pre inc/dec
+     *     2. neg/not/lnot
+     *     3. AddrOf/Deref
+     *     4. [Not handled] co_await / complex / extension marker
+     */
+    // remove the target variable from the list of copies if it exists
+    if (unop >= un_opcode::PostInc && unop <= un_opcode::PreDec) {
+        
+    }
+
+    // mark the target variable as a possible aliasing target
+    if (unop == un_opcode::AddrOf) {
+
+    }
+
+    return true;
+}
+
+bool transferStmtVisitor::VisitCallExpr(clang::CallExpr* _call) {
+    // mark all copies that refer a variable that has global storage
+    // or variables whose addresses are taken as invalid. 
+}
+
 // ─── copyPropagationVisitor ──────────────────────────────────────────────
 
 copyPropagationVisitor::copyPropagationVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_did_propagate(false) {
@@ -2170,7 +2212,7 @@ void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_
     for(int i = 0; i < merge_from.size(); i++) {
         const auto& a = merge_from[i];
         for(int j = 0; j < merge_into.size(); j++) {
-            const auto& b = merge_into[j];
+            auto& b = merge_into[j];
             // check if the copies are of the same variable
             if (a.first != b.first) continue;
 
@@ -2179,11 +2221,11 @@ void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_
                 // copies collide. We will have to remove this copy from merge_into
                 // we also let the j index as it was since we break out of this loop
                 // if the variables match anyways. 
-                std::swap(merge_into[j], merge_from.back());
-                merge_from.pop_back();
-            } else if (b.second.canAlias) {
+                std::swap(merge_into[j], merge_into.back());
+                merge_into.pop_back();
+            } else if (a.second.canAlias) {
                 // if the incoming copy can alias now, there is no telling 
-                a.second.canAlias = true;
+                b.second.canAlias = true;
             }
 
             intersect_info[i] = true;
@@ -2198,12 +2240,33 @@ void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_
     }
 }
 
-void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
+copyableType copyPropagationVisitor::copyableExpr(clang::Expr* expr) {
+    // Parenthesis can be ignored. Implicit / Explicit cast cannot be. 
+    // Explicit casts for obvious reasons, implicit because its possible
+    // that its usage later on renders the cast useless, but there can also
+    // be cases where it might change program semantics and we must be 
+    // conservative in our approach. We also skip the implicit lvalue-to-rvalue
+    // cast since that would always be emitted when referencing a variable. 
+    // an expression is copyable if : 
+    //     1. it can be reduced to a constant
+    //     2. it can be reduced to a single variable
+    if(!(expr->isValueDependent()) && expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects))
+        return copyableType::COPYABLE_CONSTANT;
+    if(clang::DeclRefExpr* decl_ref_expr = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+        if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
+            return copyableType::COPYABLE_VARIABLE;
+        }
+    }
+    return copyableType::UNCOPYABLE;
+}
+
+void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
     /**
      * TODO: The analysis is currently only for primtive types. 
      *       Extend it for Arrays and Records. 
      * 1. VarDecl -> check if init has a DeclRefExpr that contains
-     *               a single varDecl. If so add the identifier to
+     *               a single varDecl or an Expr that can be reduced
+     *               to a constant. If so, add the identifier to the
      *               list of reaching_copies. 
      * 2. BinaryOp              -> check rhs for possible rewrites of 
      *    (Assignment Variants)    identifiers. Destroy copy that 
@@ -2229,11 +2292,35 @@ void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
      * [      transfer function to pin down a reaching_copies set for each cfg. Once its  ]
      * [      set, it uses the same logic, only this time to make changes on the go       ]
      */
+    if (clang::DeclStmt* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
+        assert(decl_stmt->isSingleDecl() && "declStmt should not have multiple decls. Preprocessing should have taken care of this.");
+        if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
+            if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                if(var_decl->hasInit()) {
+                    if(copyableType val_type = copyableExpr(var_decl->getInit()->IgnoreParenLValueCasts()); (int)val_type) {
+                        copies.push_back({var_decl->getNameAsString(), 
+                                         {var_decl->getInit()->IgnoreParenLValueCasts(),
+                                          val_type == copyableType::COPYABLE_CONSTANT  ,
+                                          var_decl->hasGlobalStorage()                 ,
+                                          /* canAlias = */false
+                                         }});
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool copyPropagationVisitor::VisitDeclRefExpr(clang::DeclRefExpr* decl_ref_expr) {
+    decl_ref_expr->dump();
+    return true;
 }
 
 bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
+
+    return true;
 
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
@@ -2241,7 +2328,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     llvm::outs() << "==============================================\n\n";
 
     std::queue<clang::CFGBlock*> work_queue;
-    work_queue.insert(&(mapped_cfg->getEntry()));
+    work_queue.push(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
     std::unordered_map<clang::CFGBlock*, bool> block_visited;
 
@@ -2269,7 +2356,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
-                    transfer(reaching_copies, stmt);
+                    transfer(reaching_copies, stmt, false);
                 }
             }
         }
@@ -2277,7 +2364,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         if(!is_same(reaching_copies, block_copies_map[_block])) {
             for(auto succ : _block->succs()) {
                 if(!succ) continue;
-                work_queue.insert(succ);
+                work_queue.push(succ);
             }
         }
 

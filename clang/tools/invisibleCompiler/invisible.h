@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <cassert>
 
 namespace invisible {
 
@@ -418,6 +419,12 @@ public:
 
 // ─── copyPropagationVisitor ───────────────────────────────────────────
 
+enum class copyableType : int {
+    UNCOPYABLE,
+    COPYABLE_CONSTANT,
+    COPYABLE_VARIABLE,
+};
+
 struct copyTab {
   clang::Expr* target_val;
   bool is_constant;
@@ -427,6 +434,20 @@ struct copyTab {
 
 using reaching_copies_t = std::vector<std::pair<std::string, copyTab>>;
 
+class transferStmtVisitor : public clang::RecursiveASTVisitor<transferStmtVisitor> {
+private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    reaching_copies_t& m_copies;
+public:
+    transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies);
+    virtual bool VisitBinaryOperator(clang::BinaryOperator* binary_op);
+    virtual bool VisitUnaryOperator(clang::UnaryOperator* unary_op);
+    virtual bool VisitCallExpr(clang::CallExpr* _call);
+    virtual bool shouldTraversePostOrder();
+};
+
 class copyPropagationVisitor : public clang::RecursiveASTVisitor<copyPropagationVisitor> {
 private:
     clang::ASTContext& m_ctx;
@@ -434,13 +455,15 @@ private:
     clang::PrintingPolicy m_policy;
     clang::CFG::BuildOptions m_cfg_options;
     bool m_did_propagate;
-    void meet(reaching_copies_t& merge_into, reaching_copies_t& merge_from);
-    void transfer(reaching_copies_t& copies, clang::Stmt* stmt);
+    void meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from);
+    void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates);
+    copyableType copyableExpr(clang::Expr* expr);
     bool is_same(const reaching_copies_t& a, const reaching_copies_t& b);
-
+    
 public:
     copyPropagationVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitFunctionDecl(clang::FunctionDecl* func);
+    virtual bool VisitDeclRefExpr(clang::DeclRefExpr* decl_ref_expr);
     bool did_propagate();
 };
 
