@@ -2143,6 +2143,148 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     return true;
 }
 
+// ─── copyPropagationVisitor ──────────────────────────────────────────────
+
+copyPropagationVisitor::copyPropagationVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_did_propagate(false) {
+    if (m_ctx.getLangOpts().CPlusPlus)
+        m_policy.adjustForCPlusPlus();
+    m_policy.IncludeTagDefinition = true;
+    m_policy.SuppressTagKeyword = false;
+}
+
+bool copyPropagationVisitor::did_propagate() {
+    return m_did_propagate;
+}
+
+void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from) {
+    // we want to merge two vectors that contain copies of different control flow blocks
+    if (merge_from.empty()) return;
+
+    if (merge_into.size() == 0) {
+        merge_into = merge_from;
+        return;
+    }
+
+    std::vector<bool> intersect_info(merge_from.size(), false);
+
+    for(int i = 0; i < merge_from.size(); i++) {
+        const auto& a = merge_from[i];
+        for(int j = 0; j < merge_into.size(); j++) {
+            const auto& b = merge_into[j];
+            // check if the copies are of the same variable
+            if (a.first != b.first) continue;
+
+            // check if the value they wish to copy is the same
+            if (a.second.target_val != b.second.target_val) {
+                // copies collide. We will have to remove this copy from merge_into
+                // we also let the j index as it was since we break out of this loop
+                // if the variables match anyways. 
+                std::swap(merge_into[j], merge_from.back());
+                merge_from.pop_back();
+            } else if (b.second.canAlias) {
+                // if the incoming copy can alias now, there is no telling 
+                a.second.canAlias = true;
+            }
+
+            intersect_info[i] = true;
+            break;
+        }
+    }
+
+    // add the copies that did not intersect. 
+    for (int i = 0; i < merge_from.size(); i++) {
+        if(intersect_info[i]) continue;
+        merge_into.push_back(merge_from[i]);
+    }
+}
+
+void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
+    /**
+     * TODO: The analysis is currently only for primtive types. 
+     *       Extend it for Arrays and Records. 
+     * 1. VarDecl -> check if init has a DeclRefExpr that contains
+     *               a single varDecl. If so add the identifier to
+     *               list of reaching_copies. 
+     * 2. BinaryOp              -> check rhs for possible rewrites of 
+     *    (Assignment Variants)    identifiers. Destroy copy that 
+     *                             intersects with lhs. 
+     * 3. unaryOp -> check lvalue on which op happens and destroy copy
+     *               that intersects. 
+     * 4. CallExpr -> invalidate copies for variables that either have 
+     *                global storage or posses aliasing potential. 
+     * 5. unaryOp -> Add the variable to the list of variables that can 
+     *    (AddrOf)   alias. 
+     * 6. unaryOp -> if it appears in the lhs of an assignment operator,
+     *    (DeRef)    destroy all copies that contain variables that can alias.
+     * 7. ArraySubscriptExpr -> if it appears in the lhs of an assignment operator,
+     *                          Destroy all copies that contain variables that can alias. 
+     * [Note: For 6 and 7, if the ptr is to shift and its not an array, then its undefined]
+     * [      behavior and the standard allows us to optimize it away however we see fit. ]
+     * [      This intenionally incorrect behavior is observed in both gcc and clang      ]
+     * [      For 7, we don't keep track of which pointer points to which variable and so ]
+     * [      we have no way of knowing if the arraySubscriptOp was not used for a var ptr]
+     * [      For records to have any effect on the local/param variables, they would have]
+     * [      to take their address first and 5 thus then take care of the correctness    ]
+     * [      Finally note that we do updates conditionally. The algorithm first uses     ]
+     * [      transfer function to pin down a reaching_copies set for each cfg. Once its  ]
+     * [      set, it uses the same logic, only this time to make changes on the go       ]
+     */
+}
+
+bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
+    if (!func->isThisDeclarationADefinition()) return true;
+
+    std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
+    if(!mapped_cfg) return true;
+    mapped_cfg->dump(m_ctx.getLangOpts(), true);
+    llvm::outs() << "==============================================\n\n";
+
+    std::queue<clang::CFGBlock*> work_queue;
+    work_queue.insert(&(mapped_cfg->getEntry()));
+    std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
+    std::unordered_map<clang::CFGBlock*, bool> block_visited;
+
+    for (clang::CFGBlock *_block : *mapped_cfg) {
+        block_copies_map[_block] = {};
+        block_visited[_block] = false;
+    }
+
+    while (!work_queue.empty()) {
+        clang::CFGBlock *_block = work_queue.front();
+        work_queue.pop();
+
+        // meet function merges the copies
+        // coming from the block's predecessors
+        reaching_copies_t reaching_copies;
+        for (auto pred : _block->preds()) {
+            if (!pred) continue;
+            if (!block_visited[pred]) continue;
+
+            meet(reaching_copies, block_copies_map[pred]);
+        }
+
+        // transfer function changes the current copies
+        // to take statements in the current block into account
+        for (clang::CFGElement &Elem : *_block) {
+            if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
+                if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    transfer(reaching_copies, stmt);
+                }
+            }
+        }
+
+        if(!is_same(reaching_copies, block_copies_map[_block])) {
+            for(auto succ : _block->succs()) {
+                if(!succ) continue;
+                work_queue.insert(succ);
+            }
+        }
+
+        block_visited[_block] = true;
+    }
+}
+
 // ─── preprocess ────────────────────────────────────────────────────
 
 std::string preprocess(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
@@ -2543,6 +2685,33 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             deadCodeElimCfgAnalysisVisitor visitor(ctx, rewriter);
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_elim = did_elim ? true : visitor.did_elim();
+        }, rewriter);
+        if (!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
+    }
+
+    return result;
+}
+
+// ─── copy-propagation ────────────────────────────────────────────
+
+std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+    std::string result = source;
+
+    // propagates copies as when copies are seen. 
+    bool did_elim = true;
+    while (did_elim) {
+        did_elim = false;
+
+        // cfg analysis
+        clang::Rewriter rewriter = clang::Rewriter();
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_elim](clang::ASTContext& ctx, clang::Sema&) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            copyPropagationVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_elim = visitor.did_propagate();
         }, rewriter);
         if (!isCompilable(tmp_result, filename, args)) {
             break;

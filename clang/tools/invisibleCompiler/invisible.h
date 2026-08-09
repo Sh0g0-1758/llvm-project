@@ -416,6 +416,34 @@ public:
     bool did_elim();
 };
 
+// ─── copyPropagationVisitor ───────────────────────────────────────────
+
+struct copyTab {
+  clang::Expr* target_val;
+  bool is_constant;
+  bool hasGlobalStorage;
+  bool canAlias;
+};
+
+using reaching_copies_t = std::vector<std::pair<std::string, copyTab>>;
+
+class copyPropagationVisitor : public clang::RecursiveASTVisitor<copyPropagationVisitor> {
+private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    clang::CFG::BuildOptions m_cfg_options;
+    bool m_did_propagate;
+    void meet(reaching_copies_t& merge_into, reaching_copies_t& merge_from);
+    void transfer(reaching_copies_t& copies, clang::Stmt* stmt);
+    bool is_same(const reaching_copies_t& a, const reaching_copies_t& b);
+
+public:
+    copyPropagationVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    virtual bool VisitFunctionDecl(clang::FunctionDecl* func);
+    bool did_propagate();
+};
+
 // ─── Free functions ────────────────────────────────────────────────
 
 /// Split comma-separated declarations into individual statements and
@@ -426,6 +454,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
 std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
 std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args);
+
+std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
 /// Extract all function definitions from @p source and return them
 /// as a JSON string mapping function names to their printed bodies.
