@@ -2145,16 +2145,153 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
 
 // ─── transferStmtVisitor ──────────────────────────────────────────────
 
-transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies) { }
+transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies), m_do_updates(do_updates), m_did_propagate(did_propagate) { }
 
 bool transferStmtVisitor::shouldTraversePostOrder() { return true; }
+
+bool transferStmtVisitor::is_primitive_type(clang::QualType qt) {
+  qt = qt.getCanonicalType();
+
+  while (qt->isPointerType())
+    qt = qt->getPointeeType().getCanonicalType();
+
+  if (qt->isVoidType())      return false;
+  if (qt->isEnumeralType())  return false;
+  if (qt->isRecordType())    return false;
+  if (qt->isArrayType())     return false;
+  if (qt->isFunctionType())  return false;
+
+  return qt->isArithmeticType();
+}
+
+void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, clang::Expr* expr) {
+    if(!expr || !var_decl) return;
+
+    expr = expr->IgnoreParenLValueCasts();
+    if (clang::VarDecl* expr_identifier = extract_var_decl(expr)) {
+        reaching_copies_t::copy_target_t target;
+        target.m_identifier = expr_identifier;
+        target.m_has_storage = true;
+
+        m_copies.add_copies({var_decl, target});
+    } else if (!(expr->isValueDependent()) && expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)) {
+        clang::Expr::EvalResult result;
+        if(!expr->EvaluateAsRValue(result, m_ctx)) return;
+
+        clang::APValue init_value = result.Val;
+        reaching_copies_t::copy_target_t target;
+        target.m_numeric_constant = init_value;
+        target.m_has_storage = false;
+
+        m_copies.add_copies({var_decl, target});
+    }
+}
+
+bool transferStmtVisitor::is_dereference_operation(clang::Expr* expr) {
+    if(llvm::dyn_cast<clang::ArraySubscriptExpr>(expr)) return true;
+    if(clang::UnaryOperator* unary_op = llvm::dyn_cast<clang::UnaryOperator>(expr)) {
+        if (unary_op->getOpcode() == clang::UnaryOperator::Opcode::UO_Deref) return true;
+    }
+    return false;
+}
+
+clang::VarDecl* transferStmtVisitor::extract_var_decl(clang::Expr* expr) {
+    if (clang::DeclRefExpr* decl_ref_expr = llvm::dyn_cast<clang::DeclRefExpr>(expr->IgnoreParens())) {
+        if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
+            return var_decl;
+        }
+    }
+    return nullptr;
+}
+
+void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
+    const clang::Type *TP = T.getTypePtr();
+
+    if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(TP)) {
+        if (clang::Expr *e = TOE->getUnderlyingExpr()) {
+            this->TraverseStmt(e);
+        }
+        transfer_vars_in_type(TOE->desugar());
+        return;
+    } else if (const auto *TOT = llvm::dyn_cast<clang::TypeOfType>(TP)) {
+        transfer_vars_in_type(TOT->desugar());
+        return;
+    }
+
+    if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
+        if (clang::Expr *size = VAT->getSizeExpr())
+            this->TraverseStmt(size);
+        transfer_vars_in_type(VAT->getElementType());
+    } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
+        transfer_vars_in_type(PT->getPointeeType());
+    } else if (const auto *RT = llvm::dyn_cast<clang::ReferenceType>(TP)) {
+        transfer_vars_in_type(RT->getPointeeType());
+    } else if (const auto *AT = llvm::dyn_cast<clang::ArrayType>(TP)) {
+        transfer_vars_in_type(AT->getElementType());
+    } else if (const auto *FPT = llvm::dyn_cast<clang::FunctionProtoType>(TP)) {
+        transfer_vars_in_type(FPT->getReturnType());
+        for (auto paramType : FPT->param_types())
+            transfer_vars_in_type(paramType);
+    } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
+        transfer_vars_in_type(FT->getReturnType());
+    } else if (const auto *FT = llvm::dyn_cast<clang::FunctionNoProtoType>(TP)) {
+        transfer_vars_in_type(FT->getReturnType());
+    } else if (const auto *MPT = llvm::dyn_cast<clang::MemberPointerType>(TP)) {
+        transfer_vars_in_type(MPT->getPointeeType());
+    } else if (const auto *VT = llvm::dyn_cast<clang::VectorType>(TP)) {
+        transfer_vars_in_type(VT->getElementType());
+    } else if (const auto *ParenT = llvm::dyn_cast<clang::ParenType>(TP)) {
+        transfer_vars_in_type(ParenT->getInnerType());
+    }
+}
 
 bool transferStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
     // if its an assignment type op, invalidate the copy of the variable
     // on the lhs. If the rhs is a copyable expr, store it. 
     if (binary_op->isAssignmentOp()) {
-        clang::Expr* lhs = binary_op->getLHS();
+        clang::Expr* lhs = binary_op->getLHS()->IgnoreParens();
+        if (is_primitive_type(lhs->getType())) {
+            if (clang::VarDecl* identifier = extract_var_decl(lhs)) {
+                m_copies.kill_copies_that_use_identifier(identifier);
+                possibly_add_viable_copy(identifier, binary_op->getRHS());
+            } else if (is_dereference_operation(lhs)) {
+                m_copies.kill_copies_with_global_storage();
+                m_copies.kill_copies_that_can_alias();
+            }
+        }
     }
+
+    return true;
+}
+
+bool transferStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr* ice) {
+  if(!m_do_updates) return true;
+  if (ice->getCastKind() == clang::CK_LValueToRValue) {
+    if (clang::DeclRefExpr* decl_ref_expr = llvm::dyn_cast<clang::DeclRefExpr>(ice->getSubExpr()->IgnoreParens())) {
+        if(is_primitive_type(decl_ref_expr->getType())) {
+            if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
+                if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                    m_rewriter.ReplaceText(decl_ref_expr->getSourceRange(), to_copy);
+                    m_did_propagate = true;
+                }
+            }
+        }
+    }
+  }
+  return true;
+}
+
+bool transferStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
+    assert(decl_stmt->isSingleDecl() && "declStmt should not have multiple decls. Preprocessing should have taken care of this.");
+    if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
+        if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            transfer_vars_in_type(var_decl->getType());
+            if(is_primitive_type(var_decl->getType())) {
+                possibly_add_viable_copy(var_decl, var_decl->getInit());
+            }
+        }
+    }
+    return true;
 }
 
 bool transferStmtVisitor::VisitUnaryOperator(clang::UnaryOperator* unary_op) {
@@ -2168,21 +2305,35 @@ bool transferStmtVisitor::VisitUnaryOperator(clang::UnaryOperator* unary_op) {
      *     4. [Not handled] co_await / complex / extension marker
      */
     // remove the target variable from the list of copies if it exists
-    if (unop >= un_opcode::PostInc && unop <= un_opcode::PreDec) {
-        
+    if (unop >= un_opcode::UO_PostInc && unop <= un_opcode::UO_PreDec) {
+        clang::Expr* inner_expr = unary_op->getSubExpr()->IgnoreParens();
+        if (clang::VarDecl* identifier = extract_var_decl(inner_expr)) {
+            if(is_primitive_type(identifier->getType())) {
+                m_copies.kill_copies_that_use_identifier(identifier);
+            }
+        }
     }
 
     // mark the target variable as a possible aliasing target
-    if (unop == un_opcode::AddrOf) {
-
+    if (unop == un_opcode::UO_AddrOf) {
+        clang::Expr* inner_expr = unary_op->getSubExpr()->IgnoreParens();
+        if (clang::VarDecl* identifier = extract_var_decl(inner_expr)) {
+            if(is_primitive_type(identifier->getType())) {
+                m_copies.add_possible_alias_target(identifier);
+            }
+        }
     }
 
     return true;
 }
 
-bool transferStmtVisitor::VisitCallExpr(clang::CallExpr* _call) {
+bool transferStmtVisitor::VisitCallExpr(clang::CallExpr* call) {
     // mark all copies that refer a variable that has global storage
     // or variables whose addresses are taken as invalid. 
+    m_copies.kill_copies_with_global_storage();
+    m_copies.kill_copies_that_can_alias();
+
+    return true;
 }
 
 // ─── copyPropagationVisitor ──────────────────────────────────────────────
@@ -2202,62 +2353,47 @@ void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_
     // we want to merge two vectors that contain copies of different control flow blocks
     if (merge_from.empty()) return;
 
-    if (merge_into.size() == 0) {
+    if (merge_into.empty()) {
         merge_into = merge_from;
         return;
     }
 
-    std::vector<bool> intersect_info(merge_from.size(), false);
+    // transfer the variables that can alias unconditionally. We want to be 
+    // conservative here. 
+    merge_into.merge_vars_that_can_alias(merge_from);
 
-    for(int i = 0; i < merge_from.size(); i++) {
-        const auto& a = merge_from[i];
-        for(int j = 0; j < merge_into.size(); j++) {
-            auto& b = merge_into[j];
-            // check if the copies are of the same variable
-            if (a.first != b.first) continue;
+    auto& merge_copies_into = merge_into.m_copies;
+    const auto& merge_copies_from = merge_from.m_copies;
 
-            // check if the value they wish to copy is the same
-            if (a.second.target_val != b.second.target_val) {
-                // copies collide. We will have to remove this copy from merge_into
-                // we also let the j index as it was since we break out of this loop
-                // if the variables match anyways. 
-                std::swap(merge_into[j], merge_into.back());
-                merge_into.pop_back();
-            } else if (a.second.canAlias) {
-                // if the incoming copy can alias now, there is no telling 
-                b.second.canAlias = true;
+    // transfer legitimate copies from `merge_from` to `merge_into`. 
+    // A copy is left if - 
+    //      a. its the same copy (identifier + copy_target)
+    //      b. its a different copy of the same identifier.
+    std::vector<bool> dealt_with(merge_copies_from.size(), false);
+
+    for(int i = 0; i < merge_copies_from.size(); i++) {
+        const auto& a = merge_copies_from[i];
+        for(int j = 0; j < merge_copies_into.size(); j++) {
+            auto& b = merge_copies_into[j];
+            if(a.is_different_from(b)) continue;
+            /**
+             * if (a.is_same_as(b)) {
+             *     // DO NOTHING
+             * } 
+             */
+            if (a.intersects_with(b)) {
+                std::swap(merge_copies_into[j], merge_copies_into.back());
+                merge_copies_into.pop_back();
             }
-
-            intersect_info[i] = true;
+            dealt_with[i] = true;
             break;
         }
     }
 
-    // add the copies that did not intersect. 
-    for (int i = 0; i < merge_from.size(); i++) {
-        if(intersect_info[i]) continue;
-        merge_into.push_back(merge_from[i]);
+    for (int i = 0; i < dealt_with.size(); i++) {
+        if (dealt_with[i]) continue;
+        merge_copies_into.push_back(merge_copies_from[i]);
     }
-}
-
-copyableType copyPropagationVisitor::copyableExpr(clang::Expr* expr) {
-    // Parenthesis can be ignored. Implicit / Explicit cast cannot be. 
-    // Explicit casts for obvious reasons, implicit because its possible
-    // that its usage later on renders the cast useless, but there can also
-    // be cases where it might change program semantics and we must be 
-    // conservative in our approach. We also skip the implicit lvalue-to-rvalue
-    // cast since that would always be emitted when referencing a variable. 
-    // an expression is copyable if : 
-    //     1. it can be reduced to a constant
-    //     2. it can be reduced to a single variable
-    if(!(expr->isValueDependent()) && expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects))
-        return copyableType::COPYABLE_CONSTANT;
-    if(clang::DeclRefExpr* decl_ref_expr = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
-        if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
-            return copyableType::COPYABLE_VARIABLE;
-        }
-    }
-    return copyableType::UNCOPYABLE;
 }
 
 void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
@@ -2291,36 +2427,20 @@ void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* st
      * [      Finally note that we do updates conditionally. The algorithm first uses     ]
      * [      transfer function to pin down a reaching_copies set for each cfg. Once its  ]
      * [      set, it uses the same logic, only this time to make changes on the go       ]
+     * 8. ImplicitCastExpr (lvalue-to-rvalue) +
+     *           DeclRefExpr + VarDecl         -> these represent usage of a variable that 
+     *                                            has storage in an expression. Proper usage
+     *                                            would entail converting the lvalue to an 
+     *                                            rvalue. Then check if a valid copy for this
+     *                                            identifier exists and do the replacement. 
      */
-    if (clang::DeclStmt* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
-        assert(decl_stmt->isSingleDecl() && "declStmt should not have multiple decls. Preprocessing should have taken care of this.");
-        if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
-            if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
-                if(var_decl->hasInit()) {
-                    if(copyableType val_type = copyableExpr(var_decl->getInit()->IgnoreParenLValueCasts()); (int)val_type) {
-                        copies.push_back({var_decl->getNameAsString(), 
-                                         {var_decl->getInit()->IgnoreParenLValueCasts(),
-                                          val_type == copyableType::COPYABLE_CONSTANT  ,
-                                          var_decl->hasGlobalStorage()                 ,
-                                          /* canAlias = */false
-                                         }});
-                    }
-                }
-            }
-        }
-    }
-}
-
-bool copyPropagationVisitor::VisitDeclRefExpr(clang::DeclRefExpr* decl_ref_expr) {
-    decl_ref_expr->dump();
-    return true;
+    transferStmtVisitor visitor(m_ctx, m_rewriter, m_policy, copies, do_updates, m_did_propagate);
+    visitor.TraverseStmt(stmt);
 }
 
 bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
-
-    return true;
 
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
@@ -2337,6 +2457,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         block_visited[_block] = false;
     }
 
+    // first stabilize the reaching_copies set for each basic block
     while (!work_queue.empty()) {
         clang::CFGBlock *_block = work_queue.front();
         work_queue.pop();
@@ -2361,15 +2482,65 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             }
         }
 
-        if(!is_same(reaching_copies, block_copies_map[_block])) {
-            for(auto succ : _block->succs()) {
-                if(!succ) continue;
+        if (reaching_copies != block_copies_map[_block]) {
+            for (auto succ : _block->succs()) {
+                if (!succ) continue;
                 work_queue.push(succ);
             }
         }
 
+        block_copies_map[_block] = reaching_copies;
         block_visited[_block] = true;
     }
+
+    // once the reaching_copies are stabilized, run the algorithm again,
+    // only this time, allow the transfer function to do updates
+    work_queue.push(&(mapped_cfg->getEntry()));
+    for (clang::CFGBlock *_block : *mapped_cfg) {
+        block_visited[_block] = false;
+    }
+
+    while (!work_queue.empty()) {
+        clang::CFGBlock *_block = work_queue.front();
+        work_queue.pop();
+
+        // meet function merges the copies
+        // coming from the block's predecessors
+        reaching_copies_t reaching_copies;
+        for (auto pred : _block->preds()) {
+            if (!pred) continue;
+            // we don't check if the pred has been visited
+            // because it doesn't matter. Its set of reaching_copies
+            // have already been finalized. 
+
+            meet(reaching_copies, block_copies_map[pred]);
+        }
+
+        // transfer function changes the current copies
+        // to take statements in the current block into account
+        for (clang::CFGElement &Elem : *_block) {
+            if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
+                if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    transfer(reaching_copies, stmt, true);
+                }
+            }
+        }
+
+        assert(reaching_copies == block_copies_map[_block] && "reaching_copies set should not change when the transfer function is allowed to make changes");
+
+        for (auto succ : _block->succs()) {
+            if (!succ) continue;
+            // now we check whether the block has been visited or not
+            // because transfer function is isolated to a block. Hence
+            // the changes it is supposed to do should happen only once. 
+            if (block_visited[_block]) continue;
+            work_queue.push(succ);
+        }
+
+        block_visited[_block] = true;
+    }
+
+    return true;
 }
 
 // ─── preprocess ────────────────────────────────────────────────────

@@ -5,6 +5,7 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Analysis/CFG.h"
+#include "llvm/ADT/FoldingSet.h"
 
 #include <map>
 #include <unordered_map>
@@ -419,20 +420,167 @@ public:
 
 // ─── copyPropagationVisitor ───────────────────────────────────────────
 
-enum class copyableType : int {
-    UNCOPYABLE,
-    COPYABLE_CONSTANT,
-    COPYABLE_VARIABLE,
-};
+struct reaching_copies_t {
+  std::vector<clang::VarDecl*> m_vars_that_can_alias;
+  void add_possible_alias_target(clang::VarDecl* identifier) {
+    if(std::find(m_vars_that_can_alias.begin(), m_vars_that_can_alias.end(), identifier) != m_vars_that_can_alias.end()) {
+      m_vars_that_can_alias.push_back(identifier);
+    }
+  }
+  #define in_list_of_vars_that_can_alias(alias_list, var) \
+    (std::find(alias_list.begin(), alias_list.end(), var) != alias_list.end())
 
-struct copyTab {
-  clang::Expr* target_val;
-  bool is_constant;
-  bool hasGlobalStorage;
-  bool canAlias;
-};
+  void merge_vars_that_can_alias(const reaching_copies_t& other) {
+    for(const auto& it : other.m_vars_that_can_alias) {
+      add_possible_alias_target(it);
+    }
+  }
 
-using reaching_copies_t = std::vector<std::pair<std::string, copyTab>>;
+  struct copy_target_t {
+    clang::VarDecl* m_identifier;
+    clang::APValue m_numeric_constant;
+    bool m_has_storage;
+
+    bool is_same(const copy_target_t& other) const {
+      if (this->m_has_storage ^ other.m_has_storage) return false;
+
+      if (this->m_has_storage) return this->m_identifier == other.m_identifier;
+      else {
+        llvm::FoldingSetNodeID IDA, IDB;
+        this->m_numeric_constant.Profile(IDA);
+        other.m_numeric_constant.Profile(IDB);
+        return IDA == IDB;
+      }
+    }
+
+    std::string get_as_string(clang::ASTContext& ctx, clang::QualType type) {
+      if (this->m_has_storage) return m_identifier->getNameAsString();
+      else {
+        std::string val_as_string{};
+        llvm::raw_string_ostream out(val_as_string);
+        m_numeric_constant.printPretty(out, ctx, type);
+        out.flush();
+        return val_as_string;
+      }
+    }
+  };
+
+  struct copy_t {
+    clang::VarDecl* m_identifier;
+    copy_target_t m_to_copy;
+    std::string get_name() const {
+      return m_identifier->getNameAsString();
+    }
+    bool is_different_from(const copy_t& other) const {
+      return this->m_identifier != other.m_identifier;
+    }
+    bool intersects_with(const copy_t& other) const {
+      return (this->m_identifier == other.m_identifier) &&
+             !(this->m_to_copy.is_same(other.m_to_copy));
+    }
+    bool is_same_as(const copy_t& other) const {
+      return (this->m_identifier == other.m_identifier) &&
+             (this->m_to_copy.is_same(other.m_to_copy));
+    }
+    bool has_global_storage() const {
+      return (m_identifier->hasGlobalStorage()) ||
+             (m_to_copy.m_has_storage && m_to_copy.m_identifier->hasGlobalStorage());
+    }
+    bool can_alias(const std::vector<clang::VarDecl*>& alias_list) const {
+      return in_list_of_vars_that_can_alias(alias_list, m_identifier) || 
+             (m_to_copy.m_has_storage && in_list_of_vars_that_can_alias(alias_list, m_to_copy.m_identifier));
+    }
+    bool uses_identifier(clang::VarDecl* identifier) const {
+      return (identifier == m_identifier) || 
+             (m_to_copy.m_has_storage && identifier == m_to_copy.m_identifier);
+    }
+  };
+
+  std::vector<copy_t> m_copies;
+
+  void add_copies(copy_t&& copy) {
+    m_copies.push_back(std::move(copy));
+  }
+
+  std::string find_if_copy_exists(clang::VarDecl* identifier, clang::ASTContext& ctx) {
+    if (!identifier || m_copies.empty()) return {};
+
+    for(auto& it : m_copies) {
+      if(it.m_identifier == identifier) {
+        return it.m_to_copy.get_as_string(ctx, identifier->getType());
+      }
+    }
+    return {};
+  }
+
+  bool empty() const {
+    return m_copies.empty() && m_vars_that_can_alias.empty();
+  }
+
+  void kill_copies_with_global_storage() {
+    if (m_copies.empty()) return;
+    auto front = m_copies.begin();
+    auto back = m_copies.end();
+
+    while (front != back) {
+      if(front->has_global_storage()) {
+        std::swap((*front), *(--back));
+      } else {
+        front++;
+      }
+    }
+
+    m_copies.erase(back, m_copies.end());
+  }
+
+  void kill_copies_that_can_alias() {
+    if (m_copies.empty()) return;
+    auto front = m_copies.begin();
+    auto back = m_copies.end();
+
+    while (front != back) {
+      if(front->can_alias(this->m_vars_that_can_alias)) {
+        std::swap((*front), *(--back));
+      } else {
+        front++;
+      }
+    }
+
+    m_copies.erase(back, m_copies.end());
+  }
+
+  void kill_copies_that_use_identifier(clang::VarDecl* identifier) {
+    if (m_copies.empty()) return;
+    auto front = m_copies.begin();
+    auto back = m_copies.end();
+
+    while (front != back) {
+      if(front->uses_identifier(identifier)) {
+        std::swap((*front), *(--back));
+      } else {
+        front++;
+      }
+    }
+
+    m_copies.erase(back, m_copies.end());
+  }
+
+  bool operator==(const reaching_copies_t& other) const {
+    if(m_vars_that_can_alias.size() != other.m_vars_that_can_alias.size()) return false;
+    for(int i = 0; i < m_vars_that_can_alias.size(); i++) {
+      if(m_vars_that_can_alias[i] != (other.m_vars_that_can_alias)[i]) return false;
+    }
+    if(m_copies.size() != other.m_copies.size()) return false;
+    for(int i = 0; i < m_copies.size(); i++) {
+      if(!(m_copies[i].is_same_as((other.m_copies)[i]))) return false;
+    }
+    return true;
+  }
+
+  bool operator!=(const reaching_copies_t& other) const {
+    return !(*this == other);
+  }
+};
 
 class transferStmtVisitor : public clang::RecursiveASTVisitor<transferStmtVisitor> {
 private:
@@ -440,11 +588,21 @@ private:
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
     reaching_copies_t& m_copies;
+    clang::VarDecl* extract_var_decl(clang::Expr* expr);
+    bool is_dereference_operation(clang::Expr* expr);
+    void possibly_add_viable_copy(clang::VarDecl* var_decl, clang::Expr* expr);
+    bool is_primitive_type(clang::QualType qt);
+    void transfer_vars_in_type(clang::QualType T);
+    bool m_do_updates;
+    bool& m_did_propagate;
+
 public:
-    transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies);
+    transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate);
+    bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
     virtual bool VisitBinaryOperator(clang::BinaryOperator* binary_op);
     virtual bool VisitUnaryOperator(clang::UnaryOperator* unary_op);
     virtual bool VisitCallExpr(clang::CallExpr* _call);
+    virtual bool VisitImplicitCastExpr(clang::ImplicitCastExpr* ice);
     virtual bool shouldTraversePostOrder();
 };
 
@@ -457,13 +615,10 @@ private:
     bool m_did_propagate;
     void meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from);
     void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates);
-    copyableType copyableExpr(clang::Expr* expr);
-    bool is_same(const reaching_copies_t& a, const reaching_copies_t& b);
     
 public:
     copyPropagationVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitFunctionDecl(clang::FunctionDecl* func);
-    virtual bool VisitDeclRefExpr(clang::DeclRefExpr* decl_ref_expr);
     bool did_propagate();
 };
 
