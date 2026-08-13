@@ -2435,7 +2435,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     // first stabilize the reaching_copies set for each basic block
     while (!work_queue.empty()) {
-        clang::CFGBlock *_block = work_queue.pop_front();
+        clang::CFGBlock *_block = work_queue.front();
+        work_queue.pop_front();
 
         // meet function merges the copies
         // coming from the block's predecessors
@@ -2460,7 +2461,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for (auto succ : _block->succs()) {
             if (!succ) continue;
             if (!block_visited[succ] || (reaching_copies != block_copies_map[_block])) {
-                if(std::find(work_queue.front, work_queue.end(), succ) == work_queue.end()) {
+                if(std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
                     work_queue.push_back(succ);
                 }
             }
@@ -2479,7 +2480,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     while (!work_queue.empty()) {
         clang::CFGBlock *_block = work_queue.front();
-        work_queue.pop();
+        work_queue.pop_front();
 
         // meet function merges the copies
         // coming from the block's predecessors
@@ -2511,7 +2512,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             // because transfer function is isolated to a block. Hence
             // the changes it is supposed to do should happen only once. 
             if (block_visited[succ]) continue;
-            if(std::find(work_queue.front, work_queue.end(), succ) == work_queue.end()) {
+            if(std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
                 work_queue.push_back(succ);
             }
         }
