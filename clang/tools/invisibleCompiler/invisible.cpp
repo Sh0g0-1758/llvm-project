@@ -2441,11 +2441,17 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // meet function merges the copies
         // coming from the block's predecessors
         reaching_copies_t reaching_copies;
+        bool first_pred_guard = true;
         for (auto pred : _block->preds()) {
             if (!pred) continue;
             if (!block_visited[pred]) continue;
 
-            meet(reaching_copies, block_copies_map[pred]);
+            if(first_pred_guard) {
+                reaching_copies = block_copies_map[pred];
+                first_pred_guard = false;
+            } else {
+                meet(reaching_copies, block_copies_map[pred]);
+            }
         }
 
         // transfer function changes the current copies
@@ -2485,13 +2491,19 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // meet function merges the copies
         // coming from the block's predecessors
         reaching_copies_t reaching_copies;
+        bool first_pred_guard = true;
         for (auto pred : _block->preds()) {
             if (!pred) continue;
             // we don't check if the pred has been visited
             // because it doesn't matter. Its set of reaching_copies
             // have already been finalized. 
 
-            meet(reaching_copies, block_copies_map[pred]);
+            if(first_pred_guard) {
+                reaching_copies = block_copies_map[pred];
+                first_pred_guard = false;
+            } else {
+                meet(reaching_copies, block_copies_map[pred]);
+            }
         }
 
         // transfer function changes the current copies
