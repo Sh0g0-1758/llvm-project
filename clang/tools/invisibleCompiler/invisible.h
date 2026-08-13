@@ -9,6 +9,7 @@
 
 #include <map>
 #include <unordered_map>
+#include <deque>
 #include <string>
 #include <vector>
 #include <cassert>
@@ -423,7 +424,7 @@ public:
 struct reaching_copies_t {
   std::vector<clang::VarDecl*> m_vars_that_can_alias;
   void add_possible_alias_target(clang::VarDecl* identifier) {
-    if(std::find(m_vars_that_can_alias.begin(), m_vars_that_can_alias.end(), identifier) != m_vars_that_can_alias.end()) {
+    if(std::find(m_vars_that_can_alias.begin(), m_vars_that_can_alias.end(), identifier) == m_vars_that_can_alias.end()) {
       m_vars_that_can_alias.push_back(identifier);
     }
   }

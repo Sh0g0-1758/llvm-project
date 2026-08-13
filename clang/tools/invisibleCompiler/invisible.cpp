@@ -2350,50 +2350,21 @@ bool copyPropagationVisitor::did_propagate() {
 }
 
 void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from) {
-    // we want to merge two vectors that contain copies of different control flow blocks
-    if (merge_from.empty()) return;
-
-    if (merge_into.empty()) {
-        merge_into = merge_from;
-        return;
-    }
-
     // transfer the variables that can alias unconditionally. We want to be 
     // conservative here. 
     merge_into.merge_vars_that_can_alias(merge_from);
 
-    auto& merge_copies_into = merge_into.m_copies;
-    const auto& merge_copies_from = merge_from.m_copies;
+    auto& into = merge_into.m_copies;
+    const auto& from = merge_from.m_copies;
 
-    // transfer legitimate copies from `merge_from` to `merge_into`. 
-    // A copy is left if - 
-    //      a. its the same copy (identifier + copy_target)
-    //      b. its a different copy of the same identifier.
-    std::vector<bool> dealt_with(merge_copies_from.size(), false);
-
-    for(int i = 0; i < merge_copies_from.size(); i++) {
-        const auto& a = merge_copies_from[i];
-        for(int j = 0; j < merge_copies_into.size(); j++) {
-            auto& b = merge_copies_into[j];
-            if(a.is_different_from(b)) continue;
-            /**
-             * if (a.is_same_as(b)) {
-             *     // DO NOTHING
-             * } 
-             */
-            if (a.intersects_with(b)) {
-                std::swap(merge_copies_into[j], merge_copies_into.back());
-                merge_copies_into.pop_back();
-            }
-            dealt_with[i] = true;
-            break;
+    // retain copies that are semantically same 
+    std::vector<reaching_copies_t::copy_t> result;
+    for (const auto& a : from) {
+        for (const auto& b : into) {
+            if (a.is_same_as(b)) { result.push_back(a); break; }
         }
     }
-
-    for (int i = 0; i < dealt_with.size(); i++) {
-        if (dealt_with[i]) continue;
-        merge_copies_into.push_back(merge_copies_from[i]);
-    }
+    into = std::move(result);
 }
 
 void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
@@ -2447,8 +2418,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     mapped_cfg->dump(m_ctx.getLangOpts(), true);
     llvm::outs() << "==============================================\n\n";
 
-    std::queue<clang::CFGBlock*> work_queue;
-    work_queue.push(&(mapped_cfg->getEntry()));
+    std::deque<clang::CFGBlock*> work_queue;
+    work_queue.push_back(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
     std::unordered_map<clang::CFGBlock*, bool> block_visited;
 
@@ -2459,8 +2430,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     // first stabilize the reaching_copies set for each basic block
     while (!work_queue.empty()) {
-        clang::CFGBlock *_block = work_queue.front();
-        work_queue.pop();
+        clang::CFGBlock *_block = work_queue.pop_front();
 
         // meet function merges the copies
         // coming from the block's predecessors
@@ -2482,10 +2452,12 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             }
         }
 
-        if (reaching_copies != block_copies_map[_block]) {
-            for (auto succ : _block->succs()) {
-                if (!succ) continue;
-                work_queue.push(succ);
+        for (auto succ : _block->succs()) {
+            if (!succ) continue;
+            if (!block_visited[succ] || (reaching_copies != block_copies_map[_block])) {
+                if(std::find(work_queue.front, work_queue.end(), succ) == work_queue.end()) {
+                    work_queue.push_back(succ);
+                }
             }
         }
 
@@ -2495,7 +2467,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     // once the reaching_copies are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates
-    work_queue.push(&(mapped_cfg->getEntry()));
+    work_queue.push_back(&(mapped_cfg->getEntry()));
     for (clang::CFGBlock *_block : *mapped_cfg) {
         block_visited[_block] = false;
     }
@@ -2533,8 +2505,10 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             // now we check whether the block has been visited or not
             // because transfer function is isolated to a block. Hence
             // the changes it is supposed to do should happen only once. 
-            if (block_visited[_block]) continue;
-            work_queue.push(succ);
+            if (block_visited[succ]) continue;
+            if(std::find(work_queue.front, work_queue.end(), succ) == work_queue.end()) {
+                work_queue.push_back(succ);
+            }
         }
 
         block_visited[_block] = true;
