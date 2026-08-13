@@ -2150,10 +2150,15 @@ transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter
 bool transferStmtVisitor::shouldTraversePostOrder() { return true; }
 
 bool transferStmtVisitor::is_primitive_type(clang::QualType qt) {
+  // volatile qualified vars should not be considered for copy propagation
+  if(qt.isVolatileQualified()) return false;
   qt = qt.getCanonicalType();
 
   while (qt->isPointerType())
     qt = qt->getPointeeType().getCanonicalType();
+
+  // volatile qualified vars should not be considered for copy propagation
+  if(qt.isVolatileQualified()) return false;
 
   if (qt->isVoidType())      return false;
   if (qt->isEnumeralType())  return false;
@@ -2258,7 +2263,9 @@ bool transferStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) 
         if (is_primitive_type(lhs->getType())) {
             if (clang::VarDecl* identifier = extract_var_decl(lhs)) {
                 m_copies.kill_copies_that_use_identifier(identifier);
-                possibly_add_viable_copy(identifier, binary_op->getRHS());
+                if (binary_op->getOpcode() == clang::BO_Assign) {
+                    possibly_add_viable_copy(identifier, binary_op->getRHS());
+                }
             } else if (is_dereference_operation(lhs)) {
                 m_copies.kill_copies_with_global_storage();
                 m_copies.kill_copies_that_can_alias();
