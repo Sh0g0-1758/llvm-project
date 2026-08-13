@@ -2169,11 +2169,16 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
 
     expr = expr->IgnoreParenLValueCasts();
     if (clang::VarDecl* expr_identifier = extract_var_decl(expr)) {
-        reaching_copies_t::copy_target_t target;
-        target.m_identifier = expr_identifier;
-        target.m_has_storage = true;
+        // guard against adding a copy that references the 
+        // identifier of the base variable itself. 
+        // ie. x = x
+        if (var_decl != expr_identifier) {
+            reaching_copies_t::copy_target_t target;
+            target.m_identifier = expr_identifier;
+            target.m_has_storage = true;
 
-        m_copies.add_copies({var_decl, target});
+            m_copies.add_copies({var_decl, target});
+        }
     } else if (!(expr->isValueDependent()) && expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)) {
         clang::Expr::EvalResult result;
         if(!expr->EvaluateAsRValue(result, m_ctx)) return;
