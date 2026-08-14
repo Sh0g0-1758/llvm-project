@@ -2145,7 +2145,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
 
 // ─── transferStmtVisitor ──────────────────────────────────────────────
 
-transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies), m_do_updates(do_updates), m_did_propagate(did_propagate) { }
+transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate, std::unordered_map<unsigned, bool>& source_loc_updated) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies), m_do_updates(do_updates), m_did_propagate(did_propagate), m_source_loc_updated(source_loc_updated) { }
 
 bool transferStmtVisitor::shouldTraversePostOrder() { return true; }
 
@@ -2275,11 +2275,14 @@ bool transferStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr* ice) {
   if(!m_do_updates) return true;
   if (ice->getCastKind() == clang::CK_LValueToRValue) {
     if (clang::DeclRefExpr* decl_ref_expr = llvm::dyn_cast<clang::DeclRefExpr>(ice->getSubExpr()->IgnoreParens())) {
+        if (m_source_loc_updated[decl_ref_expr->getSourceRange().getBegin().getRawEncoding()]) return true;
         if(is_primitive_type(decl_ref_expr->getType())) {
             if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
                 if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                    llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                     m_rewriter.ReplaceText(decl_ref_expr->getSourceRange(), to_copy);
                     m_did_propagate = true;
+                    m_source_loc_updated[decl_ref_expr->getSourceRange().getBegin().getRawEncoding()] = true;
                 }
             }
         }
@@ -2357,6 +2360,16 @@ bool copyPropagationVisitor::did_propagate() {
 }
 
 void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from) {
+    // top, hence contain all copies that the TU can ever have. 
+    // intersection with merge_into would result in merge_into. 
+    if (merge_from.is_top()) return;
+    // if merge_into is top, then intersection with merge_from
+    // would result in merge_from. Hence we can copy early and
+    // return. 
+    if (merge_into.is_top()) {
+        merge_into = merge_from;
+        return;
+    }
     // transfer the variables that can alias unconditionally. We want to be 
     // conservative here. 
     merge_into.merge_vars_that_can_alias(merge_from);
@@ -2374,7 +2387,7 @@ void copyPropagationVisitor::meet(reaching_copies_t& merge_into, const reaching_
     into = std::move(result);
 }
 
-void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates) {
+void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates, std::unordered_map<unsigned, bool>& source_loc_updated) {
     /**
      * TODO: The analysis is currently only for primtive types. 
      *       Extend it for Arrays and Records. 
@@ -2412,7 +2425,7 @@ void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* st
      *                                            rvalue. Then check if a valid copy for this
      *                                            identifier exists and do the replacement. 
      */
-    transferStmtVisitor visitor(m_ctx, m_rewriter, m_policy, copies, do_updates, m_did_propagate);
+    transferStmtVisitor visitor(m_ctx, m_rewriter, m_policy, copies, do_updates, m_did_propagate, source_loc_updated);
     visitor.TraverseStmt(stmt);
 }
 
@@ -2428,12 +2441,43 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::deque<clang::CFGBlock*> work_queue;
     work_queue.push_back(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
-    std::unordered_map<clang::CFGBlock*, bool> block_visited;
 
     for (clang::CFGBlock *_block : *mapped_cfg) {
         block_copies_map[_block] = {};
-        block_visited[_block] = false;
     }
+
+    /**
+     * Block Traversal Strategy :-
+     * 
+     * (Following lattice terminology)
+     * Top reaching_copies : initialize all reaching_copies with their 
+     *                          top equivalent. Ie. initially, each block's
+     *                          reaching_copies set include all the copies 
+     *                          that can ever exist in a TU. 
+     * Bottom reaching_copies : An empty set for the reaching_copies. 
+     * 
+     * In the beginning, the reaching_copies of each basic block is marked
+     * top. So that in the meet function, it does not matter whether some
+     * predecessor was processed or not. Intersection of X with universal
+     * set is X itself. Once meet operation is done, we transfer the copies
+     * within each block. This is an isolated operation. But we still keep
+     * track of which source locations were updated (in the second traversal)
+     * because there can be instances when the clangCFG Block has multiple
+     * CFGElems, some of which are children of their peer CFGElems. 
+     * This can lead to multiple updates at the same place for the
+     * last statement of a CFGBlock. This is to guard against that.
+     * Moving on to adding new blocks to our worklist. Now if the current
+     * block was never visited before, then its successors would definitely
+     * be added. Because Its topness would have definitely changed and its
+     * possible that some of its successors were processed before this block. 
+     * So since the topness have changed now, we must process these successors
+     * again. Instead if the block was already visited and we are visiting it again
+     * then we conditionally add successors only if the reaching_copies set changed
+     * for the current block. The second iteration on the other hand is more of a
+     * question of which block is reachable and so we add successors depending on 
+     * whether they have been visited or not. The reaching_copies set for each block
+     * will anyways remain constant. 
+     */
 
     // first stabilize the reaching_copies set for each basic block
     while (!work_queue.empty()) {
@@ -2443,48 +2487,42 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // meet function merges the copies
         // coming from the block's predecessors
         reaching_copies_t reaching_copies;
-        bool first_pred_guard = true;
         for (auto pred : _block->preds()) {
             if (!pred) continue;
-            if (!block_visited[pred]) continue;
-
-            if(first_pred_guard) {
-                reaching_copies = block_copies_map[pred];
-                first_pred_guard = false;
-            } else {
-                meet(reaching_copies, block_copies_map[pred]);
-            }
+            meet(reaching_copies, block_copies_map[pred]);
         }
 
         // transfer function changes the current copies
         // to take statements in the current block into account
+        std::unordered_map<unsigned, bool> source_loc_updated;
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
-                    transfer(reaching_copies, stmt, false);
+                    transfer(reaching_copies, stmt, false, source_loc_updated);
                 }
             }
         }
+        reaching_copies.mark_is_not_top();
+
+        bool reaching_copies_has_changed = reaching_copies != block_copies_map[_block];
 
         for (auto succ : _block->succs()) {
             if (!succ) continue;
-            if (!block_visited[succ] || (reaching_copies != block_copies_map[_block])) {
-                if(std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
+            if (reaching_copies_has_changed) {
+                if (std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
                     work_queue.push_back(succ);
                 }
             }
         }
 
-        block_copies_map[_block] = reaching_copies;
-        block_visited[_block] = true;
+        if (reaching_copies_has_changed) 
+            block_copies_map[_block] = reaching_copies;
     }
 
     // once the reaching_copies are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates
     work_queue.push_back(&(mapped_cfg->getEntry()));
-    for (clang::CFGBlock *_block : *mapped_cfg) {
-        block_visited[_block] = false;
-    }
+    std::unordered_map<clang::CFGBlock*, bool> block_visited;
 
     while (!work_queue.empty()) {
         clang::CFGBlock *_block = work_queue.front();
@@ -2496,42 +2534,34 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         bool first_pred_guard = true;
         for (auto pred : _block->preds()) {
             if (!pred) continue;
-            // we don't check if the pred has been visited
-            // because it doesn't matter. Its set of reaching_copies
-            // have already been finalized. 
-
-            if(first_pred_guard) {
-                reaching_copies = block_copies_map[pred];
-                first_pred_guard = false;
-            } else {
-                meet(reaching_copies, block_copies_map[pred]);
-            }
+            meet(reaching_copies, block_copies_map[pred]);
         }
 
         // transfer function changes the current copies
         // to take statements in the current block into account
+        std::unordered_map<unsigned, bool> source_loc_updated;
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
-                    transfer(reaching_copies, stmt, true);
+                    transfer(reaching_copies, stmt, true, source_loc_updated);
                 }
             }
         }
-
+        reaching_copies.mark_is_not_top();
         assert(reaching_copies == block_copies_map[_block] && "reaching_copies set should not change when the transfer function is allowed to make changes");
 
+        block_visited[_block] = true;
         for (auto succ : _block->succs()) {
             if (!succ) continue;
             // now we check whether the block has been visited or not
             // because transfer function is isolated to a block. Hence
             // the changes it is supposed to do should happen only once. 
-            if (block_visited[succ]) continue;
-            if(std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
-                work_queue.push_back(succ);
+            if (!block_visited[succ]) {
+                if(std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
+                    work_queue.push_back(succ);
+                }
             }
         }
-
-        block_visited[_block] = true;
     }
 
     return true;

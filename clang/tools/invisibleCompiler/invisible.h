@@ -422,6 +422,14 @@ public:
 // ─── copyPropagationVisitor ───────────────────────────────────────────
 
 struct reaching_copies_t {
+  bool m_is_top = true;
+  bool is_top() const {
+    return m_is_top;
+  }
+  void mark_is_not_top() {
+    m_is_top = false;
+  }
+
   std::vector<clang::VarDecl*> m_vars_that_can_alias;
   void add_possible_alias_target(clang::VarDecl* identifier) {
     if(std::find(m_vars_that_can_alias.begin(), m_vars_that_can_alias.end(), identifier) == m_vars_that_can_alias.end()) {
@@ -567,6 +575,7 @@ struct reaching_copies_t {
   }
 
   bool operator==(const reaching_copies_t& other) const {
+    if(m_is_top != other.m_is_top) return false;
     if(m_vars_that_can_alias.size() != other.m_vars_that_can_alias.size()) return false;
     for(int i = 0; i < m_vars_that_can_alias.size(); i++) {
       if(m_vars_that_can_alias[i] != (other.m_vars_that_can_alias)[i]) return false;
@@ -596,9 +605,14 @@ private:
     void transfer_vars_in_type(clang::QualType T);
     bool m_do_updates;
     bool& m_did_propagate;
+    // So there can be instances when the clangCFG Block has multiple
+    // CFGElems, some of which are children of their peer CFGElems. 
+    // This can lead to multiple updates at the same place for the
+    // last statement of a CFGBlock. This is to guard against that. 
+    std::unordered_map<unsigned, bool>& m_source_loc_updated;
 
 public:
-    transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate);
+    transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate, std::unordered_map<unsigned, bool>& source_loc_updated);
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
     virtual bool VisitBinaryOperator(clang::BinaryOperator* binary_op);
     virtual bool VisitUnaryOperator(clang::UnaryOperator* unary_op);
@@ -615,7 +629,7 @@ private:
     clang::CFG::BuildOptions m_cfg_options;
     bool m_did_propagate;
     void meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from);
-    void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates);
+    void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates, std::unordered_map<unsigned, bool>& source_loc_updated);
     
 public:
     copyPropagationVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
