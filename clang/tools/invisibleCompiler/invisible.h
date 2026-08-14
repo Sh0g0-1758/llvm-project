@@ -575,16 +575,28 @@ struct reaching_copies_t {
   }
 
   bool operator==(const reaching_copies_t& other) const {
-    if(m_is_top != other.m_is_top) return false;
-    if(m_vars_that_can_alias.size() != other.m_vars_that_can_alias.size()) return false;
-    for(int i = 0; i < m_vars_that_can_alias.size(); i++) {
-      if(m_vars_that_can_alias[i] != (other.m_vars_that_can_alias)[i]) return false;
-    }
-    if(m_copies.size() != other.m_copies.size()) return false;
-    for(int i = 0; i < m_copies.size(); i++) {
-      if(!(m_copies[i].is_same_as((other.m_copies)[i]))) return false;
-    }
-    return true;
+      if (m_is_top != other.m_is_top) return false;
+      if (m_vars_that_can_alias.size() != other.m_vars_that_can_alias.size()) return false;
+      if (m_copies.size() != other.m_copies.size()) return false;
+
+      auto alias_a = m_vars_that_can_alias, alias_b = other.m_vars_that_can_alias;
+      std::sort(alias_a.begin(), alias_a.end());
+      std::sort(alias_b.begin(), alias_b.end());
+      if (alias_a != alias_b) return false;
+
+      std::vector<bool> matched(other.m_copies.size(), false);
+      for (const auto& a : m_copies) {
+          bool found = false;
+          for (size_t i = 0; i < other.m_copies.size(); i++) {
+              if (!matched[i] && a.is_same_as(other.m_copies[i])) {
+                  matched[i] = true;
+                  found = true;
+                  break;
+              }
+          }
+          if (!found) return false;
+      }
+      return true;
   }
 
   bool operator!=(const reaching_copies_t& other) const {
