@@ -3514,7 +3514,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
 std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::string result = source;
 
-    // constant fold mathematical expressions into their simplified form
+    // eliminates dead code in a way that transforms the structure of these code constructs
     bool did_elim = true;
     while (did_elim) {
         did_elim = false;
