@@ -2698,12 +2698,13 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                 if (m_do_updates) {
                     if(!m_live_variables.is_live(var_decl)) {
                         if (!m_source_loc_updated[decl_stmt->getSourceRange().getBegin().getRawEncoding()]) {
+                            bool has_init = var_decl->hasInit();
                             clang::Expr* init = var_decl->getInit();
-                            bool init_has_side_effects = !init ? false : init->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+                            bool init_has_side_effects = has_init ? init->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true) : false;
                             bool var_has_usage = m_live_variables.has_usage(var_decl);
     
                             if(var_has_usage) {
-                                if(!init_has_side_effects) {
+                                if(has_init && !init_has_side_effects) {
                                     clang::VarDecl *NewVD = clang::VarDecl::Create(
                                         m_ctx,
                                         const_cast<clang::DeclContext*>(var_decl->getDeclContext()),
@@ -2736,7 +2737,7 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                             } else {
                                 std::string replacement{};
         
-                                if (init_has_side_effects) {
+                                if (has_init && init_has_side_effects) {
                                     llvm::raw_string_ostream replacement_stream(replacement);
                                     init->printPretty(replacement_stream, nullptr, m_policy);
                                     replacement_stream << ";";
