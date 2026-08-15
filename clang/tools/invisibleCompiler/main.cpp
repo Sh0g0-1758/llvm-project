@@ -67,12 +67,8 @@ int main(int argc, char* argv[]) {
         llvm::outs() << invisible::copyPropagation(source, output_file, args) << "\n";
     } else if (pass == "dead-store-elim") {
         llvm::outs() << invisible::deadStoreElim(source, output_file, args) << "\n";
-    } else if(pass == "combine") {
-        std::string half = invisible::constant_fold(source, output_file, args);
-        std::string full = invisible::preprocess(half, output_file, args);
-        std::ofstream out("output.cpp");
-        out << full;
-        out.close();
+    } else if (pass == "optimize") {
+        llvm::outs() << invisible::oneForAll(source, output_file, args) << "\n";
     } else if(pass == "inline") {
         std::string oracle_path("oracle_list.txt");
         std::vector<invisible::InlineEntry> oracle_entries =  marshal_entries(oracle_path);

@@ -3486,7 +3486,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
 
 // ─── constant fold ────────────────────────────────────────────
 
-std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
     std::string result = source;
 
     // constant fold mathematical expressions into their simplified form
@@ -3504,6 +3504,8 @@ std::string constant_fold(const std::string& source, const std::string& filename
             break;
         }
         result = std::move(tmp_result);
+
+        *did_change = did_change ? (*did_change ? true : did_fold) : false;
     }
 
     return result;
@@ -3511,7 +3513,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
 
 // ─── dead-code-elimination ────────────────────────────────────────────
 
-std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
     std::string result = source;
 
     // eliminates dead code in a way that transforms the structure of these code constructs
@@ -3542,6 +3544,8 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             break;
         }
         result = std::move(tmp_result);
+
+        *did_change = did_change ? (*did_change ? true : did_elim) : false;
     }
 
     return result;
@@ -3549,7 +3553,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
 
 // ─── copy-propagation ────────────────────────────────────────────
 
-std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
     std::string result = source;
 
     // propagates copies as when copies are seen. 
@@ -3569,6 +3573,8 @@ std::string copyPropagation(const std::string& source, const std::string& filena
             break;
         }
         result = std::move(tmp_result);
+
+        *did_change = did_change ? (*did_change ? true : did_elim) : false;
     }
 
     return result;
@@ -3576,7 +3582,7 @@ std::string copyPropagation(const std::string& source, const std::string& filena
 
 // ─── dead-store-elimination ────────────────────────────────────────────
 
-std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
     std::string result = source;
 
     bool did_elim = true;
@@ -3591,6 +3597,24 @@ std::string deadStoreElim(const std::string& source, const std::string& filename
         }, rewriter);
         if (!isCompilable(tmp_result, filename, args)) break;
         result = std::move(tmp_result);
+        
+        *did_change = did_change ? (*did_change ? true : did_elim) : false;
+    }
+
+    return result;
+}
+
+// ---- one-for-all ------------------------------------------------------------
+std::string oneForAll(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+    std::string result = source;
+
+    bool did_change = true;
+    while (did_change) {
+        did_change = false;
+        result = constant_fold(result, filename, args, &did_change);
+        result = deadCodeElim(result, filename, args, &did_change);
+        result = copyPropagation(result, filename, args, &did_change);
+        result = deadStoreElim(result, filename, args, &did_change);
     }
 
     return result;
