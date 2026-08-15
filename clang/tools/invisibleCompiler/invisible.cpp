@@ -2827,7 +2827,7 @@ bool transferLivenessStmtVisitor::is_parent_an_assignment_op(clang::Expr* expr) 
         }
 
         if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
-            return bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign;
+            return (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) && (bin_op->getLHS() == current);
         }
 
         return false;
