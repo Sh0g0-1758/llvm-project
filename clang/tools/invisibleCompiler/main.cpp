@@ -65,6 +65,8 @@ int main(int argc, char* argv[]) {
         llvm::outs() << invisible::deadCodeElim(source, output_file, args) << "\n";
     } else if (pass == "copy-propagate") {
         llvm::outs() << invisible::copyPropagation(source, output_file, args) << "\n";
+    } else if (pass == "dead-store-elim") {
+        llvm::outs() << invisible::deadStoreElim(source, output_file, args) << "\n";
     } else if(pass == "combine") {
         std::string half = invisible::constant_fold(source, output_file, args);
         std::string full = invisible::preprocess(half, output_file, args);
