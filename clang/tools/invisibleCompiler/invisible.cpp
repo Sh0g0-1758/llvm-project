@@ -3396,31 +3396,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     return result;
 }
 
-// ─── constant fold ────────────────────────────────────────────
-
-std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
-    std::string result = source;
-
-    // constant fold mathematical expressions into their simplified form
-    bool did_fold = true;
-    while (did_fold) {
-        did_fold = false;
-        clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            constantFoldVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-            did_fold = visitor.did_fold();
-        }, rewriter);
-        if(!isCompilable(tmp_result, filename, args)) {
-            break;
-        }
-        result = std::move(tmp_result);
-    }
-
-    return result;
-}
-
 // ─── separate_functions ────────────────────────────────────────────
 
 std::string separate_functions(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
@@ -3509,6 +3484,31 @@ InlineResult inline_functions(const std::string& source, const std::string& file
     return {result, succeeded};
 }
 
+// ─── constant fold ────────────────────────────────────────────
+
+std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
+    std::string result = source;
+
+    // constant fold mathematical expressions into their simplified form
+    bool did_fold = true;
+    while (did_fold) {
+        did_fold = false;
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_fold](clang::ASTContext& ctx, clang::Sema&) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            constantFoldVisitor visitor(ctx, rewriter);
+            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            did_fold = visitor.did_fold();
+        }, rewriter);
+        if(!isCompilable(tmp_result, filename, args)) {
+            break;
+        }
+        result = std::move(tmp_result);
+    }
+
+    return result;
+}
+
 // ─── dead-code-elimination ────────────────────────────────────────────
 
 std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
@@ -3573,6 +3573,8 @@ std::string copyPropagation(const std::string& source, const std::string& filena
 
     return result;
 }
+
+// ─── dead-store-elimination ────────────────────────────────────────────
 
 std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::string result = source;
