@@ -3025,12 +3025,6 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     visitor.TraverseStmt(func->getBody());
     std::unordered_map<clang::VarDecl*, bool> aliased_and_global_vars = visitor.get_aliased_and_global_var_set();
 
-    for(auto it : aliased_and_global_vars) {
-        if(it.first->hasGlobalStorage()) {
-            block_live_vars_map[&(mapped_cfg->getExit())].mark_as_live(it.first);
-        }
-    }
-
     // first stabilize the live_variables set for each basic block
     while (!work_queue.empty()) {
         clang::CFGBlock *_block = work_queue.front();
@@ -3039,6 +3033,18 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // meet function merges the live variables
         // coming from the block's successors
         live_variables_t live_variables;
+        if (_block == &(mapped_cfg->getExit())) {
+            // preserve the init seed to prevent global 
+            // vars from being marked dead. The exit block
+            // should not be anyone's predecessor and so 
+            // it should never be inserted back in the worklist
+            // and thus this check should be entered only once. 
+            for (auto it : aliased_and_global_vars) {
+                if (it.first->hasGlobalStorage()) {
+                    live_variables.mark_as_live(it.first);
+                }
+            }
+        }
         for (auto succ : _block->succs()) {
             if (!succ) continue;
             meet(live_variables, block_live_vars_map[succ]);
@@ -3083,6 +3089,18 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // meet function merges the live variables
         // coming from the block's successors
         live_variables_t live_variables;
+        if (_block == &(mapped_cfg->getExit())) {
+            // preserve the init seed to prevent global 
+            // vars from being marked dead. The exit block
+            // should not be anyone's predecessor and so 
+            // it should never be inserted back in the worklist
+            // and thus this check should be entered only once. 
+            for (auto it : aliased_and_global_vars) {
+                if (it.first->hasGlobalStorage()) {
+                    live_variables.mark_as_live(it.first);
+                }
+            }
+        }
         for (auto succ : _block->succs()) {
             if (!succ) continue;
             meet(live_variables, block_live_vars_map[succ]);
