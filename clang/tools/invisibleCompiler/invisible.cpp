@@ -2502,6 +2502,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::deque<clang::CFGBlock*> work_queue;
     work_queue.push_back(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
+    std::unordered_map<unsigned, bool> source_loc_updated;
 
     for (clang::CFGBlock *_block : *mapped_cfg) {
         block_copies_map[_block] = {};
@@ -2555,7 +2556,6 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
         // transfer function changes the current copies
         // to take statements in the current block into account
-        std::unordered_map<unsigned, bool> source_loc_updated;
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
@@ -2612,7 +2612,6 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
         // transfer function changes the current copies
         // to take statements in the current block into account
-        std::unordered_map<unsigned, bool> source_loc_updated;
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
@@ -3109,6 +3108,7 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::deque<clang::CFGBlock*> work_queue;
     work_queue.push_back(&(mapped_cfg->getExit()));
     std::unordered_map<clang::CFGBlock*, live_variables_t> block_live_vars_map;
+    std::unordered_map<unsigned, bool> source_loc_updated;
 
     for (clang::CFGBlock *_block : *mapped_cfg) {
         block_live_vars_map[_block] = {};
@@ -3145,7 +3145,6 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
         // transfer function changes the live variables
         // to take use-kill in the current block into account
-        std::unordered_map<unsigned, bool> source_loc_updated;
         for(auto it = _block->rbegin(); it != _block->rend(); it++) {
             if (auto cfg_stmt = it->getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
@@ -3211,7 +3210,6 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
         // transfer function changes the live variables
         // to take use-kill in the current block into account
-        std::unordered_map<unsigned, bool> source_loc_updated;
         for(auto it = _block->rbegin(); it != _block->rend(); it++) {
             if (auto cfg_stmt = it->getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
