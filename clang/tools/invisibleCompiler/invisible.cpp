@@ -2186,6 +2186,12 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
                 return;
             } else if(llvm::dyn_cast<clang::InitListExpr>(stripped_expr)) {
                 return;
+            } else if (auto* call = llvm::dyn_cast<clang::CallExpr>(stripped_expr)) {
+                if (auto* func_decl = llvm::dyn_cast_or_null<clang::FunctionDecl>(call->getCalleeDecl())) {
+                    if (func_decl->getBuiltinID() != 0) {
+                        return;
+                    }
+                }
             }
         }
 
@@ -3492,7 +3498,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
 
 // ─── constant fold ────────────────────────────────────────────
 
-std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
+std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;
 
     // constant fold mathematical expressions into their simplified form
@@ -3507,6 +3513,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
             did_fold = visitor.did_fold();
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
+            is_compilable ? (*is_compilable = false) : false;
             break;
         }
         result = std::move(tmp_result);
@@ -3519,7 +3526,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
 
 // ─── dead-code-elimination ────────────────────────────────────────────
 
-std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
+std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;
 
     // eliminates dead code in a way that transforms the structure of these code constructs
@@ -3534,6 +3541,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             did_elim = visitor.did_elim();
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
+            is_compilable ? (*is_compilable = false) : false;
             break;
         }
         result = std::move(tmp_result);
@@ -3547,6 +3555,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             did_elim = did_elim ? true : visitor.did_elim();
         }, rewriter);
         if (!isCompilable(tmp_result, filename, args)) {
+            is_compilable ? (*is_compilable = false) : false;
             break;
         }
         result = std::move(tmp_result);
@@ -3559,7 +3568,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
 
 // ─── copy-propagation ────────────────────────────────────────────
 
-std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
+std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;
 
     // propagates copies as when copies are seen. 
@@ -3576,6 +3585,7 @@ std::string copyPropagation(const std::string& source, const std::string& filena
             did_elim = visitor.did_propagate();
         }, rewriter);
         if (!isCompilable(tmp_result, filename, args)) {
+            is_compilable ? (*is_compilable = false) : false;
             break;
         }
         result = std::move(tmp_result);
@@ -3588,7 +3598,7 @@ std::string copyPropagation(const std::string& source, const std::string& filena
 
 // ─── dead-store-elimination ────────────────────────────────────────────
 
-std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change) {
+std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;
 
     bool did_elim = true;
@@ -3601,7 +3611,10 @@ std::string deadStoreElim(const std::string& source, const std::string& filename
             visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             did_elim = visitor.did_elim();
         }, rewriter);
-        if (!isCompilable(tmp_result, filename, args)) break;
+        if (!isCompilable(tmp_result, filename, args)) {
+            is_compilable ? (*is_compilable = false) : false;
+            break;
+        }
         result = std::move(tmp_result);
         
         did_change ? (*did_change ? true : (*did_change = did_elim)) : false;
@@ -3615,14 +3628,34 @@ std::string oneForAll(const std::string& source, const std::string& filename, st
     std::string result = source;
 
     bool did_change = true;
+    int num_passes = 0;
     while (did_change) {
         did_change = false;
-        result = constant_fold(result, filename, args, &did_change);
-        result = deadCodeElim(result, filename, args, &did_change);
-        result = copyPropagation(result, filename, args, &did_change);
-        result = deadStoreElim(result, filename, args, &did_change);
+        bool is_compilable = true;
+        result = constant_fold(result, filename, args, &did_change, &is_compilable);
+        if(!is_compilable) {
+            llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY CONSTANT-FOLD\n";
+            break;
+        }
+        result = deadCodeElim(result, filename, args, &did_change, &is_compilable);
+        if(!is_compilable) {
+            llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-CODE-ELIMINATION\n";
+            break;
+        }
+        result = copyPropagation(result, filename, args, &did_change, &is_compilable);
+        if(!is_compilable) {
+            llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY COPY-PROPAGATION\n";
+            break;
+        }
+        result = deadStoreElim(result, filename, args, &did_change, &is_compilable);
+        if(!is_compilable) {
+            llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-STORE-ELIMINATION\n";
+            break;
+        }
+        llvm::outs() << "[OPTIMIZE]: Done with iteration> " << ++num_passes << "\n";
     }
 
+    llvm::outs() << "[OPTIMIZE]: CONVERGED AT ITERATION> " << num_passes << "\n";
     return result;
 }
 

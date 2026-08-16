@@ -68,7 +68,10 @@ int main(int argc, char* argv[]) {
     } else if (pass == "dead-store-elim") {
         llvm::outs() << invisible::deadStoreElim(source, output_file, args) << "\n";
     } else if (pass == "optimize") {
-        llvm::outs() << invisible::oneForAll(source, output_file, args) << "\n";
+        std::string result = invisible::oneForAll(source, output_file, args);
+        std::ofstream out("optimized.cpp");
+        out << result;
+        out.close();
     } else if(pass == "inline") {
         std::string oracle_path("oracle_list.txt");
         std::vector<invisible::InlineEntry> oracle_entries =  marshal_entries(oracle_path);

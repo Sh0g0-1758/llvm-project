@@ -772,13 +772,13 @@ public:
 /// transformed source.
 std::string preprocess(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
-std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr);
+std::string constant_fold(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr, bool* is_compilable = nullptr);
 
-std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr);
+std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr, bool* is_compilable = nullptr);
 
-std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr);
+std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr, bool* is_compilable = nullptr);
 
-std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr);
+std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change = nullptr, bool* is_compilable = nullptr);
 
 std::string oneForAll(const std::string& source, const std::string& filename, std::vector<std::string>& args);
 
