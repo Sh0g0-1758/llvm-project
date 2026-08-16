@@ -2444,10 +2444,23 @@ void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* st
     visitor.TraverseStmt(stmt);
 }
 
+void copyPropagationVisitor::remove_vars_at_scope_end(reaching_copies_t& reaching_copies, clang::CompoundStmt* stmt) {
+    for (clang::Stmt* child : stmt->body()) {
+        if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(child)) {
+            for (auto decl : decl_stmt->decls()) {
+                if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                    reaching_copies.kill_copies_that_use_identifier(var_decl);
+                }
+            }
+        }
+    }
+}
+
 bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
+    m_cfg_options.AddScopes = true;
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
     mapped_cfg->dump(m_ctx.getLangOpts(), true);
@@ -2515,6 +2528,10 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
                     transfer(reaching_copies, stmt, false, source_loc_updated);
                 }
+            } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
+                if (clang::CompoundStmt* compound_stmt = llvm::dyn_cast<clang::CompoundStmt>(const_cast<clang::Stmt*>(scope_end->getTriggerStmt()))) {
+                    remove_vars_at_scope_end(reaching_copies, compound_stmt);
+                }
             }
         }
         reaching_copies.mark_is_not_top();
@@ -2559,6 +2576,10 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
                     transfer(reaching_copies, stmt, true, source_loc_updated);
+                }
+            } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
+                if (clang::CompoundStmt* compound_stmt = llvm::dyn_cast<clang::CompoundStmt>(const_cast<clang::Stmt*>(scope_end->getTriggerStmt()))) {
+                    remove_vars_at_scope_end(reaching_copies, compound_stmt);
                 }
             }
         }
