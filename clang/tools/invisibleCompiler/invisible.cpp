@@ -2150,16 +2150,14 @@ transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter
 bool transferStmtVisitor::shouldTraversePostOrder() { return true; }
 
 bool transferStmtVisitor::is_primitive_type(clang::QualType qt) {
+  if (qt.isVolatileQualified()) return false;
   qt = qt.getCanonicalType();
 
   while (qt->isPointerType())
     qt = qt->getPointeeType().getCanonicalType();
 
-  if (qt->isVoidType())      return false;
   if (qt->isEnumeralType())  return false;
   if (qt->isRecordType())    return false;
-  if (qt->isArrayType())     return false;
-  if (qt->isFunctionType())  return false;
 
   return qt->isArithmeticType();
 }
@@ -2180,6 +2178,17 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
             m_copies.add_copies({var_decl, target});
         }
     } else if (!(expr->isValueDependent()) && expr->isEvaluatable(m_ctx, clang::Expr::SideEffectsKind::SE_AllowSideEffects)) {
+        // guard against certain init types. This list will only grow with time. 
+        // 1. StringLiterals
+        // 2. InitListExpr
+        if (clang::Expr* stripped_expr = expr->IgnoreParenCasts()) {
+            if(llvm::dyn_cast<clang::StringLiteral>(stripped_expr)) {
+                return;
+            } else if(llvm::dyn_cast<clang::InitListExpr>(stripped_expr)) {
+                return;
+            }
+        }
+
         clang::Expr::EvalResult result;
         if(!expr->EvaluateAsRValue(result, m_ctx)) return;
 
@@ -2578,11 +2587,8 @@ bool transferLivenessStmtVisitor::is_primitive_type(clang::QualType qt) {
   while (qt->isPointerType())
     qt = qt->getPointeeType().getCanonicalType();
 
-  if (qt->isVoidType())      return false;
   if (qt->isEnumeralType())  return false;
   if (qt->isRecordType())    return false;
-  if (qt->isArrayType())     return false;
-  if (qt->isFunctionType())  return false;
 
   return qt->isArithmeticType();
 }
@@ -3505,7 +3511,7 @@ std::string constant_fold(const std::string& source, const std::string& filename
         }
         result = std::move(tmp_result);
 
-        *did_change = did_change ? (*did_change ? true : did_fold) : false;
+        did_change ? (*did_change ? true : (*did_change = did_fold)) : false;
     }
 
     return result;
@@ -3545,7 +3551,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
         }
         result = std::move(tmp_result);
 
-        *did_change = did_change ? (*did_change ? true : did_elim) : false;
+        did_change ? (*did_change ? true : (*did_change = did_elim)) : false;
     }
 
     return result;
@@ -3574,7 +3580,7 @@ std::string copyPropagation(const std::string& source, const std::string& filena
         }
         result = std::move(tmp_result);
 
-        *did_change = did_change ? (*did_change ? true : did_elim) : false;
+        did_change ? (*did_change ? true : (*did_change = did_elim)) : false;
     }
 
     return result;
@@ -3598,7 +3604,7 @@ std::string deadStoreElim(const std::string& source, const std::string& filename
         if (!isCompilable(tmp_result, filename, args)) break;
         result = std::move(tmp_result);
         
-        *did_change = did_change ? (*did_change ? true : did_elim) : false;
+        did_change ? (*did_change ? true : (*did_change = did_elim)) : false;
     }
 
     return result;
