@@ -2065,9 +2065,13 @@ bool deadCodeElimCfgAnalysisVisitor::did_elim() {
     return did_remove;
 }
 
-void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>>& unreachable_locs, clang::Stmt* stmt) {
+void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>>& unreachable_locs, clang::Stmt* stmt) {    
     auto parents = m_ctx.getParents(*stmt);
+    if (parents.empty()) return;
+
     const auto* parent_stmt = parents[0].get<clang::Stmt>();
+    if (!parent_stmt) return;
+    
     if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) {
         if (const auto* paren = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
             unreachable_locs.push_back({paren->getSourceRange().getBegin(), paren->getSourceRange().getEnd()});
