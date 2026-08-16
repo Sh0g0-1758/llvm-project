@@ -2065,11 +2065,25 @@ bool deadCodeElimCfgAnalysisVisitor::did_elim() {
     return did_remove;
 }
 
+void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>>& unreachable_locs, clang::Stmt* stmt) {
+    auto parents = m_ctx.getParents(*stmt);
+    const auto* parent_stmt = parents[0].get<clang::Stmt>();
+    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) {
+        if (const auto* paren = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
+            unreachable_locs.push_back({paren->getSourceRange().getBegin(), paren->getSourceRange().getEnd()});
+        }
+    } else if (const clang::UnaryOperator* un_op = llvm::dyn_cast<clang::UnaryOperator>(parent_stmt); un_op && (un_op->getOpcode() == clang::UnaryOperator::Opcode::UO_Extension)) {
+        unreachable_locs.push_back({un_op->getSourceRange().getBegin(), un_op->getSourceRange().getEnd()});
+    }
+}
+
 bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
+    if(!mapped_cfg) return true;
+    mapped_cfg->dump(m_ctx.getLangOpts(), true);
     std::unordered_map<clang::CFGBlock*, bool> reachable_block;
     std::queue<clang::CFGBlock*> reachability_queue;
     reachability_queue.push(&(mapped_cfg->getEntry()));
@@ -2094,12 +2108,27 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     for(auto block_status : reachable_block) {
         if (!block_status.second) {
             clang::CFGBlock* _block = block_status.first;
-            if (clang::Stmt* terminator_stmt = _block->getTerminatorStmt())
+            if (clang::Stmt* terminator_stmt = _block->getTerminatorStmt()) {
                 unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
-            for (clang::CFGElement &Elem : *_block)
-                if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>())
-                    if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt()))
+            }
+            for (clang::CFGElement &Elem : *_block) {
+                if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
+                    if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                        // some statements need more cleanup than the info just present
+                        // in the cfgStmt. 
+                        // 1. binaryOperator(,) if has parenExpr as immediate parent,
+                        //    we should include the parent in unreachable loc. The ParenExpr
+                        //    information is not present in the CFGStmt. 
+                        // 2. UnaryOperator(__extension__) can occur as a parent for special
+                        //    nodes. We don't keep track of the special nodes and instead check
+                        //    unconditionally for it. This is because its occurence in non special 
+                        //    nodes is not technically an error. This is not modelled as a special 
+                        //    CFGStmt in the clang API and so we add a special check for it. 
+                        extend_unreachable_loc_for_parent(unreachable_locs, stmt);
                         unreachable_locs.push_back({stmt->getSourceRange().getBegin(), stmt->getSourceRange().getEnd()});
+                    }
+                }
+            }
         }
     }
 
@@ -3591,6 +3620,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
         }, rewriter);
         if(!isCompilable(tmp_result, filename, args)) {
             is_compilable ? (*is_compilable = false) : false;
+            result = std::move(tmp_result);
             break;
         }
         result = std::move(tmp_result);
@@ -3605,6 +3635,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
         }, rewriter);
         if (!isCompilable(tmp_result, filename, args)) {
             is_compilable ? (*is_compilable = false) : false;
+            result = std::move(tmp_result);
             break;
         }
         result = std::move(tmp_result);

@@ -412,6 +412,7 @@ private:
     clang::PrintingPolicy m_policy;
     clang::CFG::BuildOptions m_cfg_options;
     bool did_remove;
+    void extend_unreachable_loc_for_parent(std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>>& unreachable_locs, clang::Stmt* stmt);
 
 public:
     deadCodeElimCfgAnalysisVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
