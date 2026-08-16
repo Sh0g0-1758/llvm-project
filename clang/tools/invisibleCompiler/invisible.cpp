@@ -2718,6 +2718,7 @@ bool transferLivenessStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr*
             if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
                 m_live_variables.mark_as_live(var_decl);
                 m_live_variables.record_usage(var_decl);
+                llvm::outs() << "Recording usage of " << var_decl->getNameAsString() << "\n";
             }
         }
     }
@@ -2739,8 +2740,10 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                             bool init_has_side_effects = has_init ? init->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true) : false;
                             bool var_has_usage = m_live_variables.has_usage(var_decl);
     
+                            llvm::outs() << var_decl->getNameAsString() << " is to be eliminated and ";
                             if(var_has_usage) {
-                                if(has_init && !init_has_side_effects) {
+                                if (has_init && !init_has_side_effects) {
+                                    llvm::outs() << "it has usage and retains init\n";
                                     clang::VarDecl *NewVD = clang::VarDecl::Create(
                                         m_ctx,
                                         const_cast<clang::DeclContext*>(var_decl->getDeclContext()),
@@ -2771,13 +2774,17 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                                     m_source_loc_updated[decl_stmt->getSourceRange().getBegin().getRawEncoding()] = true;
                                 }
                             } else {
+                                llvm::outs() << "does not have usage ";
                                 std::string replacement{};
         
                                 if (has_init && init_has_side_effects) {
+                                    llvm::outs() << "and retains init\n";
                                     llvm::raw_string_ostream replacement_stream(replacement);
                                     init->printPretty(replacement_stream, nullptr, m_policy);
                                     replacement_stream << ";";
                                     replacement_stream.flush();
+                                } else {
+                                    llvm::outs() << "does not retain init\n";
                                 }
         
                                 m_rewriter.ReplaceText(decl_stmt->getSourceRange(), replacement);
@@ -3093,6 +3100,14 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for(auto it = _block->rbegin(); it != _block->rend(); it++) {
             if (auto cfg_stmt = it->getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    // guard against certain node types that can contain complex SubStatements. 
+                    // While clangCFG takes care of compoundStmt, the same is not true for 
+                    // others. This is required else these subStatements will be run the
+                    // transfer function in a forward analysis fashion which is just wrong. 
+                    // The expressions / statements in such nodes appear further up in the 
+                    // CFG Block and so we can just skip them. 
+                    if (llvm::dyn_cast<clang::StmtExpr>(stmt)) continue;
+                    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) continue;
                     transfer(live_variables, stmt, false, source_loc_updated, aliased_and_global_vars);
                 }
             }
@@ -3113,6 +3128,8 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         if (live_variables_has_changed) 
             block_live_vars_map[_block] = live_variables;
     }
+
+    llvm::outs() << "starting the second iteration\n";
 
     // once the live_variables are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates
@@ -3149,6 +3166,14 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for(auto it = _block->rbegin(); it != _block->rend(); it++) {
             if (auto cfg_stmt = it->getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    // guard against certain node types that can contain complex SubStatements. 
+                    // While clangCFG takes care of compoundStmt, the same is not true for 
+                    // StmtExpr. This is required else these subStatements will be run the
+                    // transfer function in a forward analysis fashion which is just wrong. 
+                    // The expressions / statements in such nodes appear further up in the 
+                    // CFG Block and so we can just skip them. 
+                    if (llvm::dyn_cast<clang::StmtExpr>(stmt)) continue;
+                    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) continue;
                     transfer(live_variables, stmt, true, source_loc_updated, aliased_and_global_vars);
                 }
             }
