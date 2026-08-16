@@ -2214,6 +2214,8 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
         // guard against certain init types. This list will only grow with time. 
         // 1. StringLiterals
         // 2. InitListExpr
+        // 3. calls to builtin functions which can be folded to a constant (eg. inf)
+        // 4. pointer types initialized with a constant (generally 0)
         if (clang::Expr* stripped_expr = expr->IgnoreParenCasts()) {
             if(llvm::dyn_cast<clang::StringLiteral>(stripped_expr)) {
                 return;
@@ -2227,6 +2229,8 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
                 }
             }
         }
+
+        if (var_decl->getType()->isPointerType()) return;
 
         clang::Expr::EvalResult result;
         if(!expr->EvaluateAsRValue(result, m_ctx)) return;
@@ -2482,6 +2486,7 @@ void copyPropagationVisitor::remove_vars_at_scope_end(reaching_copies_t& reachin
         if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(child)) {
             for (auto decl : decl_stmt->decls()) {
                 if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                    llvm::outs() << "Removing " << var_decl->getNameAsString() << " from causing a copy\n";
                     reaching_copies.kill_copies_that_use_identifier(var_decl);
                 }
             }
