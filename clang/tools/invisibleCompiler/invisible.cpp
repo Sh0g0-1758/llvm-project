@@ -2555,6 +2555,14 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    // guard against certain node types that can contain complex SubStatements. 
+                    // While clangCFG takes care of compoundStmt, the same is not true for 
+                    // others. This is required else these subStatements will be run the
+                    // transfer function in a backward analysis fashion which is just wrong. 
+                    // The expressions / statements in such nodes appear further up in the 
+                    // CFG Block and so we can just skip them. 
+                    if (llvm::dyn_cast<clang::StmtExpr>(stmt)) continue;
+                    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) continue;
                     transfer(reaching_copies, stmt, false, source_loc_updated);
                 }
             } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
@@ -2604,6 +2612,14 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         for (clang::CFGElement &Elem : *_block) {
             if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
                 if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                    // guard against certain node types that can contain complex SubStatements. 
+                    // While clangCFG takes care of compoundStmt, the same is not true for 
+                    // others. This is required else these subStatements will be run the
+                    // transfer function in a backward analysis fashion which is just wrong. 
+                    // The expressions / statements in such nodes appear further up in the 
+                    // CFG Block and so we can just skip them. 
+                    if (llvm::dyn_cast<clang::StmtExpr>(stmt)) continue;
+                    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) continue;
                     transfer(reaching_copies, stmt, true, source_loc_updated);
                 }
             } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
