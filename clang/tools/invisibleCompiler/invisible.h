@@ -643,7 +643,6 @@ private:
     bool m_did_propagate;
     void meet(reaching_copies_t& merge_into, const reaching_copies_t& merge_from);
     void transfer(reaching_copies_t& copies, clang::Stmt* stmt, bool do_updates, std::unordered_map<unsigned, bool>& source_loc_updated);
-    void remove_vars_at_scope_end(reaching_copies_t& reaching_copies, clang::CompoundStmt* stmt);
 
 public:
     copyPropagationVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);

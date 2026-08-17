@@ -2398,6 +2398,37 @@ bool transferStmtVisitor::VisitCallExpr(clang::CallExpr* call) {
     return true;
 }
 
+// ─── varsInScopeCollector ──────────────────────────────────────────────
+
+class varsInScopeCollector : public clang::RecursiveASTVisitor<varsInScopeCollector> {
+private:
+    std::unordered_map<clang::VarDecl*, std::vector<clang::VarDecl*>> m_scope_anchors;
+public:
+    bool VisitCompoundStmt(clang::CompoundStmt* compound_stmt) {
+        bool is_first_decl_stmt = true;
+        clang::VarDecl* anchor;
+        for (clang::Stmt* child : compound_stmt->body()) {
+            if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(child)) {
+                for (auto decl : decl_stmt->decls()) {
+                    if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                        if (is_first_decl_stmt) {
+                            anchor = var_decl;
+                            is_first_decl_stmt = false;
+                        }
+                        m_scope_anchors[anchor].push_back(var_decl);
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    std::unordered_map<clang::VarDecl*, std::vector<clang::VarDecl*>> get_scope_anchors() {
+        return m_scope_anchors;
+    }
+};
+
 // ─── copyPropagationVisitor ──────────────────────────────────────────────
 
 copyPropagationVisitor::copyPropagationVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_did_propagate(false) {
@@ -2481,19 +2512,6 @@ void copyPropagationVisitor::transfer(reaching_copies_t& copies, clang::Stmt* st
     visitor.TraverseStmt(stmt);
 }
 
-void copyPropagationVisitor::remove_vars_at_scope_end(reaching_copies_t& reaching_copies, clang::CompoundStmt* stmt) {
-    for (clang::Stmt* child : stmt->body()) {
-        if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(child)) {
-            for (auto decl : decl_stmt->decls()) {
-                if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
-                    llvm::outs() << "Removing " << var_decl->getNameAsString() << " from causing a copy\n";
-                    reaching_copies.kill_copies_that_use_identifier(var_decl);
-                }
-            }
-        }
-    }
-}
-
 bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
@@ -2508,6 +2526,9 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     work_queue.push_back(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
     std::unordered_map<unsigned, bool> source_loc_updated;
+    varsInScopeCollector visitor;
+    visitor.TraverseStmt(func->getBody());
+    auto scope_anchors = visitor.get_scope_anchors();
 
     for (clang::CFGBlock *_block : *mapped_cfg) {
         block_copies_map[_block] = {};
@@ -2575,8 +2596,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                     transfer(reaching_copies, stmt, false, source_loc_updated);
                 }
             } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
-                if (clang::CompoundStmt* compound_stmt = llvm::dyn_cast<clang::CompoundStmt>(const_cast<clang::Stmt*>(scope_end->getTriggerStmt()))) {
-                    remove_vars_at_scope_end(reaching_copies, compound_stmt);
+                for(auto var_decl : scope_anchors[const_cast<clang::VarDecl*>(scope_end->getVarDecl())]) {
+                    reaching_copies.kill_copies_that_use_identifier(var_decl);
                 }
             }
         }
@@ -2596,6 +2617,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         if (reaching_copies_has_changed) 
             block_copies_map[_block] = reaching_copies;
     }
+
+    llvm::outs() << "Running the second iteration\n";
 
     // once the reaching_copies are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates
@@ -2631,8 +2654,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                     transfer(reaching_copies, stmt, true, source_loc_updated);
                 }
             } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
-                if (clang::CompoundStmt* compound_stmt = llvm::dyn_cast<clang::CompoundStmt>(const_cast<clang::Stmt*>(scope_end->getTriggerStmt()))) {
-                    remove_vars_at_scope_end(reaching_copies, compound_stmt);
+                for(auto var_decl : scope_anchors[const_cast<clang::VarDecl*>(scope_end->getVarDecl())]) {
+                    reaching_copies.kill_copies_that_use_identifier(var_decl);
                 }
             }
         }
@@ -2755,8 +2778,9 @@ bool transferLivenessStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* bin
                     m_live_variables.mark_as_dead(identifier);
                 } else {
                     m_live_variables.mark_as_live(identifier);
-                    m_live_variables.record_usage(identifier);
                 }
+                m_live_variables.record_usage(identifier);
+                llvm::outs() << "Recording usage of " << identifier->getNameAsString() << "\n";
             }
         }
     }
@@ -2825,6 +2849,8 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                                     m_rewriter.ReplaceText(decl_stmt->getSourceRange(), replacement);
                                     m_did_elim = true;
                                     m_source_loc_updated[decl_stmt->getSourceRange().getBegin().getRawEncoding()] = true;
+                                } else {
+                                    llvm::outs() << "it has usage but no init\n";
                                 }
                             } else {
                                 llvm::outs() << "does not have usage ";
@@ -3738,22 +3764,22 @@ std::string oneForAll(const std::string& source, const std::string& filename, st
         result = constant_fold(result, filename, args, &did_change, &is_compilable);
         if(!is_compilable) {
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY CONSTANT-FOLD\n";
-            break;
+            return result;
         }
         result = deadCodeElim(result, filename, args, &did_change, &is_compilable);
         if(!is_compilable) {
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-CODE-ELIMINATION\n";
-            break;
+            return result;
         }
         result = copyPropagation(result, filename, args, &did_change, &is_compilable);
         if(!is_compilable) {
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY COPY-PROPAGATION\n";
-            break;
+            return result;
         }
         result = deadStoreElim(result, filename, args, &did_change, &is_compilable);
         if(!is_compilable) {
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-STORE-ELIMINATION\n";
-            break;
+            return result;
         }
         llvm::outs() << "[OPTIMIZE]: Done with iteration> " << ++num_passes << "\n";
     }
