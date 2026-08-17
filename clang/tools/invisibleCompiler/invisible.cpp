@@ -3661,18 +3661,30 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
     while (did_elim) {
         did_elim = false;
         clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter, &did_elim](clang::ASTContext& ctx, clang::Sema&) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            deadCodeElimVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-            did_elim = visitor.did_elim();
-        }, rewriter);
-        if(!isCompilable(tmp_result, filename, args)) {
-            is_compilable ? (*is_compilable = false) : false;
+        std::string tmp_result;
+        
+        bool had_structural_changes = true;
+        bool had_bad_changes = false;
+        while (had_structural_changes) {
+            clang::Rewriter rewriter;
+            had_structural_changes = false;
+            tmp_result = runInMemory(result, filename, args, [&rewriter, &had_structural_changes](clang::ASTContext& ctx, clang::Sema&) {
+                rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+                deadCodeElimVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+                had_structural_changes = visitor.did_elim();
+            }, rewriter);
+            if(!isCompilable(tmp_result, filename, args)) {
+                is_compilable ? (*is_compilable = false) : false;
+                result = std::move(tmp_result);
+                had_bad_changes = true;
+                break;
+            }
             result = std::move(tmp_result);
-            break;
+            did_elim = did_elim ? true : had_structural_changes;
         }
-        result = std::move(tmp_result);
+
+        if(had_bad_changes) break;
 
         // cfg analysis
         rewriter = clang::Rewriter();
