@@ -3776,6 +3776,11 @@ std::string oneForAll(const std::string& source, const std::string& filename, st
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY COPY-PROPAGATION\n";
             return result;
         }
+        result = deadCodeElim(result, filename, args, &did_change, &is_compilable);
+        if (!is_compilable) {
+            llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-CODE-ELIMINATION\n";
+            return result;
+        }
         result = deadStoreElim(result, filename, args, &did_change, &is_compilable);
         if(!is_compilable) {
             llvm::outs() << "[OPTIMIZE]: INVALID TRANSFORMATION BY DEAD-STORE-ELIMINATION\n";
