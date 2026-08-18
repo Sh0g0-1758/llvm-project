@@ -631,6 +631,8 @@ public:
     virtual bool VisitUnaryOperator(clang::UnaryOperator* unary_op);
     virtual bool VisitCallExpr(clang::CallExpr* _call);
     virtual bool VisitImplicitCastExpr(clang::ImplicitCastExpr* ice);
+    bool VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt);
+    bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase);
     virtual bool shouldTraversePostOrder();
 };
 

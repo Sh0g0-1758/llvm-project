@@ -2398,6 +2398,34 @@ bool transferStmtVisitor::VisitCallExpr(clang::CallExpr* call) {
     return true;
 }
 
+bool transferStmtVisitor::VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase) {
+    if(!m_do_updates) return true;
+    if (clang::VarDecl* var_decl = extract_var_decl(ase->getBase()->IgnoreParenCasts())) {
+        if(is_primitive_type(var_decl->getType())) {
+            if (m_source_loc_updated[ase->getBase()->getSourceRange().getBegin().getRawEncoding()]) return true;
+            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                m_rewriter.ReplaceText(ase->getBase()->getSourceRange(), to_copy);
+                m_did_propagate = true;
+                m_source_loc_updated[ase->getBase()->getSourceRange().getBegin().getRawEncoding()] = true;
+            }
+        }
+    }
+    return true;
+}
+
+bool transferStmtVisitor::VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt) {
+    for (unsigned i = 0; i < asm_stmt->getNumOutputs(); ++i) {
+        if (clang::VarDecl* identifier = extract_var_decl(asm_stmt->getOutputExpr(i))) {
+            if(is_primitive_type(identifier->getType())) {
+                m_copies.kill_copies_that_use_identifier(identifier);
+            }
+        }
+    }
+
+    return true;
+}
+
 // ─── varsInScopeCollector ──────────────────────────────────────────────
 
 class varsInScopeCollector : public clang::RecursiveASTVisitor<varsInScopeCollector> {
@@ -2944,13 +2972,7 @@ bool transferLivenessStmtVisitor::VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt) {
             if(is_primitive_type(identifier->getType())) {
                 m_live_variables.record_usage(identifier);
             }
-        } else {
-            this->TraverseStmt(asm_stmt->getOutputExpr(i));
         }
-    }
-
-    for (unsigned i = 0; i < asm_stmt->getNumInputs(); ++i) {
-        this->TraverseStmt(asm_stmt->getInputExpr(i));
     }
 
     return true;
