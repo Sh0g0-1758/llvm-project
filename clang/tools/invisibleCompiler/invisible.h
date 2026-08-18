@@ -376,6 +376,8 @@ private:
     clang::Rewriter& m_rewriter;
     clang::SourceLocation m_last_update_loc_begin;
     clang::SourceLocation m_last_update_loc_end;
+    bool is_parent_typeof(clang::Expr* expr);
+    bool is_constant_literal(clang::Expr* inner);
 
 public:
     constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);

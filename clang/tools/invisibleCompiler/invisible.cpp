@@ -1751,6 +1751,41 @@ bool constantFoldVisitor::did_fold() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
+bool constantFoldVisitor::is_parent_typeof(clang::Expr* expr) {
+    const clang::Expr* current = expr;
+
+    while (true) {
+        auto parents = m_ctx.getParents(*current);
+        if (parents.empty()) return false;
+
+        const auto* parent_stmt = parents[0].get<clang::Type>();
+        if (!parent_stmt) return false;
+
+        if (llvm::dyn_cast<clang::TypeOfExprType>(parent_stmt)) {
+            return true;
+        }
+
+        return false;
+    }
+}
+
+bool constantFoldVisitor::is_constant_literal(clang::Expr* inner) {
+    if (is_parent_typeof(inner)) inner = inner->IgnoreParens();
+    if (llvm::isa<clang::IntegerLiteral>(inner)         ||
+        llvm::isa<clang::FloatingLiteral>(inner)        ||
+        llvm::isa<clang::CharacterLiteral>(inner)       ||
+        llvm::isa<clang::StringLiteral>(inner)          ||
+        llvm::isa<clang::CXXBoolLiteralExpr>(inner)     ||
+        llvm::isa<clang::CXXNullPtrLiteralExpr>(inner)  ||
+        llvm::isa<clang::ImaginaryLiteral>(inner)       ||
+        llvm::isa<clang::FixedPointLiteral>(inner)      ||
+        llvm::isa<clang::UserDefinedLiteral>(inner)     ||
+        llvm::isa<clang::GNUNullExpr>(inner)            ||
+        llvm::isa<clang::CompoundLiteralExpr>(inner)    ||
+        llvm::isa<clang::InitListExpr>(inner))         
+        return true;
+}
+
 bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (expr->getSourceRange().isInvalid()) return true;
     if ((expr->getSourceRange().getBegin() >= m_last_update_loc_begin) && (expr->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
@@ -1768,20 +1803,8 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // llvm::errs() << "Source text: " << expr_text << "\n";
     // ─────────────────────────────────────────────────────────────────────────
 
-    const clang::Expr* inner = expr->IgnoreImpCasts();
-    if (llvm::isa<clang::IntegerLiteral>(inner)         ||
-        llvm::isa<clang::FloatingLiteral>(inner)        ||
-        llvm::isa<clang::CharacterLiteral>(inner)       ||
-        llvm::isa<clang::StringLiteral>(inner)          ||
-        llvm::isa<clang::CXXBoolLiteralExpr>(inner)     ||
-        llvm::isa<clang::CXXNullPtrLiteralExpr>(inner)  ||
-        llvm::isa<clang::ImaginaryLiteral>(inner)       ||
-        llvm::isa<clang::FixedPointLiteral>(inner)      ||
-        llvm::isa<clang::UserDefinedLiteral>(inner)     ||
-        llvm::isa<clang::GNUNullExpr>(inner)            ||
-        llvm::isa<clang::CompoundLiteralExpr>(inner)    ||
-        llvm::isa<clang::InitListExpr>(inner))         
-        return true;
+    clang::Expr* inner = expr->IgnoreImpCasts();
+    if (is_constant_literal(inner)) return true;
 
     clang::QualType exprTy = expr->getType();
 
