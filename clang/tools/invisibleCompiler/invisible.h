@@ -748,6 +748,7 @@ public:
     virtual bool VisitCallExpr(clang::CallExpr* _call);
     virtual bool VisitImplicitCastExpr(clang::ImplicitCastExpr* ice);
     bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase);
+    bool VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt);
 };
 
 class deadStoreElimVisitor : public clang::RecursiveASTVisitor<deadStoreElimVisitor> {

@@ -2927,9 +2927,32 @@ bool transferLivenessStmtVisitor::VisitUnaryOperator(clang::UnaryOperator* unary
 }
 
 bool transferLivenessStmtVisitor::VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase) {
+    if (clang::VarDecl* identifier = extract_var_decl(ase->getBase()->IgnoreParenCasts())) {
+        if(is_primitive_type(identifier->getType())) {
+            m_live_variables.record_usage(identifier);
+        }
+    }
     if (!is_parent_an_assignment_op(ase)) {
         mark_aliased_and_global_vars_as_live();
     }
+    return true;
+}
+
+bool transferLivenessStmtVisitor::VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt) {
+    for (unsigned i = 0; i < asm_stmt->getNumOutputs(); ++i) {
+        if (clang::VarDecl* identifier = extract_var_decl(asm_stmt->getOutputExpr(i))) {
+            if(is_primitive_type(identifier->getType())) {
+                m_live_variables.record_usage(identifier);
+            }
+        } else {
+            this->TraverseStmt(asm_stmt->getOutputExpr(i));
+        }
+    }
+
+    for (unsigned i = 0; i < asm_stmt->getNumInputs(); ++i) {
+        this->TraverseStmt(asm_stmt->getInputExpr(i));
+    }
+
     return true;
 }
 
