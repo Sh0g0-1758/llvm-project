@@ -2265,8 +2265,23 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
     const clang::Type *TP = T.getTypePtr();
 
     if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(TP)) {
-        if (clang::Expr *e = TOE->getUnderlyingExpr()) {
-            this->TraverseStmt(e);
+        if (clang::Expr *expr = TOE->getUnderlyingExpr()) {
+            if (m_do_updates) {
+                if (clang::VarDecl* var_decl = extract_var_decl(expr->IgnoreParens())) {
+                    if(is_primitive_type(var_decl->getType())) {
+                        if (!m_source_loc_updated[expr->getSourceRange().getBegin().getRawEncoding()]) {
+                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                                to_copy = "(" + to_copy + ")";
+                                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                                m_rewriter.ReplaceText(expr->getSourceRange(), to_copy);
+                                m_did_propagate = true;
+                                m_source_loc_updated[expr->getSourceRange().getBegin().getRawEncoding()] = true;
+                            }
+                        }
+                    }
+                }
+            }
+            this->TraverseStmt(expr);
         }
         transfer_vars_in_type(TOE->desugar());
         return;
@@ -2276,8 +2291,24 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
     }
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
-        if (clang::Expr *size = VAT->getSizeExpr())
+        if (clang::Expr *size = VAT->getSizeExpr()) {
+            if (m_do_updates) {
+                if (clang::VarDecl* var_decl = extract_var_decl(size->IgnoreParens())) {
+                    if(is_primitive_type(var_decl->getType())) {
+                        if (!m_source_loc_updated[size->getSourceRange().getBegin().getRawEncoding()]) {
+                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                                to_copy = "(" + to_copy + ")";
+                                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                                m_rewriter.ReplaceText(size->getSourceRange(), to_copy);
+                                m_did_propagate = true;
+                                m_source_loc_updated[size->getSourceRange().getBegin().getRawEncoding()] = true;
+                            }
+                        }
+                    }
+                }
+            }
             this->TraverseStmt(size);
+        }
         transfer_vars_in_type(VAT->getElementType());
     } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
         transfer_vars_in_type(PT->getPointeeType());
@@ -2737,8 +2768,13 @@ void transferLivenessStmtVisitor::recurse_through_type(clang::QualType T) {
     const clang::Type *TP = T.getTypePtr();
 
     if (const auto *TOE = llvm::dyn_cast<clang::TypeOfExprType>(TP)) {
-        if (clang::Expr *e = TOE->getUnderlyingExpr()) {
-            this->TraverseStmt(e);
+        if (clang::Expr *expr = TOE->getUnderlyingExpr()) {
+            if (clang::VarDecl* identifier = extract_var_decl(expr->IgnoreParens())) {
+                if(is_primitive_type(identifier->getType())) {
+                    m_live_variables.record_usage(identifier);
+                }
+            }
+            this->TraverseStmt(expr);
         }
         recurse_through_type(TOE->desugar());
         return;
@@ -2748,8 +2784,14 @@ void transferLivenessStmtVisitor::recurse_through_type(clang::QualType T) {
     }
 
     if (const auto *VAT = llvm::dyn_cast<clang::VariableArrayType>(TP)) {
-        if (clang::Expr *size = VAT->getSizeExpr())
+        if (clang::Expr *size = VAT->getSizeExpr()) {
+            if (clang::VarDecl* identifier = extract_var_decl(size->IgnoreParens())) {
+                if(is_primitive_type(identifier->getType())) {
+                    m_live_variables.record_usage(identifier);
+                }
+            }
             this->TraverseStmt(size);
+        }
         recurse_through_type(VAT->getElementType());
     } else if (const auto *PT = llvm::dyn_cast<clang::PointerType>(TP)) {
         recurse_through_type(PT->getPointeeType());
