@@ -2162,7 +2162,6 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     mapped_cfg->dump(m_ctx.getLangOpts(), true);
     std::unordered_map<clang::CFGBlock*, bool> reachable_block;
     std::queue<clang::CFGBlock*> reachability_queue;
-    reachability_queue.push(&(mapped_cfg->getEntry()));
     std::unordered_map<clang::CFGBlock*, bool> block_visited;
 
     for (clang::CFGBlock *_block : *mapped_cfg) {
@@ -2170,14 +2169,20 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
         block_visited[_block] = false;
     }
 
+    reachability_queue.push(&(mapped_cfg->getEntry()));
+    block_visited[&(mapped_cfg->getEntry())] = true;
+    reachable_block[&(mapped_cfg->getEntry())] = true;
+
     while (!reachability_queue.empty()) {
         clang::CFGBlock *_block = reachability_queue.front();
-        reachable_block[_block] = true;
-        block_visited[_block] = true;
         reachability_queue.pop();
-        for (auto succ : _block->succs())
-            if (succ and !block_visited[succ])
+        for (auto succ : _block->succs()) {
+            if (succ and !block_visited[succ]) {
+                block_visited[succ] = true;
+                reachable_block[succ] = true;
                 reachability_queue.push(succ);
+            }
+        }
     }
 
     // do not remove a control flow block that introduces variables which might be
