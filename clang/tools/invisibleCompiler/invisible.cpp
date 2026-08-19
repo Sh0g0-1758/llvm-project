@@ -1784,6 +1784,7 @@ bool constantFoldVisitor::is_constant_literal(clang::Expr* inner) {
         llvm::isa<clang::CompoundLiteralExpr>(inner)    ||
         llvm::isa<clang::InitListExpr>(inner))         
         return true;
+    return false;
 }
 
 bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
