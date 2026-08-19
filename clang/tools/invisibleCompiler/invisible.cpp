@@ -2696,6 +2696,11 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                 }
             }
         }
+        if (clang::Stmt* stmt = _block->getTerminatorStmt()) {
+            if (auto asm_stmt = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+                transfer(reaching_copies, asm_stmt, false, source_loc_updated);
+            }
+        }
         reaching_copies.mark_is_not_top();
 
         bool reaching_copies_has_changed = reaching_copies != block_copies_map[_block];
@@ -2754,6 +2759,12 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                 }
             }
         }
+        if (clang::Stmt* stmt = _block->getTerminatorStmt()) {
+            if (auto asm_stmt = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+                transfer(reaching_copies, asm_stmt, true, source_loc_updated);
+            }
+        }
+
         reaching_copies.mark_is_not_top();
         assert(reaching_copies == block_copies_map[_block] && "reaching_copies set should not change when the transfer function is allowed to make changes");
 
@@ -3323,6 +3334,11 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                 }
             }
         }
+        if (clang::Stmt* stmt = _block->getTerminatorStmt()) {
+            if (auto asm_stmt = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+                transfer(live_variables, asm_stmt, false, source_loc_updated, aliased_and_global_vars);
+            }
+        }
         live_variables.mark_is_not_bottom();
 
         bool live_variables_has_changed = live_variables != block_live_vars_map[_block];
@@ -3386,6 +3402,11 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                     if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) continue;
                     transfer(live_variables, stmt, true, source_loc_updated, aliased_and_global_vars);
                 }
+            }
+        }
+        if (clang::Stmt* stmt = _block->getTerminatorStmt()) {
+            if (auto asm_stmt = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+                transfer(live_variables, asm_stmt, true, source_loc_updated, aliased_and_global_vars);
             }
         }
         live_variables.mark_is_not_bottom();
