@@ -2048,6 +2048,26 @@ bool deadCodeElimVisitor::VisitConditionalOperator(clang::ConditionalOperator* c
     return true;
 }
 
+// ─── LoopFlowCollector ──────────────────────────────────────────────
+
+class LoopFlowCollector : public clang::RecursiveASTVisitor<LoopFlowCollector> {
+private:
+    bool have_loop_flow_stmts = false;
+public:
+    bool VisitBreakStmt(clang::BreakStmt* break_stmt) {
+        have_loop_flow_stmts = true;
+        return true;
+    }
+    bool VisitContinueStmt(clang::ContinueStmt* continue_stmt) {
+        have_loop_flow_stmts = true;
+        return true;
+    }
+
+    bool changes_loop_flow_semantics() {
+        return have_loop_flow_stmts;
+    }
+};
+
 bool deadCodeElimVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     if ((do_stmt->getSourceRange().getBegin() >= m_last_update_loc_begin) && (do_stmt->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
 
@@ -2059,22 +2079,26 @@ bool deadCodeElimVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     bool __cond_val;
     if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
     if (!__cond_val) {
-        std::string reduced{};
-        llvm::raw_string_ostream reduced_stream(reduced);
-
-        do_stmt->getBody()->printPretty(reduced_stream, nullptr, m_policy);
-
-        bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
-        if (__cond_has_side_effects) {
-            __cond->printPretty(reduced_stream, nullptr, m_policy);
-            reduced_stream << ";";
+        LoopFlowCollector visitor;
+        visitor.TraverseStmt(do_stmt->getBody());
+        if(!visitor.changes_loop_flow_semantics()) {
+            std::string reduced{};
+            llvm::raw_string_ostream reduced_stream(reduced);
+    
+            do_stmt->getBody()->printPretty(reduced_stream, nullptr, m_policy);
+    
+            bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
+            if (__cond_has_side_effects) {
+                __cond->printPretty(reduced_stream, nullptr, m_policy);
+                reduced_stream << ";";
+            }
+    
+            reduced_stream.flush();
+    
+            m_last_update_loc_begin = do_stmt->getSourceRange().getBegin();
+            m_last_update_loc_end = do_stmt->getSourceRange().getEnd();
+            m_rewriter.ReplaceText(do_stmt->getSourceRange(), reduced);
         }
-
-        reduced_stream.flush();
-
-        m_last_update_loc_begin = do_stmt->getSourceRange().getBegin();
-        m_last_update_loc_end = do_stmt->getSourceRange().getEnd();
-        m_rewriter.ReplaceText(do_stmt->getSourceRange(), reduced);
     }
 
     return true;
