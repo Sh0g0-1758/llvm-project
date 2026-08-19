@@ -2105,6 +2105,25 @@ void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vect
         }
     } else if (const clang::UnaryOperator* un_op = llvm::dyn_cast<clang::UnaryOperator>(parent_stmt); un_op && (un_op->getOpcode() == clang::UnaryOperator::Opcode::UO_Extension)) {
         unreachable_locs.push_back({un_op->getSourceRange().getBegin(), un_op->getSourceRange().getEnd()});
+    } else if (const clang::ParenExpr* paren_expr = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
+        const clang::Expr* current = paren_expr;
+
+        while (true) {
+            auto parents = m_ctx.getParents(*current);
+            if (parents.empty()) break;
+
+            const auto* parent_stmt = parents[0].get<clang::Stmt>();
+            if (!parent_stmt) break;
+
+            // strip outer parens if any
+            if (const auto* paren = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
+                current = paren;
+                continue;
+            }
+
+            break;
+        }
+        unreachable_locs.push_back({current->getSourceRange().getBegin(), current->getSourceRange().getEnd()});
     }
 }
 
