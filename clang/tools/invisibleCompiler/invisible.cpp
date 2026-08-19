@@ -1306,28 +1306,6 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         return false;
     }
 
-    if (auto* label_stmt = llvm::dyn_cast<clang::LabelStmt>(stmt)) {
-        std::string label = label_stmt->getDecl()->getName().str();
-        if(m_goto_labels.find(label) == m_goto_labels.end()) {
-            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index) + "__" + std::to_string(m_goto_label_index++);   
-        }
-        stream << m_goto_labels.at(label) << ":\n";
-        label_stmt->getSubStmt()->printPretty(stream, this, m_policy);
-        stream << ";";
-        return true;
-    }
-
-    if (auto* goto_stmt = llvm::dyn_cast<clang::GotoStmt>(stmt)) {
-        std::string label = goto_stmt->getLabel()->getName().str();
-        if(m_goto_labels.find(label) == m_goto_labels.end()) {
-            m_goto_labels[label] = std::string("__inline_label_") + std::to_string(m_current_index++) + "__" + std::to_string(m_goto_label_index++);
-        }
-        stream << "goto ";
-        stream << m_goto_labels.at(label);
-        stream << ";\n";
-        return true;
-    }
-
     if (auto* gcc_asm = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
         m_func_param_renamer.TraverseStmt(gcc_asm);
 
@@ -1352,6 +1330,28 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
 
     return false;
 }
+
+// ─── LabelMaker ───────────────────────────
+class LabelMaker : public clang::RecursiveASTVisitor<LabelMaker> {
+private:
+    clang::ASTContext& m_ctx;
+    size_t m_current_index;
+    std::map<std::string, std::string> m_goto_labels;
+    size_t m_goto_label_index;
+public:
+    LabelMaker(clang::ASTContext& ctx, size_t current_index) : m_ctx(ctx),
+                                                               m_current_index(current_index), 
+                                                               m_goto_labels({}),
+                                                               m_goto_label_index(0) { }
+
+    bool VisitLabelStmt(clang::LabelStmt* label_stmt) {
+        clang::LabelDecl *decl = label_stmt->getDecl();
+        clang::IdentifierInfo &newII = m_ctx.Idents.get(std::string("__inline_label_") + std::to_string(m_current_index) + "__" + std::to_string(m_goto_label_index++));
+        decl->setDeclName(clang::DeclarationName(&newII));
+
+        return true;
+    }
+};
 
 // ─── InlineVisitor - FunctionCallCleanup ───────────────────────────
 
@@ -1677,6 +1677,9 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
     std::string raw_body;
     llvm::raw_string_ostream stream(raw_body);
+
+    LabelMaker visitor(m_ctx, m_current_index);
+    visitor.TraverseStmt(callee->getBody());
 
     InlinePrinterHelper helper(m_ctx, target_var, caller_params, m_policy, m_current_index);
     callee->getBody()->printPretty(stream, &helper, m_policy);
