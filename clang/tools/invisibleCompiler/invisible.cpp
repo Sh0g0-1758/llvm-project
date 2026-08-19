@@ -11,6 +11,7 @@
 
 #include <string>
 #include <queue>
+#include <stack>
 
 namespace invisible {
 
@@ -2131,6 +2132,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
+    m_cfg_options.AddScopes = true;
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
     mapped_cfg->dump(m_ctx.getLangOpts(), true);
@@ -2152,6 +2154,62 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
         for (auto succ : _block->succs())
             if (succ and !block_visited[succ])
                 reachability_queue.push(succ);
+    }
+
+    // do not remove a control flow block that introduces variables which might be
+    // used later on in other control flow blocks that are live. This behavior is 
+    // present when goto expressions mess up the program flow. 
+    for(auto block_status : reachable_block) {
+        if (!block_status.second) {
+            clang::CFGBlock* _block = block_status.first;
+
+            /**
+             * The intuition here is that we want to see if any variable that was introduced
+             * in this block escapes the block. That is possible if we don't see a conforming
+             * scopeEnd for the variable. 
+             * 
+             * Now multiples Decls can exist, so we maintain a stack and : 
+             * 
+             * 1. Push a Decl if only top is not a Decl
+             * 2. Push a SCOPE_BEGIN marker unconditionally
+             * 3. When a scopeEnd stmt is encountered, there are a couple cases. Either the state
+             *    is empty which is fine. Either top is a Decl but its ScopeBegin is not there. Its
+             *    in some other block but that's also fine. Or else top is a Decl and just below it
+             *    is a BeginStmt. In this case we remove two elements from the stack. 
+             * 4. At the end if the scope_state is not empty, that is some Decls which were introduced are
+             *    leaking, we mark the block as reachable. 
+             */
+            enum scope_info {
+                DECL,
+                SCOPE_BEGIN,
+            };
+
+            std::stack<scope_info> scope_state;
+
+            for (clang::CFGElement &Elem : *_block) {
+                if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
+                    if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                        if (llvm::dyn_cast<clang::DeclStmt>(stmt)) {
+                            if(!scope_state.empty()) {
+                                if(scope_state.top() == SCOPE_BEGIN) {
+                                    scope_state.push(DECL);
+                                }
+                            } else {
+                                scope_state.push(DECL);
+                            }
+                        }
+                    }
+                } else if (auto scope_end = Elem.getAs<clang::CFGScopeEnd>()) {
+                    if(scope_state.empty()) continue;
+                    scope_state.pop();
+                    if(scope_state.size()) scope_state.pop();
+                } else if (auto scope_begin = Elem.getAs<clang::CFGScopeBegin>()) {
+                    scope_state.push(SCOPE_BEGIN);
+                }
+            }
+
+            if(!scope_state.empty()) reachable_block[_block] = true;
+        }
     }
 
     std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>> unreachable_locs;
@@ -2421,8 +2479,7 @@ bool transferStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr* ice) {
 }
 
 bool transferStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
-    assert(decl_stmt->isSingleDecl() && "declStmt should not have multiple decls. Preprocessing should have taken care of this.");
-    if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
+    for (clang::Decl* decl : decl_stmt->decls()) {
         if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
             transfer_vars_in_type(var_decl->getType());
             if(is_primitive_type(var_decl->getType())) {
@@ -2940,8 +2997,7 @@ bool transferLivenessStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr*
 }
 
 bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
-    assert(decl_stmt->isSingleDecl() && "declStmt should not have multiple decls. Preprocessing should have taken care of this.");
-    if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
+    for (clang::Decl* decl : decl_stmt->decls()) {
         if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
             recurse_through_type(var_decl->getType());
             if(is_primitive_type(var_decl->getType())) {
@@ -3188,7 +3244,7 @@ public:
     }
 
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt) {
-        if (clang::Decl* decl = decl_stmt->getSingleDecl()) {
+        for (clang::Decl* decl : decl_stmt->decls()) {
             if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
                 recurse_through_type(var_decl->getType());
                 if (var_decl->hasGlobalStorage()) {
