@@ -2480,6 +2480,15 @@ bool transferStmtVisitor::VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt) {
     return true;
 }
 
+bool transferStmtVisitor::TraverseStmtExpr(clang::StmtExpr* stmt_expr) {
+    return true;
+}
+
+bool transferStmtVisitor::TraverseBinaryOperator(clang::BinaryOperator* bin_op) {
+    if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma) return true;
+    else return clang::RecursiveASTVisitor<transferStmtVisitor>::TraverseBinaryOperator(bin_op);
+}
+
 // ─── varsInScopeCollector ──────────────────────────────────────────────
 
 class varsInScopeCollector : public clang::RecursiveASTVisitor<varsInScopeCollector> {
@@ -3077,6 +3086,15 @@ bool transferLivenessStmtVisitor::VisitCallExpr(clang::CallExpr* call) {
     mark_aliased_and_global_vars_as_live();
 
     return true;
+}
+
+bool transferLivenessStmtVisitor::TraverseStmtExpr(clang::StmtExpr* stmt_expr) {
+    return true;
+}
+
+bool transferLivenessStmtVisitor::TraverseBinaryOperator(clang::BinaryOperator* bin_op) {
+    if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma) return true;
+    else return clang::RecursiveASTVisitor<transferLivenessStmtVisitor>::TraverseBinaryOperator(bin_op);
 }
 
 // ─── AliasedAndGlobalVarCollector ──────────────────────────────────────────────

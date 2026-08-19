@@ -636,6 +636,8 @@ public:
     bool VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt);
     bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase);
     virtual bool shouldTraversePostOrder();
+    virtual bool TraverseStmtExpr(clang::StmtExpr* stmt_expr);
+    virtual bool TraverseBinaryOperator(clang::BinaryOperator* bin_op);
 };
 
 class copyPropagationVisitor : public clang::RecursiveASTVisitor<copyPropagationVisitor> {
@@ -753,6 +755,8 @@ public:
     virtual bool VisitImplicitCastExpr(clang::ImplicitCastExpr* ice);
     bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase);
     bool VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt);
+    virtual bool TraverseStmtExpr(clang::StmtExpr* stmt_expr);
+    virtual bool TraverseBinaryOperator(clang::BinaryOperator* bin_op);
 };
 
 class deadStoreElimVisitor : public clang::RecursiveASTVisitor<deadStoreElimVisitor> {
