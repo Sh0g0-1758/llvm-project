@@ -1904,6 +1904,27 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
 
 // ─── deadCodeElimVisitor ──────────────────────────────────────────────
 
+// If while doing a structural change, it so happens that there is a label inside of it, 
+// then its possible that a goto statement outside this body jumps to this label via a 
+// goto statement and we should be conservative about that. 
+class LabelVerifier : public clang::RecursiveASTVisitor<LabelVerifier> {
+private:
+    bool has_label = false;
+public:
+    bool VisitLabelStmt(clang::LabelStmt* label_stmt) {
+        has_label = true;
+        return true;
+    }
+
+    bool has_label_stmt() {
+        return has_label;
+    }
+
+    void reset() {
+        has_label = false;
+    }
+};
+
 deadCodeElimVisitor::deadCodeElimVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
@@ -1913,6 +1934,14 @@ deadCodeElimVisitor::deadCodeElimVisitor(clang::ASTContext& context, clang::Rewr
 
 bool deadCodeElimVisitor::did_elim() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
+}
+
+bool deadCodeElimVisitor::has_label(clang::Stmt* stmt) {
+    if(!stmt) return false;
+    static LabelVerifier label_verifier;
+    label_verifier.reset();
+    label_verifier.TraverseStmt(stmt);
+    return label_verifier.has_label_stmt();
 }
 
 // TODO: Need to change the assignment operator into a comma separated list 
@@ -1929,6 +1958,13 @@ bool deadCodeElimVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
         return true;
     bool __cond_val;
     if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
+    if(__cond_val) {
+        if (clang::Stmt* else_stmt = if_stmt->getElse()) {
+            if (has_label(else_stmt)) return true;
+        }
+    } else {
+        if(has_label(if_stmt->getThen())) return true;
+    }
     bool __cond_has_side_effects =  __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
 
     std::string reduced{};
@@ -1942,7 +1978,7 @@ bool deadCodeElimVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
     if (__cond_val) {
         if_stmt->getThen()->printPretty(reduced_stream, nullptr, m_policy);
     } else {
-        if(clang::Stmt* else_stmt = if_stmt->getElse()) {
+        if (clang::Stmt* else_stmt = if_stmt->getElse()) {
             else_stmt->printPretty(reduced_stream, nullptr, m_policy);
         }
     }
@@ -1968,6 +2004,8 @@ bool deadCodeElimVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     bool __cond_val;
     if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
     if (!__cond_val) {
+        if (has_label(for_stmt->getBody())) return true;
+
         std::string reduced{};
         llvm::raw_string_ostream reduced_stream(reduced);
         for_stmt->getInit()->printPretty(reduced_stream, nullptr, m_policy);
@@ -1999,6 +2037,8 @@ bool deadCodeElimVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
     bool __cond_val;
     if (!__cond->EvaluateAsBooleanCondition(__cond_val, m_ctx)) return true;
     if (!__cond_val) {
+        if (has_label(while_stmt->getBody())) return true;
+
         std::string reduced{};
         llvm::raw_string_ostream reduced_stream(reduced);
 

@@ -402,6 +402,7 @@ public:
     virtual bool VisitWhileStmt(clang::WhileStmt* while_stmt);
     virtual bool VisitDoStmt(clang::DoStmt* do_stmt);
     virtual bool VisitConditionalOperator(clang::ConditionalOperator* conditional_op);
+    bool has_label(clang::Stmt* stmt);
     bool did_elim();
 };
 
