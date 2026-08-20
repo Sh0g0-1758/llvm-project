@@ -2124,13 +2124,18 @@ void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vect
     const auto* parent_stmt = parents[0].get<clang::Stmt>();
     if (!parent_stmt) return;
     
-    if (clang::BinaryOperator* bin_op = llvm::dyn_cast<clang::BinaryOperator>(stmt); bin_op && (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma)) {
-        if (const auto* paren = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
-            unreachable_locs.push_back({paren->getSourceRange().getBegin(), paren->getSourceRange().getEnd()});
-        }
-    } else if (const clang::UnaryOperator* un_op = llvm::dyn_cast<clang::UnaryOperator>(parent_stmt); un_op && (un_op->getOpcode() == clang::UnaryOperator::Opcode::UO_Extension)) {
+    if (const clang::UnaryOperator* un_op = llvm::dyn_cast<clang::UnaryOperator>(parent_stmt); un_op && (un_op->getOpcode() == clang::UnaryOperator::Opcode::UO_Extension)) {
         unreachable_locs.push_back({un_op->getSourceRange().getBegin(), un_op->getSourceRange().getEnd()});
-    } else if (const clang::ParenExpr* paren_expr = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
+
+        parents = m_ctx.getParents(*un_op);
+        if (parents.empty()) return;
+
+        parent_stmt = parents[0].get<clang::Stmt>();
+        if (!parent_stmt) return;
+    }
+    
+    if (const clang::ParenExpr* paren_expr = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
+        paren_expr->dump();
         const clang::Expr* current = paren_expr;
 
         while (true) {
