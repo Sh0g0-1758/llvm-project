@@ -2157,6 +2157,14 @@ bool deadCodeElimCfgAnalysisVisitor::did_elim() {
     return did_remove;
 }
 
+bool deadCodeElimCfgAnalysisVisitor::has_label(clang::Stmt* stmt) {
+    if(!stmt) return false;
+    static LabelVerifier label_verifier;
+    label_verifier.reset();
+    label_verifier.TraverseStmt(stmt);
+    return label_verifier.has_label_stmt();
+}
+
 void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>>& unreachable_locs, clang::Stmt* stmt) {    
     auto parents = m_ctx.getParents(*stmt);
     if (parents.empty()) return;
@@ -2290,11 +2298,18 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     for(auto block_status : reachable_block) {
         if (!block_status.second) {
             clang::CFGBlock* _block = block_status.first;
+            bool terminator_has_label_stmt = false;
             if (clang::Stmt* terminator_stmt = _block->getTerminatorStmt()) {
-                unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
+                terminator_has_label_stmt = has_label(terminator_stmt);
+                if (!terminator_has_label_stmt) {
+                    unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
+                }
             }
-            for (clang::CFGElement &Elem : *_block) {
-                if (auto cfg_stmt = Elem.getAs<clang::CFGStmt>()) {
+            for(auto Elem = _block->begin(); Elem < _block->end(); Elem++) {
+                if(terminator_has_label_stmt) {
+                    if (Elem == (_block->end() - 1)) continue;
+                }
+                if (auto cfg_stmt = Elem->getAs<clang::CFGStmt>()) {
                     if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
                         // some statements need more cleanup than the info just present
                         // in the cfgStmt. 
