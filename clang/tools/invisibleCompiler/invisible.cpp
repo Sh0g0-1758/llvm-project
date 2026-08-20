@@ -3516,6 +3516,22 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             }
         }
 
+        // check if a successor has been visited atleast once or not. 
+        // Certain control flow graphs exist where certain nodes are 
+        // reachable from the start but not from the exit block. A good
+        // example is infinite loops. These blocks may use variables which 
+        // if not taken into account might lead to deleting their declarations
+        // and thus result in an invalid transformation. 
+        for (auto succ : _block->succs()) {
+            if (!succ) continue;
+
+            if (block_live_vars_map[_block].is_bottom()) {
+                if (std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
+                    work_queue.push_back(succ);
+                }
+            }
+        }
+
         if (live_variables_has_changed) 
             block_live_vars_map[_block] = live_variables;
     }
@@ -3585,6 +3601,16 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             if (!block_visited[pred]) {
                 if(std::find(work_queue.begin(), work_queue.end(), pred) == work_queue.end()) {
                     work_queue.push_back(pred);
+                }
+            }
+        }
+
+        for (auto succ : _block->succs()) {
+            if (!succ) continue;
+
+            if (!block_visited[succ]) {
+                if (std::find(work_queue.begin(), work_queue.end(), succ) == work_queue.end()) {
+                    work_queue.push_back(succ);
                 }
             }
         }
