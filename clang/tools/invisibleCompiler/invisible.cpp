@@ -2238,10 +2238,13 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
         }
     }
 
-    // do not remove a control flow block that introduces variables which might be
+
+    std::unordered_map<clang::CFGBlock*, size_t> block_retain_decl;
+    // record control flow block that introduces variables which might be
     // used later on in other control flow blocks that are live. This behavior is 
     // present when goto expressions mess up the program flow. 
     for(auto block_status : reachable_block) {
+        block_retain_decl[block_status.first] = 0;
         if (!block_status.second) {
             clang::CFGBlock* _block = block_status.first;
 
@@ -2290,7 +2293,10 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                 }
             }
 
-            if(!scope_state.empty()) reachable_block[_block] = true;
+            if(!scope_state.empty()) {
+                // if scope_state is even, top level decl was never included
+                block_retain_decl[block_status.first] = (scope_state.size() % 2 == 0) ? ((scope_state.size() / 2) + 1) : (scope_state.size() + 1) / 2;
+            }
         }
     }
 
@@ -2305,12 +2311,41 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                     unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
                 }
             }
+            size_t decl_depth_to_retain = block_retain_decl[_block];
             for(auto Elem = _block->begin(); Elem < _block->end(); Elem++) {
                 if(terminator_has_label_stmt) {
                     if (Elem == (_block->end() - 1)) continue;
                 }
                 if (auto cfg_stmt = Elem->getAs<clang::CFGStmt>()) {
                     if (clang::Stmt* stmt = const_cast<clang::Stmt*>(cfg_stmt->getStmt())) {
+                        // selectively retain some statements that are essential to
+                        // conform to the C grammar. Here we retain declarations for 
+                        // variables that are used in reachable blocks further down
+                        // the line. Strip their init though. 
+                        if (decl_depth_to_retain > 0) {
+                            if (clang::DeclStmt* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
+                                for (clang::Decl* decl : decl_stmt->decls()) {
+                                    if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                                        if (var_decl->hasInit()) {
+                                            unreachable_locs.push_back({var_decl->getInit()->getSourceRange().getBegin(), var_decl->getInit()->getSourceRange().getEnd()});
+
+                                            if (var_decl->getInitStyle() != clang::VarDecl::CInit)
+                                                continue;
+    
+                                            clang::SourceLocation init_start = var_decl->getInit()->getBeginLoc();
+    
+                                            auto prev_token = clang::Lexer::findPreviousToken(
+                                                init_start, m_ctx.getSourceManager(), m_ctx.getLangOpts(), /*IncludeComments=*/false);
+    
+                                            if (prev_token && prev_token->is(clang::tok::equal)) {
+                                                unreachable_locs.push_back({prev_token->getLocation(), prev_token->getLocation()});
+                                            }
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                        }
                         // some statements need more cleanup than the info just present
                         // in the cfgStmt. 
                         // 1. binaryOperator(,) if has parenExpr as immediate parent,
@@ -2324,6 +2359,10 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                         extend_unreachable_loc_for_parent(unreachable_locs, stmt);
                         unreachable_locs.push_back({stmt->getSourceRange().getBegin(), stmt->getSourceRange().getEnd()});
                     }
+                } else if (auto scope_begin = Elem->getAs<clang::CFGScopeBegin>()) {
+                    decl_depth_to_retain--;
+                } else if (auto scope_end = Elem->getAs<clang::CFGScopeEnd>()) {
+                    decl_depth_to_retain++;
                 }
             }
         }
