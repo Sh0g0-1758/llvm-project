@@ -2009,6 +2009,7 @@ bool deadCodeElimVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
         std::string reduced{};
         llvm::raw_string_ostream reduced_stream(reduced);
         for_stmt->getInit()->printPretty(reduced_stream, nullptr, m_policy);
+        reduced_stream << ";";
         
         bool __cond_has_side_effects = __cond->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true);
         if (__cond_has_side_effects) {
