@@ -1756,25 +1756,18 @@ bool constantFoldVisitor::did_fold() {
 }
 
 bool constantFoldVisitor::is_parent_typeof(clang::Expr* expr) {
-    const clang::Expr* current = expr;
+    if (!expr) return false;
 
-    while (true) {
-        auto parents = m_ctx.getParents(*current);
-        if (parents.empty()) return false;
+    auto parents = m_ctx.getParents(*expr);
+    if (parents.empty()) return false;
 
-        const auto* parent_stmt = parents[0].get<clang::Type>();
-        if (!parent_stmt) return false;
-
-        if (llvm::dyn_cast<clang::TypeOfExprType>(parent_stmt)) {
-            return true;
-        }
-
-        return false;
-    }
+    const auto& parent = parents[0];
+    return parent.get<clang::TypeOfExprTypeLoc>() != nullptr || 
+           parent.get<clang::TypeOfExprType>()    != nullptr ||
+           parent.get<clang::TypeOfType>()        != nullptr;
 }
 
 bool constantFoldVisitor::is_constant_literal(clang::Expr* inner) {
-    if (is_parent_typeof(inner)) inner = inner->IgnoreParens();
     if (llvm::isa<clang::IntegerLiteral>(inner)         ||
         llvm::isa<clang::FloatingLiteral>(inner)        ||
         llvm::isa<clang::CharacterLiteral>(inner)       ||
@@ -1862,6 +1855,13 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         if (auto* fn = llvm::dyn_cast_or_null<clang::FunctionDecl>(call->getCalleeDecl()))
             if (fn->getBuiltinID() != 0)
                 return true;
+
+    // Don't fold expressions that have typeof as their immediate parent. 
+    // This is because it can convert a valid expression __typeof__(0) into
+    // something invalid, eg. __typeof__0 ie. stripping the parens. 
+    if (is_parent_typeof(expr)) {
+        return true;
+    }
 
     if (expr->isValueDependent() || inner->isValueDependent())
         return true;
