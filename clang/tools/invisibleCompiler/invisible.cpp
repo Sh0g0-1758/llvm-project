@@ -2295,9 +2295,13 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                 }
             }
 
-            if(!scope_state.empty()) {
-                // if scope_state is even, top level decl was never included
-                block_retain_decl[block_status.first] = (scope_state.size() % 2 == 0) ? ((scope_state.size() / 2) + 1) : (scope_state.size() + 1) / 2;
+            if (scope_state.size()) {
+                while(!scope_state.empty()) {
+                    if (scope_state.top() == DECL) {
+                        block_retain_decl[block_status.first]++;
+                    }
+                    scope_state.pop();
+                }
             }
         }
     }
@@ -2313,7 +2317,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                     unreachable_locs.push_back({terminator_stmt->getSourceRange().getBegin(), terminator_stmt->getSourceRange().getEnd()});
                 }
             }
-            size_t decl_depth_to_retain = block_retain_decl[_block];
+            int decl_depth_to_retain = block_retain_decl[_block];
             for(auto Elem = _block->begin(); Elem < _block->end(); Elem++) {
                 if(terminator_has_label_stmt) {
                     if (Elem == (_block->end() - 1)) continue;
