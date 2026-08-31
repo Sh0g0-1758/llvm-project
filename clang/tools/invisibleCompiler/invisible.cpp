@@ -2314,6 +2314,14 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
             }
 
             if (scope_state.size()) {
+                // scope state is > 0.
+                // Possibilities are : 
+                // a. Begin Decl (a)
+                // b. Decl Begin Decl (a) | (Begin b)
+                // A Begin state should always precede a Decl state. 
+                // so counting the number of decls in the scope state
+                // should tell us how many layers of the declaration
+                // we need to preserve. 
                 while(!scope_state.empty()) {
                     if (scope_state.top() == DECL) {
                         block_retain_decl[block_status.first]++;
@@ -2346,7 +2354,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
                         // conform to the C grammar. Here we retain declarations for 
                         // variables that are used in reachable blocks further down
                         // the line. Strip their init though. 
-                        if (decl_depth_to_retain > 0) {
+                        if (decl_depth_to_retain >= 0) {
                             if (clang::DeclStmt* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
                                 for (clang::Decl* decl : decl_stmt->decls()) {
                                     if (clang::VarDecl* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
