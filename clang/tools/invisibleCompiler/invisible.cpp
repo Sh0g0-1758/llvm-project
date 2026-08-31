@@ -2440,6 +2440,60 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     return true;
 }
 
+// ─── deadCodeElimCleanupVisitor ──────────────────────────────────────────────
+
+deadCodeElimCleanupVisitor::deadCodeElimCleanupVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), did_remove(false) { }
+
+bool deadCodeElimCleanupVisitor::did_elim() {
+    return did_remove;
+}
+
+bool deadCodeElimCleanupVisitor::is_parent_valid_to_remove_body(clang::CompoundStmt* stmt) {
+    auto parents = m_ctx.getParents(*stmt);
+    if (parents.empty()) return false;
+
+    const auto& parent = parents[0];
+    return parent.get<clang::CompoundStmt>() != nullptr;
+}
+
+bool deadCodeElimCleanupVisitor::is_parent_stmtExpr(clang::CompoundStmt* stmt) {
+    auto parents = m_ctx.getParents(*stmt);
+    if (parents.empty()) return false;
+
+    const auto& parent = parents[0];
+    return parent.get<clang::StmtExpr>() != nullptr;
+}
+
+bool deadCodeElimCleanupVisitor::VisitCompoundStmt(clang::CompoundStmt* stmt) {
+    if(stmt->body_empty()) {
+        if (!is_parent_valid_to_remove_body(stmt)) return true;
+
+        m_rewriter.RemoveText(stmt->getSourceRange());
+        did_remove = true;
+    }
+
+    for(int i = 0; i < stmt->size(); i++) {
+        if(i == (stmt->size() - 1) and is_parent_stmtExpr(stmt)) continue;
+        clang::Stmt* child = (stmt->body_begin())[i];
+
+        if (clang::NullStmt* null_stmt = llvm::dyn_cast<clang::NullStmt>(child)) {
+            m_rewriter.RemoveText(null_stmt->getSourceRange());
+            did_remove = true;
+            continue;
+        }
+
+        if (clang::Expr* expr_stmt = llvm::dyn_cast<clang::Expr>(child)) {
+            if(!expr_stmt->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true)) {
+                m_rewriter.RemoveText(expr_stmt->getSourceRange());
+                did_remove = true;
+                continue;
+            }
+        }
+    }
+
+    return true;
+}
+
 // ─── transferStmtVisitor ──────────────────────────────────────────────
 
 transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate, std::unordered_map<unsigned, bool>& source_loc_updated) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies), m_do_updates(do_updates), m_did_propagate(did_propagate), m_source_loc_updated(source_loc_updated) { }
@@ -4133,6 +4187,30 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
             break;
         }
         result = std::move(tmp_result);
+
+        // cleanup
+        bool did_cleanup = true;
+        had_bad_changes = false;
+        while(did_cleanup) {
+            clang::Rewriter rewriter;
+            did_cleanup = false;
+            tmp_result = runInMemory(result, filename, args, [&rewriter, &did_cleanup](clang::ASTContext& ctx, clang::Sema&) {
+                rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+                deadCodeElimCleanupVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+                did_cleanup = visitor.did_elim();
+            }, rewriter);
+            if (!isCompilable(tmp_result, filename, args)) {
+                is_compilable ? (*is_compilable = false) : false;
+                result = std::move(tmp_result);
+                had_bad_changes = true;
+                break;
+            }
+            result = std::move(tmp_result);
+            did_elim = did_elim ? true : did_cleanup;
+        }
+
+        if(had_bad_changes) break;
 
         did_change ? (*did_change ? true : (*did_change = did_elim)) : false;
     }
