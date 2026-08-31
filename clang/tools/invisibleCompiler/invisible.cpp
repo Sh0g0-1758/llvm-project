@@ -1976,10 +1976,12 @@ bool deadCodeElimVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
     }
 
     if (__cond_val) {
-        if_stmt->getThen()->printPretty(reduced_stream, nullptr, m_policy);
+        DeclBeforeDefPrinterHelper m_custom_printer(m_ctx, m_policy);
+        if_stmt->getThen()->printPretty(reduced_stream, &m_custom_printer, m_policy);
     } else {
         if (clang::Stmt* else_stmt = if_stmt->getElse()) {
-            else_stmt->printPretty(reduced_stream, nullptr, m_policy);
+            DeclBeforeDefPrinterHelper m_custom_printer(m_ctx, m_policy);
+            else_stmt->printPretty(reduced_stream, &m_custom_printer, m_policy);
         }
     }
 
@@ -4155,6 +4157,15 @@ std::string deadStoreElim(const std::string& source, const std::string& filename
 // ---- one-for-all ------------------------------------------------------------
 std::string oneForAll(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::string result = source;
+
+    // Suppress Clang's implicit builtin declarations so that hoisted
+    // temporaries use the type names from the user's headers (e.g.
+    // `size_t`) rather than Clang-internal typedefs (`__size_t`).
+    args.emplace_back("-fno-builtin");
+    // Suppress warnings that show up as errors while parsing using
+    // libtooling but are otherwise benign as still compiles the TU. 
+    // For eg. -Wincompatible-pointer-types
+    args.emplace_back("-Wno-everything");
 
     bool did_change = true;
     int num_passes = 0;
