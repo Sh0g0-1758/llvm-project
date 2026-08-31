@@ -467,12 +467,16 @@ struct reaching_copies_t {
       }
     }
 
-    std::string get_as_string(clang::ASTContext& ctx, clang::QualType type) {
+    std::string get_as_string(clang::ASTContext& ctx, clang::QualType type, clang::PrintingPolicy& policy) {
       if (this->m_has_storage) return m_identifier->getNameAsString();
       else {
+        if (type->isBooleanType()) {
+          return m_numeric_constant.getInt().getBoolValue() ? "1" : "0";
+        }
+
         std::string val_as_string{};
         llvm::raw_string_ostream out(val_as_string);
-        m_numeric_constant.printPretty(out, ctx, type);
+        m_numeric_constant.printPretty(out, policy, type, &ctx);
         out.flush();
         return val_as_string;
       }
@@ -516,12 +520,12 @@ struct reaching_copies_t {
     m_copies.push_back(std::move(copy));
   }
 
-  std::string find_if_copy_exists(clang::VarDecl* identifier, clang::ASTContext& ctx) {
+  std::string find_if_copy_exists(clang::VarDecl* identifier, clang::ASTContext& ctx, clang::PrintingPolicy& policy) {
     if (!identifier || m_copies.empty()) return {};
 
     for(auto& it : m_copies) {
       if(it.m_identifier == identifier) {
-        return it.m_to_copy.get_as_string(ctx, identifier->getType());
+        return it.m_to_copy.get_as_string(ctx, identifier->getType(), policy);
       }
     }
     return {};

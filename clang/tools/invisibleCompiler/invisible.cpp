@@ -2510,7 +2510,7 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
                 if (clang::VarDecl* var_decl = extract_var_decl(expr->IgnoreParens())) {
                     if(is_primitive_type(var_decl->getType())) {
                         if (!m_source_loc_updated[expr->getSourceRange().getBegin().getRawEncoding()]) {
-                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                                 to_copy = "(" + to_copy + ")";
                                 llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                                 m_rewriter.ReplaceText(expr->getSourceRange(), to_copy);
@@ -2536,7 +2536,7 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
                 if (clang::VarDecl* var_decl = extract_var_decl(size->IgnoreParens())) {
                     if(is_primitive_type(var_decl->getType())) {
                         if (!m_source_loc_updated[size->getSourceRange().getBegin().getRawEncoding()]) {
-                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                                 to_copy = "(" + to_copy + ")";
                                 llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                                 m_rewriter.ReplaceText(size->getSourceRange(), to_copy);
@@ -2601,7 +2601,7 @@ bool transferStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr* ice) {
         if (m_source_loc_updated[decl_ref_expr->getSourceRange().getBegin().getRawEncoding()]) return true;
         if(is_primitive_type(decl_ref_expr->getType())) {
             if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
-                if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+                if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                     llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                     m_rewriter.ReplaceText(decl_ref_expr->getSourceRange(), to_copy);
                     m_did_propagate = true;
@@ -2673,7 +2673,7 @@ bool transferStmtVisitor::VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase
     if (clang::VarDecl* var_decl = extract_var_decl(ase->getBase()->IgnoreParenCasts())) {
         if(is_primitive_type(var_decl->getType())) {
             if (m_source_loc_updated[ase->getBase()->getSourceRange().getBegin().getRawEncoding()]) return true;
-            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx); !to_copy.empty()) {
+            if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                 llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                 m_rewriter.ReplaceText(ase->getBase()->getSourceRange(), to_copy);
                 m_did_propagate = true;
@@ -3191,7 +3191,7 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                                 } else {
                                     llvm::outs() << "does not retain init\n";
                                 }
-                                
+
                                 replacement_stream << ";";
                                 replacement_stream.flush();
         
