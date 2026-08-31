@@ -3275,6 +3275,24 @@ bool transferLivenessStmtVisitor::VisitGCCAsmStmt(clang::GCCAsmStmt* asm_stmt) {
         }
     }
 
+
+    // when the input expression has a memory constraint, the variable
+    // is not converted from an lvalue to an rvalue and thus not caught
+    // recursively. The same is not troublesome for copy-propagation
+    // because when we go recursively to the input expressions there
+    // because there is no lvalue-to-rvalue cast, the said variable
+    // is not changed which is the correct behavior. This behavior is conservative
+    // but protects us from replacing an input operand with a memory constraint
+    // with a constant which would make the TU unparsable. 
+    for (unsigned i = 0; i < asm_stmt->getNumInputs(); ++i) {
+        if (clang::VarDecl* identifier = extract_var_decl(asm_stmt->getInputExpr(i))) {
+            if(is_primitive_type(identifier->getType())) {
+                m_live_variables.record_usage(identifier);
+                m_live_variables.mark_as_live(identifier);
+            }
+        }
+    }
+
     return true;
 }
 
