@@ -3183,16 +3183,17 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                             } else {
                                 llvm::outs() << "does not have usage ";
                                 std::string replacement{};
+                                llvm::raw_string_ostream replacement_stream(replacement);
         
                                 if (has_init && init_has_side_effects) {
                                     llvm::outs() << "and retains init\n";
-                                    llvm::raw_string_ostream replacement_stream(replacement);
                                     init->printPretty(replacement_stream, nullptr, m_policy);
-                                    replacement_stream << ";";
-                                    replacement_stream.flush();
                                 } else {
                                     llvm::outs() << "does not retain init\n";
                                 }
+                                
+                                replacement_stream << ";";
+                                replacement_stream.flush();
         
                                 m_rewriter.ReplaceText(decl_stmt->getSourceRange(), replacement);
                                 m_did_elim = true;
