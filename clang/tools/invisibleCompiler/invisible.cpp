@@ -1755,7 +1755,7 @@ bool constantFoldVisitor::did_fold() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
-bool constantFoldVisitor::is_parent_typeof(clang::Expr* expr) {
+bool constantFoldVisitor::skip_if_bad_parent(clang::Expr* expr) {
     if (!expr) return false;
 
     auto parents = m_ctx.getParents(*expr);
@@ -1764,7 +1764,8 @@ bool constantFoldVisitor::is_parent_typeof(clang::Expr* expr) {
     const auto& parent = parents[0];
     return parent.get<clang::TypeOfExprTypeLoc>() != nullptr || 
            parent.get<clang::TypeOfExprType>()    != nullptr ||
-           parent.get<clang::TypeOfType>()        != nullptr;
+           parent.get<clang::TypeOfType>()        != nullptr ||
+           parent.get<clang::MemberExpr>()        != nullptr;
 }
 
 bool constantFoldVisitor::is_constant_literal(clang::Expr* inner) {
@@ -1859,7 +1860,22 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // Don't fold expressions that have typeof as their immediate parent. 
     // This is because it can convert a valid expression __typeof__(0) into
     // something invalid, eg. __typeof__0 ie. stripping the parens. 
-    if (is_parent_typeof(expr)) {
+    // Don't fold expressions that have MemberExpr as their immediate parent. 
+    // This is because it can convert an expression that should result in an 
+    // lvalue into an initializer list. for instance consider : 
+    // struct a ...
+    // struct b ... {uses struct a}
+    // const struct b store[2] = {{{.....}}}
+    // ... function foo begins
+    // Type result = store[1].<b_member>.<a_member>
+    // ...
+    // This can be converted to : 
+    // Type result = {...}.<a_member>
+    // without this check. This is because the lvalue to rvalue cast is 
+    // after the access to the a member. Thus before it, it does not have
+    // access to the information as to whether or not its an lvalue or not
+    // and if it can replace it, it does. 
+    if (skip_if_bad_parent(expr)) {
         return true;
     }
 
