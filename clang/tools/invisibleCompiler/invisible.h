@@ -413,6 +413,7 @@ private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     bool did_remove;
+    std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>> m_removable_locs;
     bool is_parent_stmtExpr(clang::CompoundStmt* stmt);
     bool is_parent_valid_to_remove_body(clang::CompoundStmt* stmt);
 
@@ -420,6 +421,7 @@ public:
     deadCodeElimCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitCompoundStmt(clang::CompoundStmt* stmt);
     bool did_elim();
+    void merge_and_clean_removable_locs();
 };
 
 // ─── deadCodeElimCfgAnalysisVisitor ───────────────────────────────────────────

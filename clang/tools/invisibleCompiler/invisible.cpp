@@ -2468,8 +2468,7 @@ bool deadCodeElimCleanupVisitor::VisitCompoundStmt(clang::CompoundStmt* stmt) {
     if(stmt->body_empty()) {
         if (!is_parent_valid_to_remove_body(stmt)) return true;
 
-        m_rewriter.RemoveText(stmt->getSourceRange());
-        did_remove = true;
+        m_removable_locs.push_back({stmt->getSourceRange().getBegin(), stmt->getSourceRange().getEnd()});
     }
 
     for(int i = 0; i < stmt->size(); i++) {
@@ -2477,21 +2476,54 @@ bool deadCodeElimCleanupVisitor::VisitCompoundStmt(clang::CompoundStmt* stmt) {
         clang::Stmt* child = (stmt->body_begin())[i];
 
         if (clang::NullStmt* null_stmt = llvm::dyn_cast<clang::NullStmt>(child)) {
-            m_rewriter.RemoveText(null_stmt->getSourceRange());
-            did_remove = true;
-            continue;
-        }
-
-        if (clang::Expr* expr_stmt = llvm::dyn_cast<clang::Expr>(child)) {
+            m_removable_locs.push_back({null_stmt->getSourceRange().getBegin(), null_stmt->getSourceRange().getEnd()});
+        } else if (clang::Expr* expr_stmt = llvm::dyn_cast<clang::Expr>(child)) {
             if(!expr_stmt->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true)) {
-                m_rewriter.RemoveText(expr_stmt->getSourceRange());
-                did_remove = true;
-                continue;
+                m_removable_locs.push_back({expr_stmt->getSourceRange().getBegin(), expr_stmt->getSourceRange().getEnd()});
             }
         }
     }
 
     return true;
+}
+
+void deadCodeElimCleanupVisitor::merge_and_clean_removable_locs() {
+    if(m_removable_locs.empty()) return;
+    did_remove = true;
+
+    std::sort(m_removable_locs.begin(), m_removable_locs.end(), [](std::pair<clang::SourceLocation, clang::SourceLocation> a, std::pair<clang::SourceLocation, clang::SourceLocation> b) {
+        return a.first.getRawEncoding() < b.first.getRawEncoding();
+    });
+
+    std::vector<std::pair<clang::SourceLocation, clang::SourceLocation>> merged_removable_locs;
+
+    clang::SourceLocation rewrite_min_removable_loc = m_removable_locs[0].first;
+    unsigned min_removable_loc = m_removable_locs[0].first.getRawEncoding();
+
+    clang::SourceLocation rewrite_max_removable_loc = m_removable_locs[0].second;
+    unsigned max_removable_loc = m_removable_locs[0].second.getRawEncoding();
+
+    for(int i = 1; i < m_removable_locs.size(); i++) {
+        unsigned start = m_removable_locs[i].first.getRawEncoding();
+        unsigned end = m_removable_locs[i].second.getRawEncoding();
+
+        // overlap if the start lies in between the max and min removable_loc
+        if((min_removable_loc <= start) and (start <= max_removable_loc)) {
+            max_removable_loc = std::max(end, max_removable_loc);
+            if (end == max_removable_loc)
+                rewrite_max_removable_loc = m_removable_locs[i].second;
+        } else {
+            merged_removable_locs.push_back({rewrite_min_removable_loc, rewrite_max_removable_loc});
+            min_removable_loc = start;
+            max_removable_loc = end;
+            rewrite_min_removable_loc = m_removable_locs[i].first;
+            rewrite_max_removable_loc = m_removable_locs[i].second;
+        }
+    }
+    merged_removable_locs.push_back({rewrite_min_removable_loc, rewrite_max_removable_loc});
+
+    for(auto& removable_loc : merged_removable_locs)
+        m_rewriter.RemoveText({removable_loc.first, removable_loc.second});
 }
 
 // ─── transferStmtVisitor ──────────────────────────────────────────────
@@ -4198,6 +4230,7 @@ std::string deadCodeElim(const std::string& source, const std::string& filename,
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
                 deadCodeElimCleanupVisitor visitor(ctx, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+                visitor.merge_and_clean_removable_locs();
                 did_cleanup = visitor.did_elim();
             }, rewriter);
             if (!isCompilable(tmp_result, filename, args)) {
