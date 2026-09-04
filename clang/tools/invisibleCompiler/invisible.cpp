@@ -2317,6 +2317,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
             }
 
             if (scope_state.size()) {
+                block_retain_decl[block_status.first] = 0;
                 // scope state is > 0.
                 // Possibilities are : 
                 // a. Begin Decl (a)
