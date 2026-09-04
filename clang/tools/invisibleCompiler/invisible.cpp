@@ -3201,24 +3201,29 @@ bool transferLivenessStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* bin
         if (is_primitive_type(lhs->getType())) {
             if (clang::VarDecl* identifier = extract_var_decl(lhs)) {
                 if (m_do_updates) {
-                    if(!m_live_variables.is_live(identifier)) {
-                        if (!m_source_loc_updated[binary_op->getSourceRange().getBegin().getRawEncoding()]) {
-                            clang::Expr* rhs = binary_op->getRHS();
-    
-                            std::string replacement{};
+                    if (binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) {
+                        if(!m_live_variables.is_live(identifier)) {
+                            if (!m_source_loc_updated[binary_op->getSourceRange().getBegin().getRawEncoding()]) {
+                                clang::Expr* rhs = binary_op->getRHS();
+        
+                                std::string replacement{};
 
-                            // its possible that the rhs of a binary assignment operator
-                            // is used by its parent expression. Hence we should be conservative
-                            // about removing it. 
-                            if (rhs) {
-                                llvm::raw_string_ostream replacement_stream(replacement);
-                                rhs->printPretty(replacement_stream, nullptr, m_policy);
-                                replacement_stream.flush();
+                                // its possible that the rhs of a binary assignment operator
+                                // is used by its parent expression. Hence we should be conservative
+                                // about removing it. 
+                                if (rhs) {
+                                    llvm::raw_string_ostream replacement_stream(replacement);
+                                    if (llvm::dyn_cast<clang::ImplicitCastExpr>(rhs)) {
+                                        replacement_stream << "(" << rhs->getType().getAsString(m_policy) << ")";
+                                    }
+                                    rhs->printPretty(replacement_stream, nullptr, m_policy);
+                                    replacement_stream.flush();
+                                }
+
+                                m_rewriter.ReplaceText(binary_op->getSourceRange(), replacement);
+                                m_did_elim = true;
+                                m_source_loc_updated[binary_op->getSourceRange().getBegin().getRawEncoding()] = true;
                             }
-
-                            m_rewriter.ReplaceText(binary_op->getSourceRange(), replacement);
-                            m_did_elim = true;
-                            m_source_loc_updated[binary_op->getSourceRange().getBegin().getRawEncoding()] = true;
                         }
                     }
                 }
