@@ -2556,7 +2556,10 @@ void transferStmtVisitor::possibly_add_viable_copy(clang::VarDecl* var_decl, cla
         // guard against adding a copy that references the 
         // identifier of the base variable itself. 
         // ie. x = x
-        if (var_decl != expr_identifier) {
+        // Verify that the identifier we are copying has a 
+        // valid type. It should already be a type that we handle
+        // but can still have qualifiers that we do not support. 
+        if (var_decl != expr_identifier && is_primitive_type(expr_identifier->getType())) {
             reaching_copies_t::copy_target_t target;
             target.m_identifier = expr_identifier;
             target.m_has_storage = true;
@@ -2756,6 +2759,9 @@ bool transferStmtVisitor::VisitUnaryOperator(clang::UnaryOperator* unary_op) {
             if(is_primitive_type(identifier->getType())) {
                 m_copies.kill_copies_that_use_identifier(identifier);
             }
+        } else if (is_dereference_operation(inner_expr)) {
+            m_copies.kill_copies_with_global_storage();
+            m_copies.kill_copies_that_can_alias();
         }
     }
 
