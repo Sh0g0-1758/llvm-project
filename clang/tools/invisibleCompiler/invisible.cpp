@@ -2858,15 +2858,16 @@ public:
 
         const auto& parent = parents[0];
         if (clang::ForStmt* for_stmt = const_cast<clang::ForStmt*>(parent.get<clang::ForStmt>())) {
-            clang::Stmt* init = for_stmt->getInit();
-            if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(init)) {
-                for (auto decl : decl_stmt->decls()) {
-                    if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
-                        if (is_first_decl_stmt) {
-                            anchor = var_decl;
-                            is_first_decl_stmt = false;
+            if(for_stmt->getInit()) {
+                if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(for_stmt->getInit())) {
+                    for (auto decl : decl_stmt->decls()) {
+                        if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                            if (is_first_decl_stmt) {
+                                anchor = var_decl;
+                                is_first_decl_stmt = false;
+                            }
+                            m_scope_anchors[anchor].push_back(var_decl);
                         }
-                        m_scope_anchors[anchor].push_back(var_decl);
                     }
                 }
             }
