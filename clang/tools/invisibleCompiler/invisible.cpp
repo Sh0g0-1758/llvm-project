@@ -2276,6 +2276,24 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
              * in this block escapes the block. That is possible if we don't see a conforming
              * scopeEnd for the variable. 
              * 
+             * eg.
+             * 
+             * ```
+             * int foo() {
+             *    goto label;
+             *    int a;
+             *    if (a > 56) {
+             *  label:
+             *      a = 90;
+             *      return a;
+             *    }
+             *  }
+             * ```
+             * The basic block with `int a` declaration will not have a CFGSCopeEnd Statement 
+             * but it is used in a reachable block. Hence when we are cleaning up the unreachable
+             * block that contains a, we should preserve its declaration.
+             * 
+             * 
              * Now multiples Decls can exist, so we maintain a stack and : 
              * 
              * 1. Push a Decl if only top is not a Decl
