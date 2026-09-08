@@ -2830,11 +2830,40 @@ bool transferStmtVisitor::TraverseBinaryOperator(clang::BinaryOperator* bin_op) 
 class varsInScopeCollector : public clang::RecursiveASTVisitor<varsInScopeCollector> {
 private:
     std::unordered_map<clang::VarDecl*, std::vector<clang::VarDecl*>> m_scope_anchors;
+    clang::ASTContext& m_ctx;
 public:
+    varsInScopeCollector(clang::ASTContext& context) : m_ctx(context) {}
+
+    void getDeclFromParent(clang::CompoundStmt* stmt, bool& is_first_decl_stmt, clang::VarDecl*& anchor) {
+        auto parents = m_ctx.getParents(*stmt);
+        if (parents.empty()) return;
+
+        const auto& parent = parents[0];
+        if (clang::ForStmt* for_stmt = const_cast<clang::ForStmt*>(parent.get<clang::ForStmt>())) {
+            clang::Stmt* init = for_stmt->getInit();
+            if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(init)) {
+                for (auto decl : decl_stmt->decls()) {
+                    if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+                        if (is_first_decl_stmt) {
+                            anchor = var_decl;
+                            is_first_decl_stmt = false;
+                        }
+                        m_scope_anchors[anchor].push_back(var_decl);
+                    }
+                }
+            }
+        }
+    }    
+
     bool VisitCompoundStmt(clang::CompoundStmt* compound_stmt) {
         bool is_first_decl_stmt = true;
         clang::VarDecl* anchor;
+        getDeclFromParent(compound_stmt, is_first_decl_stmt, anchor);
+
         for (clang::Stmt* child : compound_stmt->body()) {
+            if(clang::LabelStmt* label_stmt = llvm::dyn_cast<clang::LabelStmt>(child))
+                child = label_stmt->getSubStmt();
+
             if (auto decl_stmt = llvm::dyn_cast<clang::DeclStmt>(child)) {
                 for (auto decl : decl_stmt->decls()) {
                     if (auto var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
@@ -2953,7 +2982,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     work_queue.push_back(&(mapped_cfg->getEntry()));
     std::map<clang::CFGBlock*, reaching_copies_t> block_copies_map;
     std::unordered_map<unsigned, bool> source_loc_updated;
-    varsInScopeCollector visitor;
+    varsInScopeCollector visitor(m_ctx);
     visitor.TraverseStmt(func->getBody());
     auto scope_anchors = visitor.get_scope_anchors();
 
