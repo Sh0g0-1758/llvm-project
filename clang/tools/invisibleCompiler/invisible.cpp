@@ -8,6 +8,7 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "llvm/Support/JSON.h"
+#include "clang/AST/TemplateBase.h"
 
 #include <string>
 #include <queue>
@@ -62,9 +63,36 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_inplace_policy.TerseOutput = true;
 }
 
-void DeclBeforeDefVisitor::fixDoubleAngleBrackets(std::string& str) {
-    str.erase(str.find('<', str.find('<') + 1), 1);
-    str.erase(str.rfind('>', str.find('{')), 1);
+void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
+    const clang::TemplateArgumentList* args = func->getTemplateSpecializationArgs();
+    if (!args) return;
+
+    std::string correct;
+    {
+        llvm::raw_string_ostream correct_out(correct);
+        clang::printTemplateArgumentList(correct_out, args->asArray(), m_deferred_policy);
+        correct_out.flush();
+    }
+
+    const std::string name = func->getNameAsString();
+    const size_t name_pos = str.find(name + "<");
+    if (name_pos == std::string::npos) return;
+
+    const size_t open = name_pos + name.size();
+
+    size_t depth = 0;
+    size_t close = std::string::npos;
+    for (size_t i = open; i < str.size(); ++i) {
+        if (str[i] == '<') {
+            ++depth;
+        } else if (str[i] == '>' && --depth == 0) {
+            close = i;
+            break;
+        }
+    }
+    if (close == std::string::npos) return;
+
+    str.replace(open, close + 1 - open, correct);
 }
 
 unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::FunctionDecl* function_decl) {
@@ -142,7 +170,15 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->isDependentContext()) {
         std::string prefix{};
         if (unsigned extra = countEnclosingTemplateLevels(func)) {
-            for (unsigned i = 0; i < extra; ++i) prefix += "template<> ";
+            for (unsigned i = 0; i < extra; ++i) {
+                prefix += "template<> ";
+            }
+        }
+        if (func->isTemplateInstantiation()) {
+            auto primary_template = func->getPrimaryTemplate();
+            if (primary_template->getTemplateParameters()->hasParameterPack()) {
+                fixParameterPack(deferred_decl, func);
+            }
         }
         m_deferred_definitions.push_back(prefix + deferred_decl + def);
     }

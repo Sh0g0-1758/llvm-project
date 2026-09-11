@@ -61,7 +61,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     std::vector<std::string> m_deferred_definitions;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
-    void fixDoubleAngleBrackets(std::string& str);
+    void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
 };
 
