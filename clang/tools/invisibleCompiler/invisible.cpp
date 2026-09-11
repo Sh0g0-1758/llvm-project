@@ -43,25 +43,71 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
+bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
+
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
-    if (m_ctx.getLangOpts().CPlusPlus)
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
+    }
     m_policy.IncludeTagDefinition = true;
     m_policy.SuppressTagKeyword = false;
+
+    m_deferred_policy = m_policy;
+    if (m_ctx.getLangOpts().CPlusPlus) {
+        m_deferred_policy.FullyQualifiedName = true;
+    }
+
+    m_inplace_policy = m_policy;
+    m_inplace_policy.TerseOutput = true;
 }
 
+void DeclBeforeDefVisitor::fixDoubleAngleBrackets(std::string& str) {
+    str.erase(str.find('<', str.find('<') + 1), 1);
+    str.erase(str.rfind('>', str.find('{')), 1);
+}
+
+unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::FunctionDecl* function_decl) {
+    unsigned levels = 0;
+    for (const clang::DeclContext* decl_context = function_decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
+        if (const auto* record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(decl_context)) {
+            if (llvm::isa<clang::ClassTemplateSpecializationDecl>(record_decl)) {
+                ++levels;
+            }
+        }
+    }
+    return levels;
+}
+
+/**
+ * This pass also takes care of specializing function templates. 
+ * We don't specialize class templates because that is just a type 
+ * at the end of the day. The way we do that is by enabling the visitor
+ * to traverse the template instantiations as well. Without this, the visitor
+ * would have only traversed the core structure of the templated function
+ * and not its specializations. Cases where a function might be partially 
+ * specialized won't have a body (check the ast) and we have an early check
+ * for that. So we have two cases to deal with, generic template body and
+ * their specialized versions. The former is reduced to a declaration
+ * and the latter's definition is stored and emitted at the end of the TU.
+ */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
+    llvm::outs() << "Normal Function Decl Before Def : \n";
+    func->dump();
+
     std::string def;
-    llvm::raw_string_ostream def_out(def);
-    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
-    def_out.flush();
+    if(!func->isDependentContext()) {
+        llvm::raw_string_ostream def_out(def);
+        func->getBody()->printPretty(def_out, &m_custom_printer, m_deferred_policy);
+        def_out.flush();
+    }
 
     std::string decl;
+    std::string deferred_decl;
     llvm::raw_string_ostream decl_out(decl);
+    llvm::raw_string_ostream deferred_decl_out(deferred_decl);
 
     if (!func->hasWrittenPrototype() && func->getNumParams() > 0) {
         std::string proto = func->getNameAsString();
@@ -71,22 +117,38 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             clang::ParmVarDecl* param_decl = func->getParamDecl(i);
             std::string param;
             llvm::raw_string_ostream param_out(param);
-            param_decl->getType().print(param_out, m_policy, param_decl->getNameAsString());
+            param_decl->getType().print(param_out, m_inplace_policy, param_decl->getNameAsString());
             param_out.flush();
             proto += param;
         }
         proto += ")";
 
-        func->getReturnType().print(decl_out, m_policy, proto);
-    } else {
-        clang::PrintingPolicy declPolicy = m_policy;
-        declPolicy.TerseOutput = true;
-        func->print(decl_out, declPolicy);
-    }
-    decl_out.flush();
+        func->getReturnType().print(decl_out, m_inplace_policy, proto);
+        decl_out.flush();
 
-    m_deferred_definitions.push_back(decl + def);
-    m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+        func->getReturnType().print(deferred_decl_out, m_deferred_policy, proto);
+        deferred_decl_out.flush();
+    } else {
+        func->print(decl_out, m_inplace_policy);
+        decl_out.flush();
+
+        llvm::raw_string_ostream deferred_decl_out(deferred_decl);
+        m_deferred_policy.TerseOutput = true;
+        func->print(deferred_decl_out, m_deferred_policy);
+        m_deferred_policy.TerseOutput = false;
+        deferred_decl_out.flush();
+    }
+
+    if (!func->isDependentContext()) {
+        std::string prefix{};
+        if (unsigned extra = countEnclosingTemplateLevels(func)) {
+            for (unsigned i = 0; i < extra; ++i) prefix += "template<> ";
+        }
+        m_deferred_definitions.push_back(prefix + deferred_decl + def);
+    }
+    if (!func->isTemplateInstantiation()) {
+        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+    }
     return true;
 }
 
@@ -813,136 +875,6 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
         m_rewriter.ReplaceText(decl_stmt->getSourceRange(), replacement);
     }
     return true;
-}
-
-// ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
-
-TemplateSpecializerVisitor::TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema& sema)
-    : m_ctx(ctx), m_rewriter(rewriter), m_sema(sema) {
-    
-}
-
-void TemplateSpecializerVisitor::fixDoubleAngleBrackets(std::string& str) {
-    str.erase(str.find('<', str.find('<') + 1), 1);
-    str.erase(str.rfind('>', str.find('{')), 1);
-}
-
-clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::FunctionTemplateDecl *FTD,
-                                        clang::SourceManager &SM) {
-  return FTD->getSourceRange().getEnd().getLocWithOffset(1);
-}
-
-std::string TemplateSpecializerVisitor::emitFunctionSpecialization(clang::FunctionDecl *Spec, bool isVariadicTemplate) {
-  clang::PrintingPolicy PP(m_ctx.getLangOpts());
-  // print the function definition
-  PP.TerseOutput        = false;
-  // print the fully qualified typenames used
-  // inside the function definition
-  PP.SuppressScope      = false;
-
-  std::string Out;
-  llvm::raw_string_ostream OS(Out);
-  OS << "\n";
-  Spec->print(OS, PP, 2, true);
-  OS.flush();
-  if (isVariadicTemplate) fixDoubleAngleBrackets(Out);
-  return Out;
-}
-
-bool TemplateSpecializerVisitor::VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD) {
-  if (!FTD->getTemplatedDecl()->isThisDeclarationADefinition())
-    return true;
-  std::string Insertions;
-  for (clang::FunctionDecl *Spec : FTD->specializations()) {
-    clang::TemplateSpecializationKind TSK = Spec->getTemplateSpecializationKind();
-
-    // TSK_Undeclared                       - declaration for specialization but no definition
-    // TSK_ImplicitInstantiation            - specialization through usage
-    // TSK_ExplicitSpecialization           - specialization done explicitly
-    // TSK_ExplicitInstantiationDeclaration - specialization declared explicitly but definition in another TU
-    // TSK_ExplicitInstantiationDefinition  - specialization declared explicitly but definition in this TU
-    if (TSK != clang::TSK_ImplicitInstantiation &&
-        TSK != clang::TSK_ExplicitInstantiationDefinition)
-      continue;
-
-    if (!Spec->hasBody())
-      continue;
-
-    Insertions += emitFunctionSpecialization(Spec, FTD->getTemplateParameters()->hasParameterPack());
-  }
-
-  if (Insertions.empty())
-    return true;
-
-  clang::SourceLocation InsertLoc = getInsertionPoint(FTD, m_ctx.getSourceManager());
-  if (InsertLoc.isInvalid()) {
-    llvm::errs() << "Could not determine insertion point for "
-                 << FTD->getQualifiedNameAsString() << "\n";
-    return true;
-  }
-
-  m_rewriter.InsertTextAfter(InsertLoc, Insertions);
-  return true;
-}
-
-clang::SourceLocation TemplateSpecializerVisitor::getInsertionPoint(clang::ClassTemplateDecl *CTD, clang::SourceManager &SM) {
-  return CTD->getSourceRange().getEnd().getLocWithOffset(2);
-}
-
-std::string TemplateSpecializerVisitor::emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec, bool isVariadicTemplate) {
-  clang::PrintingPolicy PP(m_ctx.getLangOpts());
-  PP.TerseOutput        = false;
-  PP.SuppressScope      = false;
-
-  std::string Out;
-  llvm::raw_string_ostream OS(Out);
-  OS << "\n";
-  Spec->print(OS, PP, 2, true);
-  OS << ";";
-  OS.flush();
-  if(isVariadicTemplate) fixDoubleAngleBrackets(Out);
-  return Out;
-}
-
-void TemplateSpecializerVisitor::instantiate_class_vars(clang::ClassTemplateSpecializationDecl *Spec) {
-    for (auto* D : Spec->decls()) {
-        if (auto* VD = llvm::dyn_cast<clang::VarDecl>(D)) {
-            m_sema.InstantiateVariableDefinition(VD->getLocation(), VD);
-        }
-    }
-}
-
-bool TemplateSpecializerVisitor::VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD) {
-  if (!CTD->getTemplatedDecl()->isThisDeclarationADefinition())
-    return true;
-  std::string Insertions;
-  for (clang::ClassTemplateSpecializationDecl *Spec : CTD->specializations()) {
-    clang::TemplateSpecializationKind TSK = Spec->getSpecializationKind();
-
-    if (TSK != clang::TSK_ImplicitInstantiation &&
-        TSK != clang::TSK_ExplicitInstantiationDefinition)
-      continue;
-
-    if (!Spec->isCompleteDefinition())
-      continue;
-
-    instantiate_class_vars(Spec);
-    
-    Insertions += emitClassSpecialization(Spec, CTD->getTemplateParameters()->hasParameterPack());
-  }
-
-  if (Insertions.empty())
-    return true;
-
-  clang::SourceLocation InsertLoc = getInsertionPoint(CTD, m_ctx.getSourceManager());
-  if (InsertLoc.isInvalid()) {
-    llvm::errs() << "Could not determine insertion point for "
-                 << CTD->getQualifiedNameAsString() << "\n";
-    return true;
-  }
-
-  m_rewriter.InsertTextAfter(InsertLoc, Insertions);
-  return true;
 }
 
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
@@ -1856,6 +1788,12 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
         if (auto* fn = llvm::dyn_cast_or_null<clang::FunctionDecl>(call->getCalleeDecl()))
             if (fn->getBuiltinID() != 0)
                 return true;
+    
+    // Don't fold expressions whose job is to convert an rvalue to an xvalue.
+    // for instance, an rvalue arg to a function that takes an rvalue reference.
+    if (llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expr)) {
+        return true;
+    }
 
     // Don't fold expressions that have typeof as their immediate parent. 
     // This is because it can convert a valid expression __typeof__(0) into
@@ -3879,24 +3817,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         if (formatted)
             result = std::move(*formatted);
     }
-
-    // Specialize Function templates
-    // run conditionally if the compiler flags indicates we
-    // have to treat the source code as C++
-    // {
-    //     clang::Rewriter rewriter;
-    //     std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
-    //         rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-    //         TemplateSpecializerVisitor visitor(ctx, rewriter, sema);
-    //         visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-    //     }, rewriter);
-    //     if(isCompilable(tmp_result, filename, args)) {
-    //         result = std::move(tmp_result);
-    //     } else {
-    //         llvm::outs() << "Specialize Function Templates Pass Failed\n";
-    //         return tmp_result;
-    //     }
-    // }
 
     // Suppress Clang's implicit builtin declarations so that hoisted
     // temporaries use the type names from the user's headers (e.g.

@@ -50,14 +50,19 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     bool VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl);
     bool VisitTypedefDecl(clang::TypedefDecl* typdef_decl); 
     std::string getDeferredDefinitions();
+    bool shouldVisitTemplateInstantiations() const;
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    clang::PrintingPolicy m_deferred_policy;
+    clang::PrintingPolicy m_inplace_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
+    void fixDoubleAngleBrackets(std::string& str);
+    unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
 };
 
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
@@ -206,27 +211,6 @@ class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
-};
-
-// ─── TemplateSpecializerVisitor ──────────────────────────────────────────────
-
-/// Specializes Templates so that transformations can be matched to actual source code
-class TemplateSpecializerVisitor : public clang::RecursiveASTVisitor<TemplateSpecializerVisitor> {
-  public:
-    TemplateSpecializerVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::Sema&);
-    bool VisitFunctionTemplateDecl(clang::FunctionTemplateDecl *FTD);
-    bool VisitClassTemplateDecl(clang::ClassTemplateDecl *CTD);
-
-  private:
-    clang::ASTContext& m_ctx;
-    clang::Rewriter& m_rewriter;
-    clang::Sema& m_sema;
-    std::string emitFunctionSpecialization(clang::FunctionDecl *Spec, bool);
-    clang::SourceLocation getInsertionPoint(clang::FunctionTemplateDecl *FTD, clang::SourceManager &SM);
-    clang::SourceLocation getInsertionPoint(clang::ClassTemplateDecl *CTD, clang::SourceManager &SM);
-    std::string emitClassSpecialization(clang::ClassTemplateSpecializationDecl *Spec, bool);
-    void fixDoubleAngleBrackets(std::string&);
-    void instantiate_class_vars(clang::ClassTemplateSpecializationDecl *Spec);
 };
 
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
