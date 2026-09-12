@@ -65,6 +65,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
+    bool isInsideFunction(const clang::Decl* decl);
 };
 
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────

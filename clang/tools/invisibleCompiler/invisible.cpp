@@ -234,6 +234,7 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
  */
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
+    if (isInsideFunction(glob_decl)) return true;
     if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
@@ -252,8 +253,17 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     return true;
 }
 
+bool DeclBeforeDefVisitor::isInsideFunction(const clang::Decl* decl) {
+    for (const clang::DeclContext* decl_context = decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
+        if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;
+        if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
+    }
+    return false;
+}
+
 bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
     if (!field_decl->getType()->isDependentType()) return true;
+    if (isInsideFunction(field_decl)) return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
