@@ -375,6 +375,29 @@ bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_
     return true;
 }
 
+// ─── AccessSpecifierVisitor ──────────────────────────────────────────────
+
+AccessSpecifierVisitor::AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) { }
+
+bool AccessSpecifierVisitor::VisitAccessSpecDecl(clang::AccessSpecDecl* access_decl) {
+    if (access_decl->getAccess() == clang::AS_public) return true;
+    m_rewriter.ReplaceText(access_decl->getSourceRange(), "public:");
+    return true;
+}
+
+bool AccessSpecifierVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_decl) {
+    if (!record_decl->isThisDeclarationADefinition()) return true;
+    if (record_decl->isLambda()) return true;
+    if (llvm::isa<clang::ClassTemplateSpecializationDecl>(record_decl)) return true;
+
+    clang::SourceLocation brace = record_decl->getBraceRange().getBegin();
+    if (brace.isInvalid()) return true;
+
+    m_rewriter.InsertTextAfterToken(brace, "\npublic:");
+    return true;
+}
+
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────────────
 
 CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -3929,6 +3952,25 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     // libtooling but are otherwise benign as still compiles the TU. 
     // For eg. -Wincompatible-pointer-types
     args.emplace_back("-Wno-everything");
+
+    // marks every access specifier as public and unconditionally
+    // adds a public access specifier at the start of every record
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            if (ctx.getLangOpts().CPlusPlus) {
+                AccessSpecifierVisitor access_visitor(ctx, rewriter);
+                access_visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Access Specifier visitor failed\n";
+            return tmp_result;
+        }
+    }
 
     // Gather function definitions and move them after all function
     // declarations and Canonicalize all local / global variables defined 
