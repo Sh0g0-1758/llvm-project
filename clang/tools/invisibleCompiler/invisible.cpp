@@ -122,9 +122,6 @@ unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::Functio
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->isThisDeclarationADefinition()) return true;
 
-    llvm::outs() << "Normal Function Decl Before Def : \n";
-    func->dump();
-
     std::string def;
     if(!func->isDependentContext()) {
         llvm::raw_string_ostream def_out(def);
@@ -368,7 +365,7 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
     if (!field_decl->getType()->isDependentType()) return true;
-    
+
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
     field_decl->print(decl_out, m_policy);
