@@ -256,6 +256,8 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
 }
 
 bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
+    if (!field_decl->getType()->isDependentType()) return true;
+
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
     field_decl->print(decl_out, m_policy);
@@ -365,6 +367,8 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
+    if (!field_decl->getType()->isDependentType()) return true;
+    
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
     field_decl->print(decl_out, m_policy);
