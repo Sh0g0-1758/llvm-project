@@ -237,7 +237,7 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
  */
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
-    if (glob_decl->isStaticDataMember()) return true;
+    if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
     std::string decl;
@@ -246,6 +246,22 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     decl_out.flush();
 
     clang::SourceRange decl_range = glob_decl->getSourceRange();
+
+    if (m_deferred_globals.find(decl_range.getBegin()) != m_deferred_globals.end())
+        m_deferred_globals[decl_range.getBegin()].first += (decl + ";\n");
+    else
+        m_deferred_globals[decl_range.getBegin()].first = (decl + ";\n");
+    m_deferred_globals[decl_range.getBegin()].second = decl_range.getEnd();
+    return true;
+}
+
+bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    field_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    clang::SourceRange decl_range = field_decl->getSourceRange();
 
     if (m_deferred_globals.find(decl_range.getBegin()) != m_deferred_globals.end())
         m_deferred_globals[decl_range.getBegin()].first += (decl + ";\n");
@@ -336,7 +352,7 @@ bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* 
 
 bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
-    if (glob_decl->isStaticDataMember()) return true;
+    if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
     std::string decl;
@@ -345,6 +361,16 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
     decl_out.flush();
 
     m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl);
+    return true;
+}
+
+bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    field_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(field_decl->getSourceRange(), decl);
     return true;
 }
 

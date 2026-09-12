@@ -50,6 +50,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     bool VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl);
     bool VisitTypedefDecl(clang::TypedefDecl* typdef_decl); 
     bool VisitTypeAliasDecl(clang::TypeAliasDecl* using_decl);
+    bool VisitFieldDecl(clang::FieldDecl* field_decl);
     std::string getDeferredDefinitions();
     bool shouldVisitTemplateInstantiations() const;
   private:
@@ -74,6 +75,7 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitVarDecl(clang::VarDecl* decl);
+    bool VisitFieldDecl(clang::FieldDecl* field_decl);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
