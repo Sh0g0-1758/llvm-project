@@ -160,7 +160,6 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         func->print(decl_out, m_inplace_policy);
         decl_out.flush();
 
-        llvm::raw_string_ostream deferred_decl_out(deferred_decl);
         m_deferred_policy.TerseOutput = true;
         func->print(deferred_decl_out, m_deferred_policy);
         m_deferred_policy.TerseOutput = false;
@@ -169,6 +168,17 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     if (!func->isDependentContext()) {
         std::string prefix{};
+        /**
+         * By default, when printing a templatized function, libTooling
+         * only prints one empty template<> brace. However, the function
+         * can be nested in multiple levels of templated namespaces and
+         * classes. So we manually calculate that depth and emit the 
+         * corresponding number of template<> required. There is also additional
+         * logic to fix variadic templates. The problem here is that parameter
+         * packs are printed with enclosing braces <> which is syntatically wrong.
+         * We print the correct set of template parameters and paste it at the 
+         * correct place in the function deferred declaration. 
+         */
         if (unsigned extra = countEnclosingTemplateLevels(func)) {
             for (unsigned i = 0; i < extra; ++i) {
                 prefix += "template<> ";
@@ -218,6 +228,13 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     return all_defs;
 }
 
+/**
+ * templatized global variables are mostly left as they are. 
+ * We only re-emit the templatized body because it can use variables
+ * that have now been renamed. We do not emit any specializations.
+ * Guards for this, ie. to not rename templatized globals are put
+ * in canonicalize and normalize Visitors as well. 
+ */
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
     if (glob_decl->isStaticDataMember()) return true;
@@ -342,6 +359,8 @@ CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, c
 }
 
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
+    // classes can have static member variables which should not be renamed. 
+    if (decl->isStaticDataMember()) return true;
     if (decl->getDescribedVarTemplate()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
 
