@@ -49,6 +49,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     bool VisitEnumDecl(clang::EnumDecl* enum_decl);
     bool VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl);
     bool VisitTypedefDecl(clang::TypedefDecl* typdef_decl); 
+    bool VisitTypeAliasDecl(clang::TypeAliasDecl* using_decl);
     std::string getDeferredDefinitions();
     bool shouldVisitTemplateInstantiations() const;
   private:

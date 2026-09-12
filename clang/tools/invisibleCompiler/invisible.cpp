@@ -220,6 +220,8 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
+    if (glob_decl->isStaticDataMember()) return true;
+    if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
@@ -238,6 +240,8 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
 
 bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
     if (!enum_decl->getDeclContext()->isFileContext()) return true;
+    if (clang::isTemplateInstantiation(enum_decl->getTemplateSpecializationKind()))
+        return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
@@ -245,6 +249,18 @@ bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
     decl_out.flush();
 
     m_rewriter.ReplaceText(enum_decl->getSourceRange(), decl);
+    return true;
+}
+
+bool DeclBeforeDefVisitor::VisitTypeAliasDecl(clang::TypeAliasDecl* using_decl) {
+    if (!using_decl->getDeclContext()->isFileContext()) return true;
+
+    std::string decl;
+    llvm::raw_string_ostream decl_out(decl);
+    using_decl->print(decl_out, m_policy);
+    decl_out.flush();
+
+    m_rewriter.ReplaceText(using_decl->getSourceRange(), decl);
     return true;
 }
 
@@ -303,6 +319,8 @@ bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* 
 
 bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
+    if (glob_decl->isStaticDataMember()) return true;
+    if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
@@ -324,6 +342,9 @@ CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, c
 }
 
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
+    if (decl->getDescribedVarTemplate()) return true;
+    if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
+
     std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
     decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
     return true;
