@@ -190,7 +190,25 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                 fixParameterPack(deferred_decl, func);
             }
         }
-        m_deferred_definitions.push_back(prefix + deferred_decl + def);
+
+        if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
+            std::string ctor_init{};
+
+            std::string full;
+            llvm::raw_string_ostream full_out(full);
+            func->print(full_out, m_deferred_policy_def);
+            full_out.flush();
+
+            if (llvm::StringRef(full).starts_with(deferred_decl)) {
+                size_t brace = full.find('{', deferred_decl.size());
+                if (brace != std::string::npos) {
+                    ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
+                }
+            }
+            m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
+        } else {
+            m_deferred_definitions.push_back(prefix + deferred_decl + def);
+        }
     }
     if (!func->isTemplateInstantiation()) {
         m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
