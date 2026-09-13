@@ -1951,7 +1951,7 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     clang::QualType exprTy = expr->getType();
 
     // Guard against null/invalid types (e.g. uninstantiated templates)
-    if (exprTy.isNull() || exprTy->isDependentType() || exprTy->isUndeducedType())
+    if (exprTy.isNull() || exprTy->isDependentType() || exprTy->isUndeducedType() || exprTy->isVoidType())
         return true;
 
     // Don't fold enums into their underlying type. Note that we don't care if
@@ -4210,6 +4210,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         result = std::move(tmp_result);
     }
 
+    llvm::outs() << "started folding\n";
     // constant fold mathematical expressions into their simplified form
     bool did_fold = true;
     while (did_fold) {
@@ -4228,6 +4229,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         result = std::move(tmp_result);
     }
 
+    llvm::outs() << "started hoisting\n";
     // Hoist nested function calls (repeat until stable).
     bool did_cleanup = true;
     current_index = 0;
@@ -4244,7 +4246,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             llvm::outs() << "Function Hoisting Preprocessing failed\n";
             return tmp_result;
         }
-        llvm::outs() << result << "\n";
         result = std::move(tmp_result);
     }
 
