@@ -6,6 +6,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Analysis/CFG.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "clang/AST/ASTTypeTraits.h"
 
 #include <map>
 #include <unordered_map>
@@ -259,6 +260,8 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     bool m_is_uninstantiated_template;
     size_t& m_current_index;
     clang::PrintingPolicy m_policy;
+    bool isTransparentParent(const clang::Stmt* s);
+    clang::DynTypedNode getSemanticParent(const clang::Stmt* node);
 };
 
 // ─── FilterVisitor ─────────────────────────────────────────────────
@@ -333,6 +336,8 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     bool isTopLevelCall(const clang::CallExpr* call);
     bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
     bool shouldVisitImplicitCode() const;
+    bool isTransparentParent(const clang::Stmt* s);
+    clang::DynTypedNode getSemanticParent(const clang::Stmt* node);
 
     /// Whether this visitor successfully inlined a call site.
     bool matched() const;

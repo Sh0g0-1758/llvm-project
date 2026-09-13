@@ -1087,10 +1087,47 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
     llvm::raw_string_ostream out(clean_call);
 
     if (!call->getType()->isVoidType()) {
-        clang::QualType retTy = call->getType();
+        clang::QualType ret_ty = call->getType();
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
-        retTy.print(out, m_policy, ret_var);
+
+        clang::QualType decl_ty = ret_ty;
+        bool needs_cast = false;
+
+        /**
+         * functions can return an lvalue, an xvalue or a prvalue.
+         * For an lvalue, we need to convert the type to reflect 
+         * taking an lvalue reference. Same for an xvalue. For a prvalue
+         * we create a copy as taking it by an rvalue reference would lead
+         * to an infinite loop of hoisting. Now we need to forward this result
+         * to the place where its used. Hence for an xvalue and a prvalue, we wmit
+         * an extra cast which converts it to an rvalue. An lvalue is left
+         */
+        if (lang_opts.CPlusPlus) {
+            if (call->isLValue()) {
+                decl_ty = m_ctx.getLValueReferenceType(ret_ty);
+            } else if (call->isXValue()) {
+                decl_ty = m_ctx.getRValueReferenceType(ret_ty);
+                needs_cast = true;
+            }
+        }
+
+        decl_ty.print(out, m_policy, ret_var);
         out << " = ";
+
+        if (lang_opts.CPlusPlus) {
+            if (call->isPRValue()) {
+                decl_ty = m_ctx.getRValueReferenceType(ret_ty);
+                needs_cast = true;
+            }
+        }
+
+        if (needs_cast) {
+            std::string ty_str;
+            llvm::raw_string_ostream ty_os(ty_str);
+            decl_ty.print(ty_os, m_policy);
+            ty_os.flush();
+            ret_var = "static_cast<" + ty_str + ">(" + ret_var + ")";
+        }
     } else {
         ret_var = "(void)0";
     }
@@ -1128,6 +1165,36 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
     }
 }
 
+// These node types are only relevant for C++
+// CXXBindTemporaryExpr -> It marks the creation of a temporary with a non-trivial
+//                         destructor
+// MaterializeTemporaryExpr -> Emitted when a prvalue needs to be converted to an 
+//                             xvalue. Usually when its address is needed.
+// ExprWithCleanups -> Enclosing an expression. Indicates there is some temporary
+//                     created inside this expression that needs to be cleaned up
+//                     ie. its destructor needs to be called. 
+// ImplicitCastExpr -> A NoOp of adding a const to a function return type. This can
+//                     be needed in cases when say a class's copy constructor needs
+//                     to be called. 
+// ParenExpr        -> relevant for both C/C++. Ignore enclosing paranthesis
+bool FuncCallCleanupVisitor::isTransparentParent(const clang::Stmt* s) {
+    return llvm::isa<clang::ParenExpr,
+                     clang::ImplicitCastExpr,
+                     clang::ExprWithCleanups,
+                     clang::CXXBindTemporaryExpr,
+                     clang::MaterializeTemporaryExpr>(s);
+}
+
+clang::DynTypedNode FuncCallCleanupVisitor::getSemanticParent(const clang::Stmt* node) {
+    for (const clang::Stmt* child = node;;) {
+        auto parents = m_ctx.getParents(*child);
+        if (parents.empty()) return {};
+        const auto* parent = parents[0].get<clang::Stmt>();
+        if (!parent || !isTransparentParent(parent)) return parents[0];
+        child = parent;
+    }
+}
+
 bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
     // Guard: do not hoist calls that execute repeatedly —
     // i.e. calls in a loop condition or for-increment.
@@ -1161,12 +1228,9 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
         }
     }
 
-    auto parents = m_ctx.getParents(*call);
-    if (parents.empty()) {
+    auto parent_node = getSemanticParent(call);
+    if (parent_node.getNodeKind().isNone())
         return false;
-    }
-
-    const auto& parent_node = parents[0];
 
     // int x = foo();
     if (const auto* var_decl = parent_node.get<clang::VarDecl>()) {
@@ -1200,7 +1264,19 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
                     }
                 }
             }
-            // foo();
+        // a = foo();  where a is a class type
+        } else if (const auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(parent_stmt)) {
+            if (op_call->getOperator() == clang::OO_Equal) {
+                auto oc_parents = m_ctx.getParents(*op_call);
+                if (!oc_parents.empty()) {
+                    if (const auto* grandparent = oc_parents[0].get<clang::Stmt>()) {
+                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        // foo();
         } else if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
             // we still hoist function calls that have a valid return value. 
             // This is because the function call can occur as the last expr
@@ -1459,13 +1535,28 @@ bool InlineVisitor::callInLoop(const clang::CallExpr* call) {
     return false;
 }
 
-bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
-    auto parents = m_ctx.getParents(*call);
-    if (parents.empty()) {
-        return false;
-    }
+bool InlineVisitor::isTransparentParent(const clang::Stmt* s) {
+    return llvm::isa<clang::ParenExpr,
+                     clang::ImplicitCastExpr,
+                     clang::ExprWithCleanups,
+                     clang::CXXBindTemporaryExpr,
+                     clang::MaterializeTemporaryExpr>(s);
+}
 
-    const auto& parent_node = parents[0];
+clang::DynTypedNode InlineVisitor::getSemanticParent(const clang::Stmt* node) {
+    for (const clang::Stmt* child = node;;) {
+        auto parents = m_ctx.getParents(*child);
+        if (parents.empty()) return {};
+        const auto* parent = parents[0].get<clang::Stmt>();
+        if (!parent || !isTransparentParent(parent)) return parents[0];
+        child = parent;
+    }
+}
+
+bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
+    auto parent_node = getSemanticParent(call);
+    if (parent_node.getNodeKind().isNone())
+        return false;
 
     // int x = foo();
     if (const auto* var_decl = parent_node.get<clang::VarDecl>()) {
@@ -1499,7 +1590,19 @@ bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
                     }
                 }
             }
-            // foo();
+        // a = foo();  where a is a class type
+        } else if (const auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(parent_stmt)) {
+            if (op_call->getOperator() == clang::OO_Equal) {
+                auto oc_parents = m_ctx.getParents(*op_call);
+                if (!oc_parents.empty()) {
+                    if (const auto* grandparent = oc_parents[0].get<clang::Stmt>()) {
+                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        // foo();
         } else if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
             return true;
         }
