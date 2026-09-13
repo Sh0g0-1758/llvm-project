@@ -136,21 +136,6 @@ class ShortCircuitOperatorToIRVisitor : public clang::RecursiveASTVisitor<ShortC
     size_t m_last_update_loc;
 };
 
-// ─── BreakElseIfVisitor ──────────────────────────────────────
-
-/// Breaks `else if` statements into `else { if  }` statements if 
-/// the expr in `if(expr)` contains a function-call. 
-class BreakElseIfVisitor : public clang::RecursiveASTVisitor<BreakElseIfVisitor> {
-  public:
-    BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
-    bool VisitIfStmt(clang::IfStmt* if_stmt);
-    bool exprHasFuncCall(clang::Expr* expr);
-  private:
-    clang::ASTContext& m_ctx;
-    clang::Rewriter& m_rewriter;
-    clang::PrintingPolicy m_policy;
-};
-
 // ─── MarkSwitchCaseVisitor ──────────────────────────────────────
 
 /// Marks the beginning of every case statement with a semi-colon so

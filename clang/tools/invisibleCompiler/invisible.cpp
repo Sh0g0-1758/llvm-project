@@ -679,54 +679,6 @@ bool ShortCircuitOperatorToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
     return stmtIsFuncCall;
 }
 
-// ─── BreakElseIfVisitor ──────────────────────────────────────────────
-
-BreakElseIfVisitor::BreakElseIfVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    
-    if (m_ctx.getLangOpts().CPlusPlus)
-        m_policy.adjustForCPlusPlus();
-    m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
-}
-
-bool BreakElseIfVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
-    if (!if_stmt->hasElseStorage()) return true;
-    if (clang::IfStmt* inner_if_stmt = llvm::dyn_cast<clang::IfStmt>(if_stmt->getElse())) {
-        if (!exprHasFuncCall(inner_if_stmt->getCond())) return true;
-
-        m_rewriter.InsertTextBefore(inner_if_stmt->getSourceRange().getBegin(), "{\n");
-        m_rewriter.InsertTextBefore(inner_if_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
-    }
-    return true;
-}
-
-bool BreakElseIfVisitor::exprHasFuncCall(clang::Expr* expr) {
-    expr = expr->IgnoreParenImpCasts();
-    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
-    clang::Stmt* stmt = expr;
-    std::queue<clang::Stmt*> children;
-    for (const clang::Stmt* child : stmt->children()) {
-        if (child == nullptr) continue;
-        children.push(const_cast<clang::Stmt*>(child));
-    }
-    bool stmtIsFuncCall = false;
-    while(!children.empty()) {
-        clang::Stmt* child = children.front();
-        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
-            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
-                stmtIsFuncCall = true;
-        if(!stmtIsFuncCall) {
-            for (const clang::Stmt* grandChild : child->children()) {
-                if (grandChild == nullptr) continue;
-                children.push(const_cast<clang::Stmt*>(grandChild));
-            }
-        } else break;
-        children.pop();
-    }
-    return stmtIsFuncCall;
-}
-
 // ─── MarkSwitchCaseVisitor ──────────────────────────────────────────────
 
 MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -804,28 +756,48 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
 
 bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
     /**
+     * {if cond has a function call}
      * `while (cond) body`
      * is transformed into
      * while (1) {
      *   if (!(cond)) { break; }
      *   body [stripped of surrounding braces]
      * }
+     * 
+     * {if init has a function call}
+     * `while (T v = init) body`
+     * is transformed into
+     *   while (1) {
+     *     T v = init;
+     *     if (!(v)) { break; }
+     *     body [stripped of surrounding braces]
+     *   }
+     * 
      */
-    if (!exprHasFuncCall(while_stmt->getCond())) return true;
+    auto cond_var = while_stmt->getConditionVariable();
+    clang::Expr* trigger = cond_var ? cond_var->getInit() : while_stmt->getCond();
+    if (!trigger || !exprHasFuncCall(trigger)) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
     while_stmt->getCond()->printPretty(cond_out, nullptr, m_policy);
     cond_out.flush();
 
-    m_rewriter.ReplaceText(while_stmt->getCond()->getSourceRange(), "1");
+    std::string init{};
+    if (auto decl_stmt = while_stmt->getConditionVariableDeclStmt()) {
+        llvm::raw_string_ostream init_out(init);
+        decl_stmt->printPretty(init_out, nullptr, m_policy);
+        m_rewriter.ReplaceText(decl_stmt->getSourceRange(), "1");
+    } else {
+        m_rewriter.ReplaceText(while_stmt->getCond()->getSourceRange(), "1");
+    }
 
     std::string cond_wrapped_in_if;
     llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
     cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
     cond_wrapped_out.flush();
 
-    m_rewriter.InsertTextBefore(while_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
+    m_rewriter.InsertTextBefore(while_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), init + cond_wrapped_in_if);
 
     return true;
 }
@@ -4140,23 +4112,6 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
-    // Breaks `else if` statements into `else { if  }` statements if 
-    // the expr in `if(expr)` contains a function-call. 
-    {
-        clang::Rewriter rewriter;
-        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
-            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
-            BreakElseIfVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-        }, rewriter);
-        if(isCompilable(tmp_result, filename, args)) {
-            result = std::move(tmp_result);
-        } else {
-            llvm::outs() << "Else If Preprocessing failed\n";
-            return tmp_result;
-        }
-    }
-
     // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
     // This helps provide a valid space to hoist a comma separated declarator list
     // and also valid space for any loop rewrite. 
@@ -4289,6 +4244,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             llvm::outs() << "Function Hoisting Preprocessing failed\n";
             return tmp_result;
         }
+        llvm::outs() << result << "\n";
         result = std::move(tmp_result);
     }
 
