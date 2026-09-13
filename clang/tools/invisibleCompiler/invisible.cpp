@@ -199,7 +199,6 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     }
 
     if (!func->isDependentContext()) {
-        std::string prefix{};
         /**
          * By default, when printing a templatized function, libTooling
          * only prints one empty template<> brace. However, the function
@@ -218,9 +217,36 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
          * we will have to manually strip the declarations of these keywords as Libtooling does not
          * support any flag for this. 
          */
+        std::string prefix{};
         if (unsigned extra = countEnclosingTemplateLevels(func)) {
             for (unsigned i = 0; i < extra; ++i) {
                 prefix += "template<> ";
+            }
+        }
+
+        std::string ctor_init{};
+        if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
+            std::string full;
+            llvm::raw_string_ostream full_out(full);
+            func->print(full_out, m_deferred_policy_def);
+            full_out.flush();
+
+            if (llvm::StringRef(full).starts_with(deferred_decl)) {
+                size_t end = full.find_last_of('}');
+                size_t brace = std::string::npos;
+                if (end != std::string::npos && end >= deferred_decl.size()) {
+                    size_t depth = 0;
+                    for (size_t i = end + 1; i-- > deferred_decl.size(); ) {
+                        if (full[i] == '}') {
+                            ++depth;
+                        } else if (full[i] == '{') {
+                            if (--depth == 0) { brace = i; break; }
+                        }
+                    }
+                }
+                if (brace != std::string::npos) {
+                    ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
+                }
             }
         }
 
@@ -231,33 +257,11 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             }
         }
 
-        if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
-            std::string ctor_init{};
-
-            std::string full;
-            llvm::raw_string_ostream full_out(full);
-            func->print(full_out, m_deferred_policy_def);
-            full_out.flush();
-
-            if (llvm::StringRef(full).starts_with(deferred_decl)) {
-                size_t brace = full.find('{', deferred_decl.size());
-                if (brace != std::string::npos) {
-                    ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
-                }
-            }
-
-            if (m_ctx.getLangOpts().CPlusPlus) {
-                stripRecordDeclOnlySpecifiers(deferred_decl);
-            }
-
-            m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
-        } else {
-            if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
-                stripRecordDeclOnlySpecifiers(deferred_decl);
-            }
-
-            m_deferred_definitions.push_back(prefix + deferred_decl + def);
+        if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
+            stripRecordDeclOnlySpecifiers(deferred_decl);
         }
+
+        m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
     }
     if (!func->isTemplateInstantiation()) {
         m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
