@@ -411,12 +411,9 @@ bool AccessSpecifierVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_dec
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────────────
 
 CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), uniqueIndx(0) {
-    if (m_ctx.getLangOpts().CPlusPlus)
-        m_policy.adjustForCPlusPlus();
-    m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
-}
+    : m_ctx(ctx), m_rewriter(rewriter), uniqueIndx(0) { }
+
+bool CanonicalizeVarDeclVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     // classes can have static member variables which should not be renamed. 

@@ -95,10 +95,10 @@ class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<Canonicaliz
     CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitVarDecl(clang::VarDecl* decl);
     bool VisitParmVarDecl(clang::ParmVarDecl* decl);
+    bool shouldVisitTemplateInstantiations() const;
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    clang::PrintingPolicy m_policy;
     size_t uniqueIndx;
 };
 
