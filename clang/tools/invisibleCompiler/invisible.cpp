@@ -112,6 +112,38 @@ unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::Functio
     return levels;
 }
 
+// strip specifiers that are legal only inside the class definition
+void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
+    for (bool changed = true; changed;) {
+        changed = false;
+
+        for (llvm::StringRef kw : {"static ", "virtual ", "friend "}) {
+            if (llvm::StringRef(s).starts_with(kw)) {
+                s.erase(0, kw.size());
+                changed = true;
+            }
+        }
+        if (llvm::StringRef(s).starts_with("explicit")) {
+            size_t i = 8;
+            if (i < s.size() && s[i] == '(') {
+                for (size_t depth = 0; i < s.size(); ++i) {
+                    if (s[i] == '(') ++depth;
+                    else if (s[i] == ')' && --depth == 0) { ++i; break; }
+                }
+            }
+            while (i < s.size() && s[i] == ' ') ++i;
+            s.erase(0, i);
+            changed = true;
+        }
+        for (llvm::StringRef kw : {" override", " final"}) {
+            if (llvm::StringRef(s).ends_with(kw)) {
+                s.resize(s.size() - kw.size());
+                changed = true;
+            }
+        }
+    }
+}
+
 /**
  * This pass also takes care of specializing function templates. 
  * We don't specialize class templates because that is just a type 
@@ -177,13 +209,21 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
          * logic to fix variadic templates. The problem here is that parameter
          * packs are printed with enclosing braces <> which is syntatically wrong.
          * We print the correct set of template parameters and paste it at the 
-         * correct place in the function deferred declaration. 
+         * correct place in the function deferred declaration. For the member-initializer
+         * list present in constructors, its not printed as part of the declaration because
+         * we pass the TerseOutput flag to be true. Its also not part of the function body
+         * either. Thus we manually insert it when we encounter a constructor that needs one. 
+         * There are also some Specifiers [static, virtual, friend, explicit, override, final]
+         * that are only valid inside Record Declarations. The act of deferring them means that
+         * we will have to manually strip the declarations of these keywords as Libtooling does not
+         * support any flag for this. 
          */
         if (unsigned extra = countEnclosingTemplateLevels(func)) {
             for (unsigned i = 0; i < extra; ++i) {
                 prefix += "template<> ";
             }
         }
+
         if (func->isTemplateInstantiation()) {
             auto primary_template = func->getPrimaryTemplate();
             if (primary_template->getTemplateParameters()->hasParameterPack()) {
@@ -205,8 +245,17 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
                     ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
                 }
             }
+
+            if (m_ctx.getLangOpts().CPlusPlus) {
+                stripRecordDeclOnlySpecifiers(deferred_decl);
+            }
+
             m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
         } else {
+            if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
+                stripRecordDeclOnlySpecifiers(deferred_decl);
+            }
+
             m_deferred_definitions.push_back(prefix + deferred_decl + def);
         }
     }
