@@ -58,7 +58,8 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
-    clang::PrintingPolicy m_deferred_policy;
+    clang::PrintingPolicy m_deferred_policy_def;
+    clang::PrintingPolicy m_deferred_policy_decl;
     clang::PrintingPolicy m_inplace_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;

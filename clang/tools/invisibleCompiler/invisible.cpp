@@ -47,16 +47,21 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
     m_policy.IncludeTagDefinition = true;
     m_policy.SuppressTagKeyword = false;
 
-    m_deferred_policy = m_policy;
+    m_deferred_policy_decl = m_policy;
+    m_deferred_policy_def = m_policy;
     if (m_ctx.getLangOpts().CPlusPlus) {
-        m_deferred_policy.FullyQualifiedName = true;
+        m_deferred_policy_def.FullyQualifiedName = true;
+
+        m_deferred_policy_decl.FullyQualifiedName = true;
+        m_deferred_policy_decl.TerseOutput = true;
+        m_deferred_policy_decl.SuppressInitializers = true;
     }
 
     m_inplace_policy = m_policy;
@@ -70,7 +75,7 @@ void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDec
     std::string correct;
     {
         llvm::raw_string_ostream correct_out(correct);
-        clang::printTemplateArgumentList(correct_out, args->asArray(), m_deferred_policy);
+        clang::printTemplateArgumentList(correct_out, args->asArray(), m_deferred_policy_decl);
         correct_out.flush();
     }
 
@@ -125,7 +130,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::string def;
     if(!func->isDependentContext()) {
         llvm::raw_string_ostream def_out(def);
-        func->getBody()->printPretty(def_out, &m_custom_printer, m_deferred_policy);
+        func->getBody()->printPretty(def_out, &m_custom_printer, m_deferred_policy_def);
         def_out.flush();
     }
 
@@ -151,15 +156,13 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         func->getReturnType().print(decl_out, m_inplace_policy, proto);
         decl_out.flush();
 
-        func->getReturnType().print(deferred_decl_out, m_deferred_policy, proto);
+        func->getReturnType().print(deferred_decl_out, m_deferred_policy_decl, proto);
         deferred_decl_out.flush();
     } else {
         func->print(decl_out, m_inplace_policy);
         decl_out.flush();
 
-        m_deferred_policy.TerseOutput = true;
-        func->print(deferred_decl_out, m_deferred_policy);
-        m_deferred_policy.TerseOutput = false;
+        func->print(deferred_decl_out, m_deferred_policy_decl);
         deferred_decl_out.flush();
     }
 
