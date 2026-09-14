@@ -158,6 +158,7 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->isThisDeclarationADefinition()) return true;
+    if (func->isDefaulted() || func->isDeleted()) return true;
 
     std::string def;
     if(!func->isDependentContext()) {
@@ -4151,6 +4152,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    llvm::outs() << "[Invisible]: Access Specifier visitor succeeded\n";
+
     // Gather function definitions and move them after all function
     // declarations and Canonicalize all local / global variables defined 
     // in a translation unit. 
@@ -4188,6 +4191,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    llvm::outs() << "[Invisible]: DeclBeforeDef visitor succeeded\n";
+
     // Marks the beginning of every case statement with a semi-colon so
     // that any function call present at the start of the set of statements
     // for case is hoisted as part of the case and not above it.
@@ -4205,6 +4210,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             return tmp_result;
         }
     }
+
+    llvm::outs() << "[Invisible]: MarkSwitchCase visitor succeeded\n";
 
     // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
     // This helps provide a valid space to hoist a comma separated declarator list
@@ -4224,6 +4231,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    llvm::outs() << "[Invisible]: CompoundStmtWrapper visitor succeeded\n";
+
     // Wraps binary operator (,) with a paranthesis. Because the binary operator
     // can occur without any wrapper as well which can lead to errors while inlining
     {
@@ -4241,6 +4250,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    llvm::outs() << "[Invisible]: ParenExprWrapperVisitor succeeded\n";
+
     // Writes Loops in their IR form at the source code level. 
     {
         clang::Rewriter rewriter;
@@ -4256,6 +4267,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             return tmp_result;
         }
     }
+
+    llvm::outs() << "[Invisible]: LoopToIRVisitor succeeded\n";
 
     // Splits comma-separated variable declarations into individual statements
     {
@@ -4284,6 +4297,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
     }
 
+    llvm::outs() << "[Invisible]: CommaInitVisitor succeeded\n";
+
     size_t current_index;
 
     /// rewrite short-circuit operations into their IR form at the source code level
@@ -4304,6 +4319,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         result = std::move(tmp_result);
     }
 
+    llvm::outs() << "[Invisible]: ShortCircuitOperatorToIRVisitor succeeded\n";
+
     llvm::outs() << "started folding\n";
     // constant fold mathematical expressions into their simplified form
     bool did_fold = true;
@@ -4322,6 +4339,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
         result = std::move(tmp_result);
     }
+
+    llvm::outs() << "[Invisible]: constantFoldVisitor succeeded\n";
 
     llvm::outs() << "started hoisting\n";
     // Hoist nested function calls (repeat until stable).
@@ -4342,6 +4361,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         }
         result = std::move(tmp_result);
     }
+
+    llvm::outs() << "[Invisible]: FuncCallCleanupVisitor succeeded\n";
 
     return result;
 }
