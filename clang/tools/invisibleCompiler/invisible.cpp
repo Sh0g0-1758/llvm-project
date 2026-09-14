@@ -1220,20 +1220,25 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
 //                     be needed in cases when say a class's copy constructor needs
 //                     to be called. 
 // ParenExpr        -> relevant for both C/C++. Ignore enclosing paranthesis
-bool FuncCallCleanupVisitor::isTransparentParent(const clang::Stmt* s) {
+// ExplicitCastExpr -> an explicit C++ conversion function within a class needs to retain
+//                     the explicit cast. We should not hoist such conversion operators as
+//                     they will lead to an infinite loop of hoisting. 
+bool FuncCallCleanupVisitor::isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator) {
     return llvm::isa<clang::ParenExpr,
                      clang::ImplicitCastExpr,
                      clang::ExprWithCleanups,
                      clang::CXXBindTemporaryExpr,
-                     clang::MaterializeTemporaryExpr>(s);
+                     clang::MaterializeTemporaryExpr>(s) || 
+           (isExplicitCoversionOperator ? 
+            (llvm::isa<clang::ExplicitCastExpr>(s)) : false);
 }
 
-clang::DynTypedNode FuncCallCleanupVisitor::getSemanticParent(const clang::Stmt* node) {
+clang::DynTypedNode FuncCallCleanupVisitor::getSemanticParent(const clang::Stmt* node, bool isExplicitCoversionOperator) {
     for (const clang::Stmt* child = node;;) {
         auto parents = m_ctx.getParents(*child);
         if (parents.empty()) return {};
         const auto* parent = parents[0].get<clang::Stmt>();
-        if (!parent || !isTransparentParent(parent)) return parents[0];
+        if (!parent || !isTransparentParent(parent, isExplicitCoversionOperator)) return parents[0];
         child = parent;
     }
 }
@@ -1271,7 +1276,15 @@ bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
         }
     }
 
-    auto parent_node = getSemanticParent(call);
+    bool isExplicitCoversionOperator = false;
+    if (auto* member_call_expr = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
+        const auto* conversion_decl = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(member_call_expr->getMethodDecl());
+        if (conversion_decl && conversion_decl->isExplicit()) {
+            isExplicitCoversionOperator = true;
+        }
+    }
+
+    auto parent_node = getSemanticParent(call, isExplicitCoversionOperator);
     if (parent_node.getNodeKind().isNone())
         return false;
 
@@ -1578,26 +1591,36 @@ bool InlineVisitor::callInLoop(const clang::CallExpr* call) {
     return false;
 }
 
-bool InlineVisitor::isTransparentParent(const clang::Stmt* s) {
+bool InlineVisitor::isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator) {
     return llvm::isa<clang::ParenExpr,
                      clang::ImplicitCastExpr,
                      clang::ExprWithCleanups,
                      clang::CXXBindTemporaryExpr,
-                     clang::MaterializeTemporaryExpr>(s);
+                     clang::MaterializeTemporaryExpr>(s) || 
+           (isExplicitCoversionOperator ? 
+            (llvm::isa<clang::ExplicitCastExpr>(s)) : false);
 }
 
-clang::DynTypedNode InlineVisitor::getSemanticParent(const clang::Stmt* node) {
+clang::DynTypedNode InlineVisitor::getSemanticParent(const clang::Stmt* node, bool isExplicitCoversionOperator) {
     for (const clang::Stmt* child = node;;) {
         auto parents = m_ctx.getParents(*child);
         if (parents.empty()) return {};
         const auto* parent = parents[0].get<clang::Stmt>();
-        if (!parent || !isTransparentParent(parent)) return parents[0];
+        if (!parent || !isTransparentParent(parent, isExplicitCoversionOperator)) return parents[0];
         child = parent;
     }
 }
 
 bool InlineVisitor::isTopLevelCall(const clang::CallExpr* call) {
-    auto parent_node = getSemanticParent(call);
+    bool isExplicitCoversionOperator = false;
+    if (auto* member_call_expr = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
+        const auto* conversion_decl = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(member_call_expr->getMethodDecl());
+        if (conversion_decl && conversion_decl->isExplicit()) {
+            isExplicitCoversionOperator = true;
+        }
+    }
+
+    auto parent_node = getSemanticParent(call, isExplicitCoversionOperator);
     if (parent_node.getNodeKind().isNone())
         return false;
 
