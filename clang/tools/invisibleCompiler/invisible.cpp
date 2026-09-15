@@ -252,9 +252,10 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         }
 
         if (func->isTemplateInstantiation()) {
-            auto primary_template = func->getPrimaryTemplate();
-            if (primary_template->getTemplateParameters()->hasParameterPack()) {
-                fixParameterPack(deferred_decl, func);
+            if (auto primary_template = func->getPrimaryTemplate()) {
+                if (primary_template->getTemplateParameters()->hasParameterPack()) {
+                    fixParameterPack(deferred_decl, func);
+                }
             }
         }
 
