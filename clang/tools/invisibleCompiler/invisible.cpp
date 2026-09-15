@@ -311,6 +311,9 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
     if (isInsideFunction(glob_decl)) return true;
+    // skip static member variable instantiations but still re-emit its 
+    // templated version because it might be using variables which are now
+    // renamed. The same is true for templated global variables. 
     if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
@@ -439,6 +442,7 @@ bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* 
 
 bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     if (glob_decl->isLocalVarDeclOrParm()) return true;
+    if (isInsideFunction(glob_decl)) return true;
     if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
 
@@ -451,8 +455,17 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
     return true;
 }
 
+bool NormalizeMultipleRecordDeclVisitor::isInsideFunction(const clang::Decl* decl) {
+    for (const clang::DeclContext* decl_context = decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
+        if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;
+        if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
+    }
+    return false;
+}
+
 bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
     if (!field_decl->getType()->isDependentType()) return true;
+    if (isInsideFunction(field_decl)) return true;
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
@@ -495,7 +508,13 @@ bool CanonicalizeVarDeclVisitor::shouldVisitTemplateInstantiations() const { ret
 
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     // classes can have static member variables which should not be renamed. 
+    // This is because this renaming does not really propagate to the site of
+    // usage. It does for normal VarDecls but not for a static data member of a class. 
     if (decl->isStaticDataMember()) return true;
+    // we also do not rename templatized variables because their specializations
+    // would also need to be renamed then and well first we would need to somehow
+    // keep track of that and second, some cleanup relating to template specialization
+    // would also be needed at the place of the template global variable usage. 
     if (decl->getDescribedVarTemplate()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
 

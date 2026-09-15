@@ -85,6 +85,7 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
+    bool isInsideFunction(const clang::Decl* decl);
 };
 
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
