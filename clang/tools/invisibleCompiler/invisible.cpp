@@ -337,6 +337,8 @@ bool DeclBeforeDefVisitor::isInsideFunction(const clang::Decl* decl) {
     return false;
 }
 
+// re-emitting field declarations because they can use variables which
+// might be now renamed. 
 bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
     if (!field_decl->getType()->isDependentType()) return true;
     if (isInsideFunction(field_decl)) return true;
