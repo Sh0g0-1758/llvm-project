@@ -84,6 +84,8 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    clang::PrintingPolicy m_deferred_policy_def;
+    clang::PrintingPolicy m_deferred_policy_decl;
     DeclBeforeDefPrinterHelper m_custom_printer;
     bool isInsideFunction(const clang::Decl* decl);
 };
@@ -103,6 +105,7 @@ class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<Canonicaliz
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     size_t uniqueIndx;
+    std::unordered_map<clang::VarDecl*, std::string> m_var_renames;
 };
 
 // ─── AccessSpecifierVisitor ──────────────────────────────────────

@@ -319,7 +319,27 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
-    glob_decl->print(decl_out, m_policy);
+
+    // An out of line declaration needs to preserve the namespaces when 
+    // its emitted. Hence we emit the fully Qualified variable name. 
+    // static const data members of a class need to be declared outside
+    // of the class (because of ODR). This went away with static constexpr
+    // data members though. The problem is that if the inital declaration
+    // had an initializer, then at the point of definition for the static
+    // const data member, the AST says that it has a definition even though
+    // its not physically present. Its a remnant of its earlier declaration
+    // within the class. Hence when wmitting out of line definitions for 
+    // static const data members, we strip away the initializer. 
+    if (glob_decl->isOutOfLine()) {
+        if (glob_decl->isStaticDataMember()) {
+            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
+        } else {
+            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def, m_ctx);
+        }
+    } else {
+        glob_decl->print(decl_out, m_policy);
+    }
+
     decl_out.flush();
 
     clang::SourceRange decl_range = glob_decl->getSourceRange();
@@ -420,11 +440,18 @@ bool DeclBeforeDefVisitor::VisitTypedefDecl(clang::TypedefDecl* typdef_decl) {
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
 
 NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
     m_policy.SuppressTagKeyword = false;
+
+    m_deferred_policy_def = m_policy;
+    if (m_ctx.getLangOpts().CPlusPlus) {
+        m_deferred_policy_def.FullyQualifiedName = true;
+    }
+    m_deferred_policy_decl = m_deferred_policy_def;
+    m_deferred_policy_decl.SuppressInitializers = true;
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -448,7 +475,17 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
 
     std::string decl;
     llvm::raw_string_ostream decl_out(decl);
-    glob_decl->print(decl_out, m_policy);
+
+    if (glob_decl->isOutOfLine()) {
+        if (glob_decl->isStaticDataMember()) {
+            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
+        } else {
+            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def, m_ctx);
+        }
+    } else {
+        glob_decl->print(decl_out, m_policy);
+    }
+
     decl_out.flush();
 
     m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl);
@@ -518,7 +555,17 @@ bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     if (decl->getDescribedVarTemplate()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
 
-    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
+
+    // Return the first declaration of this declaration or itself if this
+    // is the only declaration.
+    std::string canonicalizedName;
+    clang::VarDecl* canon_decl = decl->getCanonicalDecl();
+    if (m_var_renames.find(canon_decl) == m_var_renames.end()) {
+        canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
+        m_var_renames[canon_decl] = canonicalizedName;
+    } else {
+        canonicalizedName = m_var_renames[canon_decl];
+    }
     decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
     return true;
 }

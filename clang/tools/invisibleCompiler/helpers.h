@@ -24,4 +24,6 @@ std::string runInMemory(const std::string& source, const std::string& filename, 
 /// transformation and skip the edge cases. 
 bool isCompilable(const std::string& source, const std::string& filename, const std::vector<std::string>& compiler_flags);
 
+void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx);
+
 }  // namespace invisible
