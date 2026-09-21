@@ -192,6 +192,10 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         func->getReturnType().print(deferred_decl_out, m_deferred_policy_decl, proto);
         deferred_decl_out.flush();
     } else {
+        if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+            decl_out << "friend ";
+        }
+        
         func->print(decl_out, m_inplace_policy);
         decl_out.flush();
 
