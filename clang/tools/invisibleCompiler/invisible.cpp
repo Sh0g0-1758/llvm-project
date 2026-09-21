@@ -163,6 +163,9 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (func->isDefaulted() || func->isDeleted()) return true;
+    // only re-emit declarations at the global level. Declarations
+    // inside functions are re-emitted when the function defs are printed
+    if (isInsideFunction(func)) return true;
     if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
         // re-emit each function declaration so that if it uses
         // any global variables, the renamed versions of those are printed. 
@@ -399,14 +402,6 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     return true;
 }
 
-bool DeclBeforeDefVisitor::isInsideFunction(const clang::Decl* decl) {
-    for (const clang::DeclContext* decl_context = decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
-        if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;
-        if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
-    }
-    return false;
-}
-
 // re-emitting field declarations because they can use variables which
 // might be now renamed. 
 bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
@@ -536,14 +531,6 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
 
     m_rewriter.ReplaceText(glob_decl->getSourceRange(), decl);
     return true;
-}
-
-bool NormalizeMultipleRecordDeclVisitor::isInsideFunction(const clang::Decl* decl) {
-    for (const clang::DeclContext* decl_context = decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
-        if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;
-        if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
-    }
-    return false;
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {

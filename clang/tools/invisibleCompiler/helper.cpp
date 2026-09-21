@@ -93,4 +93,12 @@ void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, c
     var->print(out, policy);
 }
 
+bool isInsideFunction(const clang::Decl* decl) {
+    for (const clang::DeclContext* decl_context = decl->getLexicalDeclContext(); decl_context; decl_context = decl_context->getLexicalParent()) {
+        if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;
+        if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
+    }
+    return false;
+}
+
 }  // namespace invisible

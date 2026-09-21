@@ -67,7 +67,6 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
-    bool isInsideFunction(const clang::Decl* decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);
 };
 
@@ -86,7 +85,6 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     clang::PrintingPolicy m_policy;
     clang::PrintingPolicy m_deferred_policy_def;
     DeclBeforeDefPrinterHelper m_custom_printer;
-    bool isInsideFunction(const clang::Decl* decl);
 };
 
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────

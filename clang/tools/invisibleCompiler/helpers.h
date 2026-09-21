@@ -26,4 +26,6 @@ bool isCompilable(const std::string& source, const std::string& filename, const 
 
 void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx);
 
+bool isInsideFunction(const clang::Decl* decl);
+
 }  // namespace invisible
