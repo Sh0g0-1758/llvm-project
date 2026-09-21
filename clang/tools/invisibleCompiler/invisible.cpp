@@ -328,11 +328,27 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
     // had an initializer, then at the point of definition for the static
     // const data member, the AST says that it has a definition even though
     // its not physically present. Its a remnant of its earlier declaration
-    // within the class. Hence when wmitting out of line definitions for 
+    // within the class. Hence when emitting out of line definitions for 
     // static const data members, we strip away the initializer. 
     if (glob_decl->isOutOfLine()) {
         if (glob_decl->isStaticDataMember()) {
-            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
+            // TODO: properly print a templated out of line static data member of a class. 
+            // The problem is that well for one the template pattern is not a part of the 
+            // varDecl node at all. We have to print that manually. Secondly and more importantly
+            // If we are to print it in its FullyQualified form, if some types are to be templated
+            // in the fully qualified form, that does not show up at all. We will have to manually 
+            // print the qualifiers. The first part is presented here, the second part is left. 
+            // for now, we just completely omit the out of line static class member declaration. 
+            //
+            // if (clang::NestedNameSpecifier qual = glob_decl->getQualifier(); qual != std::nullopt) {
+            //     for (unsigned i = 0, n = glob_decl->getNumTemplateParameterLists(); i != n; ++i) {
+            //         glob_decl->getTemplateParameterList(i)->print(decl_out, m_ctx, m_policy);
+            //         decl_out << '\n';
+            //     }
+            // }
+            // printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
+
+            decl = "";
         } else {
             printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def, m_ctx);
         }
@@ -478,7 +494,7 @@ bool NormalizeMultipleRecordDeclVisitor::VisitVarDecl(clang::VarDecl* glob_decl)
 
     if (glob_decl->isOutOfLine()) {
         if (glob_decl->isStaticDataMember()) {
-            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
+            decl = "";
         } else {
             printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def, m_ctx);
         }
