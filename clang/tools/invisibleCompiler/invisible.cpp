@@ -61,12 +61,16 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
 
         m_deferred_policy_decl.FullyQualifiedName = true;
         m_deferred_policy_decl.TerseOutput = true;
-        m_deferred_policy_decl.SuppressInitializers = true;
     }
 
     m_inplace_policy = m_policy;
     m_inplace_policy.TerseOutput = true;
     m_inplace_policy.SuppressTemplateArgsInCXXConstructors = true;
+    // there can be multiple declarations of a function and each declaration
+    // can specify default arguments for some of the function parameters. 
+    // if we don't supress them, they will all accumulate everywhere. Instead
+    // we emit all the initializers in the deferred declaration. 
+    m_inplace_policy.SuppressInitializers = true;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -158,9 +162,28 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
  * and the latter's definition is stored and emitted at the end of the TU.
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    if (!func->hasBody()) return true;
-    if (!func->isThisDeclarationADefinition()) return true;
     if (func->isDefaulted() || func->isDeleted()) return true;
+    if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
+        // re-emit each function declaration so that if it uses
+        // any global variables, the renamed versions of those are printed. 
+        // The printing policy also ensures that default initializers are 
+        // stripped from these declarations. 
+        std::string decl;
+        llvm::raw_string_ostream decl_out(decl);
+
+        if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+            decl_out << "friend ";
+        }
+        
+        func->print(decl_out, m_inplace_policy);
+        decl_out.flush();
+
+        if (!func->isTemplateInstantiation()) {
+            m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+        }
+
+        return true;
+    }
 
     std::string def;
     if(!func->isDependentContext()) {
@@ -271,6 +294,8 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
         m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
     }
+
+    // guard to prevent repeated edits to the same declaration. 
     if (!func->isTemplateInstantiation()) {
         m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
     }
