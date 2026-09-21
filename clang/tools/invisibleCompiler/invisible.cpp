@@ -190,8 +190,12 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     std::string def;
     if(!func->isDependentContext()) {
+        // the deferred decl is already fully qualified, we do not
+        // need the deferred def to be fully qualified as well. 
+        // in fact, fully qualifying this can lead to errors, for 
+        // instance re-declaration of functions in block scope. 
         llvm::raw_string_ostream def_out(def);
-        func->getBody()->printPretty(def_out, &m_custom_printer, m_deferred_policy_def);
+        func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
         def_out.flush();
     }
 
