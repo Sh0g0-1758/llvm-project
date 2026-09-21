@@ -66,6 +66,7 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
 
     m_inplace_policy = m_policy;
     m_inplace_policy.TerseOutput = true;
+    m_inplace_policy.SuppressTemplateArgsInCXXConstructors = true;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -157,6 +158,7 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
  * and the latter's definition is stored and emitted at the end of the TU.
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
     if (func->isDefaulted() || func->isDeleted()) return true;
 
@@ -460,7 +462,7 @@ bool DeclBeforeDefVisitor::VisitTypedefDecl(clang::TypedefDecl* typdef_decl) {
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
 
 NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -470,13 +472,12 @@ NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::AS
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_deferred_policy_def.FullyQualifiedName = true;
     }
-    m_deferred_policy_decl = m_deferred_policy_def;
-    m_deferred_policy_decl.SuppressInitializers = true;
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
+    if (func->isDefaulted() || func->isDeleted()) return true;
 
     std::string def;
     llvm::raw_string_ostream def_out(def);
