@@ -42,6 +42,53 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
     return false;
 }
 
+// ─── AccessSpecifierVisitor ──────────────────────────────────────────────
+
+AccessSpecifierVisitor::AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) { }
+
+bool AccessSpecifierVisitor::VisitAccessSpecDecl(clang::AccessSpecDecl* access_decl) {
+    if (access_decl->getAccess() == clang::AS_public) return true;
+    m_rewriter.ReplaceText(access_decl->getSourceRange(), "public:");
+    return true;
+}
+
+bool AccessSpecifierVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_decl) {
+    if (!record_decl->isThisDeclarationADefinition()) return true;
+    if (record_decl->isLambda()) return true;
+    if (llvm::isa<clang::ClassTemplateSpecializationDecl>(record_decl)) return true;
+
+    clang::SourceLocation brace = record_decl->getBraceRange().getBegin();
+    if (brace.isInvalid()) return true;
+
+    m_rewriter.InsertTextAfterToken(brace, "\npublic:");
+    return true;
+}
+
+// ─── NameTemplateTypeParmVisitor ──────────────────────────────────────────────
+
+NameTemplateTypeParmVisitor::NameTemplateTypeParmVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter), m_index(0) { }
+
+bool NameTemplateTypeParmVisitor::VisitTemplateTypeParmDecl(clang::TemplateTypeParmDecl* decl) {
+    if (decl->getIdentifier() != nullptr) return true;
+
+    std::string name = " __type_param__" + std::to_string(m_index++);
+    clang::SourceLocation kw = decl->getBeginLoc();
+    if (kw.isInvalid()) return true;
+
+    clang::SourceLocation insertAfter = kw;
+    // if template type is variadic, insert the type name after the pack token
+    if (decl->isParameterPack()) {
+        clang::SourceLocation tok = clang::Lexer::findNextToken(kw, m_ctx.getSourceManager(), m_ctx.getLangOpts())
+                                        .value_or(clang::Token()).getLocation();
+        if (tok.isValid()) insertAfter = tok;
+    }
+
+    m_rewriter.InsertTextAfterToken(insertAfter, name);
+    return true;
+}
+
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
@@ -547,29 +594,6 @@ bool NormalizeMultipleRecordDeclVisitor::VisitFieldDecl(clang::FieldDecl* field_
     decl_out.flush();
 
     m_rewriter.ReplaceText(field_decl->getSourceRange(), decl);
-    return true;
-}
-
-// ─── AccessSpecifierVisitor ──────────────────────────────────────────────
-
-AccessSpecifierVisitor::AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter) { }
-
-bool AccessSpecifierVisitor::VisitAccessSpecDecl(clang::AccessSpecDecl* access_decl) {
-    if (access_decl->getAccess() == clang::AS_public) return true;
-    m_rewriter.ReplaceText(access_decl->getSourceRange(), "public:");
-    return true;
-}
-
-bool AccessSpecifierVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_decl) {
-    if (!record_decl->isThisDeclarationADefinition()) return true;
-    if (record_decl->isLambda()) return true;
-    if (llvm::isa<clang::ClassTemplateSpecializationDecl>(record_decl)) return true;
-
-    clang::SourceLocation brace = record_decl->getBraceRange().getBegin();
-    if (brace.isInvalid()) return true;
-
-    m_rewriter.InsertTextAfterToken(brace, "\npublic:");
     return true;
 }
 
@@ -4259,6 +4283,27 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     }
 
     llvm::outs() << "[Invisible]: Access Specifier visitor succeeded\n";
+
+    // materializes a name for unnamed template types
+    // eg. converts template<typename = void> to template<typename `id` = void>
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            if (ctx.getLangOpts().CPlusPlus) {
+                NameTemplateTypeParmVisitor access_visitor(ctx, rewriter);
+                access_visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Name Template Type Param visitor failed\n";
+            return tmp_result;
+        }
+    }
+
+    llvm::outs() << "[Invisible]: Name Template Type Param Visitor succeeded\n";
 
     // Gather function definitions and move them after all function
     // declarations and Canonicalize all local / global variables defined 
