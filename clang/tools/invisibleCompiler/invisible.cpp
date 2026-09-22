@@ -89,6 +89,18 @@ bool NameTemplateTypeParmVisitor::VisitTemplateTypeParmDecl(clang::TemplateTypeP
     return true;
 }
 
+bool NameTemplateTypeParmVisitor::VisitNonTypeTemplateParmDecl(clang::NonTypeTemplateParmDecl* decl) {
+    if (decl->getIdentifier() != nullptr) return true;
+
+    std::string name = " __non_type_param__" + std::to_string(m_index++) + " ";
+
+    clang::SourceLocation nameLoc = decl->getLocation();
+    if (nameLoc.isInvalid()) return true;
+
+    m_rewriter.InsertTextBefore(nameLoc, name);
+    return true;
+}
+
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }

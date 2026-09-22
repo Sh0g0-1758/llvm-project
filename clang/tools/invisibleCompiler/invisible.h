@@ -127,6 +127,7 @@ class NameTemplateTypeParmVisitor : public clang::RecursiveASTVisitor<NameTempla
   public:
     NameTemplateTypeParmVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitTemplateTypeParmDecl(clang::TemplateTypeParmDecl* decl);
+    bool VisitNonTypeTemplateParmDecl(clang::NonTypeTemplateParmDecl* decl);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
