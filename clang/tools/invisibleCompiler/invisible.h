@@ -24,6 +24,21 @@ struct InlineEntry {
     std::string file;
 };
 
+// ─── InformationCollectorVisitor ──────────────────────────────────────
+
+/// marks every access specifier as public and unconditionally
+/// adds a public access specifier at the start of every record
+class InformationCollectorVisitor : public clang::RecursiveASTVisitor<InformationCollectorVisitor> {
+  public:
+    InformationCollectorVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
+    bool shouldVisitTemplateInstantiations() const;
+
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+};
+
 // ─── DeclBeforeDefPrinterHelper ───────────────────────────────────────────
 
 /// Custom PrinterHelper to print function definitions keeping 
@@ -68,6 +83,9 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);
+    void record_function_definition(clang::FunctionDecl* func_decl, std::string& deferred_decl);
+    void get_function_declaration(clang::FunctionDecl* func_decl, std::string& decl);
+    void get_kr_function_declarations(clang::FunctionDecl* func_decl, std::string& decl, std::string& deferred_decl);
 };
 
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────

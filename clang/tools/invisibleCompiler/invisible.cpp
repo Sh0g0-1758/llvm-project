@@ -16,6 +16,44 @@
 
 namespace invisible {
 
+// ─── InformationCollectorVisitor ──────────────────────────────────────────────
+
+InformationCollectorVisitor::InformationCollectorVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) { }
+
+bool InformationCollectorVisitor::shouldVisitTemplateInstantiations() const { return true; }
+
+bool InformationCollectorVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    std::string function_name = func->getNameAsString();
+    llvm::outs() << "=====\nStats for function : [" << function_name << "]\n";
+
+    llvm::outs() << "hasBody                          : " << func->hasBody() << "\n";
+    llvm::outs() << "isThisDeclarationADefinition     : " << func->isThisDeclarationADefinition() << "\n";
+    llvm::outs() << "doesThisDeclarationHaveABody     : " << func->doesThisDeclarationHaveABody() << "\n";
+    llvm::outs() << "isDefined                        : " << func->isDefined() << "\n";
+    llvm::outs() << "isFirstDecl                      : " << func->isFirstDecl() << "\n";
+
+    llvm::outs() << "isDependentContext               : " << func->isDependentContext() << "\n";
+    llvm::outs() << "isTemplateInstantiation          : " << func->isTemplateInstantiation() << "\n";
+    llvm::outs() << "isFunctionTemplateSpecialization : " << func->isFunctionTemplateSpecialization() << "\n";
+    llvm::outs() << "isOutOfLine                      : " << func->isOutOfLine() << "\n";
+
+    llvm::outs() << "getNumTemplateParameterLists     : " << func->getNumTemplateParameterLists() << "\n";
+    llvm::outs() << "getDescribedFunctionTemplate     : " << (func->getDescribedFunctionTemplate() != nullptr) << "\n";
+    llvm::outs() << "getPrimaryTemplate               : " << (func->getPrimaryTemplate() != nullptr) << "\n";
+    llvm::outs() << "getInstantiatedFromMemberFunction: " << (func->getInstantiatedFromMemberFunction() != nullptr) << "\n";
+
+    llvm::outs() << "isCXXClassMember                 : " << func->isCXXClassMember() << "\n";
+    llvm::outs() << "isDefaulted                      : " << func->isDefaulted() << "\n";
+    llvm::outs() << "isDeleted                        : " << func->isDeleted() << "\n";
+    llvm::outs() << "friendObjectKind(!=None)         : " << (func->getFriendObjectKind() != clang::Decl::FOK_None) << "\n";
+
+    // getTemplatedKind is an enum, not a bool — print it numerically
+    llvm::outs() << "getTemplatedKind (enum)          : " << func->getTemplatedKind() << "\n";
+
+    return true;
+}
+
 // ─── DeclBeforeDefPrinterHelper ──────────────────────────────────────────────
 
 DeclBeforeDefPrinterHelper::DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy)
@@ -208,6 +246,115 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
     }
 }
 
+void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl) {
+    /**
+     * By default, when printing a templatized function, libTooling
+     * only prints one empty template<> brace. However, the function
+     * can be nested in multiple levels of templated namespaces and
+     * classes. So we manually calculate that depth and emit the 
+     * corresponding number of template<> required. There is also additional
+     * logic to fix variadic templates. The problem here is that parameter
+     * packs are printed with enclosing braces <> which is syntatically wrong.
+     * We print the correct set of template parameters and paste it at the 
+     * correct place in the function deferred declaration. For the member-initializer
+     * list present in constructors, its not printed as part of the declaration because
+     * we pass the TerseOutput flag to be true. Its also not part of the function body
+     * either. Thus we manually insert it when we encounter a constructor that needs one. 
+     * There are also some Specifiers [static, virtual, friend, explicit, override, final]
+     * that are only valid inside Record Declarations. The act of deferring them means that
+     * we will have to manually strip the declarations of these keywords as Libtooling does not
+     * support any flag for this. 
+     */
+    std::string def;
+    // the deferred decl is already fully qualified, we do not
+    // need the deferred def to be fully qualified as well. 
+    // in fact, fully qualifying this can lead to errors, for 
+    // instance re-declaration of functions in block scope. 
+    llvm::raw_string_ostream def_out(def);
+    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
+    def_out.flush();
+
+    std::string prefix{};
+    if (unsigned extra = countEnclosingTemplateLevels(func)) {
+        for (unsigned i = 0; i < extra; ++i) {
+            prefix += "template<> ";
+        }
+    }
+
+    std::string ctor_init{};
+    if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
+        std::string full;
+        llvm::raw_string_ostream full_out(full);
+        func->print(full_out, m_deferred_policy_def);
+        full_out.flush();
+
+        if (llvm::StringRef(full).starts_with(deferred_decl)) {
+            size_t end = full.find_last_of('}');
+            size_t brace = std::string::npos;
+            if (end != std::string::npos && end >= deferred_decl.size()) {
+                size_t depth = 0;
+                for (size_t i = end + 1; i-- > deferred_decl.size(); ) {
+                    if (full[i] == '}') {
+                        ++depth;
+                    } else if (full[i] == '{') {
+                        if (--depth == 0) { brace = i; break; }
+                    }
+                }
+            }
+            if (brace != std::string::npos) {
+                ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
+            }
+        }
+    }
+
+    if (auto primary_template = func->getPrimaryTemplate()) {
+        if (primary_template->getTemplateParameters()->hasParameterPack()) {
+            fixParameterPack(deferred_decl, func);
+        }
+    }
+
+    if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
+        stripRecordDeclOnlySpecifiers(deferred_decl);
+    }
+
+    m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
+}
+
+void DeclBeforeDefVisitor::get_kr_function_declarations(clang::FunctionDecl* func, std::string& decl, std::string& deferred_decl) {
+    llvm::raw_string_ostream decl_out(decl);
+    llvm::raw_string_ostream deferred_decl_out(deferred_decl);
+
+    std::string proto = func->getNameAsString();
+    proto += "(";
+    for (unsigned i = 0; i < func->getNumParams(); ++i) {
+        if (i > 0) proto += ", ";
+        clang::ParmVarDecl* param_decl = func->getParamDecl(i);
+        std::string param;
+        llvm::raw_string_ostream param_out(param);
+        param_decl->getType().print(param_out, m_inplace_policy, param_decl->getNameAsString());
+        param_out.flush();
+        proto += param;
+    }
+    proto += ")";
+
+    func->getReturnType().print(decl_out, m_inplace_policy, proto);
+    decl_out.flush();
+
+    func->getReturnType().print(deferred_decl_out, m_deferred_policy_decl, proto);
+    deferred_decl_out.flush();
+}
+
+void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func_decl, std::string& decl) {
+    llvm::raw_string_ostream decl_out(decl);
+
+    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+        decl_out << "friend ";
+    }
+    
+    func->print(decl_out, m_inplace_policy);
+    decl_out.flush();
+}
+
 /**
  * This pass also takes care of specializing function templates. 
  * We don't specialize class templates because that is just a type 
@@ -231,137 +378,39 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // The printing policy also ensures that default initializers are 
         // stripped from these declarations. 
         std::string decl;
-        llvm::raw_string_ostream decl_out(decl);
-
-        if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-            decl_out << "friend ";
-        }
-        
-        func->print(decl_out, m_inplace_policy);
-        decl_out.flush();
-
-        if (!func->isTemplateInstantiation()) {
-            m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
-        }
+        get_function_declaration(func, decl);
+        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
 
         return true;
     }
 
-    std::string def;
-    if(!func->isDependentContext()) {
-        // the deferred decl is already fully qualified, we do not
-        // need the deferred def to be fully qualified as well. 
-        // in fact, fully qualifying this can lead to errors, for 
-        // instance re-declaration of functions in block scope. 
-        llvm::raw_string_ostream def_out(def);
-        func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
-        def_out.flush();
-    }
-
     std::string decl;
     std::string deferred_decl;
-    llvm::raw_string_ostream decl_out(decl);
-    llvm::raw_string_ostream deferred_decl_out(deferred_decl);
 
     if (!func->hasWrittenPrototype() && func->getNumParams() > 0) {
-        std::string proto = func->getNameAsString();
-        proto += "(";
-        for (unsigned i = 0; i < func->getNumParams(); ++i) {
-            if (i > 0) proto += ", ";
-            clang::ParmVarDecl* param_decl = func->getParamDecl(i);
-            std::string param;
-            llvm::raw_string_ostream param_out(param);
-            param_decl->getType().print(param_out, m_inplace_policy, param_decl->getNameAsString());
-            param_out.flush();
-            proto += param;
-        }
-        proto += ")";
-
-        func->getReturnType().print(decl_out, m_inplace_policy, proto);
-        decl_out.flush();
-
-        func->getReturnType().print(deferred_decl_out, m_deferred_policy_decl, proto);
-        deferred_decl_out.flush();
+        get_kr_function_declarations(func, decl, deferred_decl);
     } else {
-        if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-            decl_out << "friend ";
-        }
-        
-        func->print(decl_out, m_inplace_policy);
-        decl_out.flush();
+        get_function_declaration(func, decl);
 
+        llvm::raw_string_ostream deferred_decl_out(deferred_decl);
         func->print(deferred_decl_out, m_deferred_policy_decl);
         deferred_decl_out.flush();
     }
 
+    // If a functionDecl is not dependent, it is callable
+    // within the TU and hence we record its definition to emit
+    // it at the end of the TU. 
     if (!func->isDependentContext()) {
-        /**
-         * By default, when printing a templatized function, libTooling
-         * only prints one empty template<> brace. However, the function
-         * can be nested in multiple levels of templated namespaces and
-         * classes. So we manually calculate that depth and emit the 
-         * corresponding number of template<> required. There is also additional
-         * logic to fix variadic templates. The problem here is that parameter
-         * packs are printed with enclosing braces <> which is syntatically wrong.
-         * We print the correct set of template parameters and paste it at the 
-         * correct place in the function deferred declaration. For the member-initializer
-         * list present in constructors, its not printed as part of the declaration because
-         * we pass the TerseOutput flag to be true. Its also not part of the function body
-         * either. Thus we manually insert it when we encounter a constructor that needs one. 
-         * There are also some Specifiers [static, virtual, friend, explicit, override, final]
-         * that are only valid inside Record Declarations. The act of deferring them means that
-         * we will have to manually strip the declarations of these keywords as Libtooling does not
-         * support any flag for this. 
-         */
-        std::string prefix{};
-        if (unsigned extra = countEnclosingTemplateLevels(func)) {
-            for (unsigned i = 0; i < extra; ++i) {
-                prefix += "template<> ";
-            }
-        }
-
-        std::string ctor_init{};
-        if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
-            std::string full;
-            llvm::raw_string_ostream full_out(full);
-            func->print(full_out, m_deferred_policy_def);
-            full_out.flush();
-
-            if (llvm::StringRef(full).starts_with(deferred_decl)) {
-                size_t end = full.find_last_of('}');
-                size_t brace = std::string::npos;
-                if (end != std::string::npos && end >= deferred_decl.size()) {
-                    size_t depth = 0;
-                    for (size_t i = end + 1; i-- > deferred_decl.size(); ) {
-                        if (full[i] == '}') {
-                            ++depth;
-                        } else if (full[i] == '{') {
-                            if (--depth == 0) { brace = i; break; }
-                        }
-                    }
-                }
-                if (brace != std::string::npos) {
-                    ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
-                }
-            }
-        }
-
-        if (func->isTemplateInstantiation()) {
-            if (auto primary_template = func->getPrimaryTemplate()) {
-                if (primary_template->getTemplateParameters()->hasParameterPack()) {
-                    fixParameterPack(deferred_decl, func);
-                }
-            }
-        }
-
-        if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
-            stripRecordDeclOnlySpecifiers(deferred_decl);
-        }
-
-        m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
+        record_function_definition(func, deferred_decl);
     }
 
-    // guard to prevent repeated edits to the same declaration. 
+    // Removes all in-place function definitions.
+    // The guard ensures that edits do not overlap. Template
+    // instantiations will point to the same sourceLocation
+    // and hence an edit through only of them will suffice. 
+    // We choose the primaryTemplate (uninstantiated) for this. 
+    // Untemplated functions and explicit function template specializations
+    // undergoes edit through this only once. 
     if (!func->isTemplateInstantiation()) {
         m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
     }
@@ -4274,6 +4323,26 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     // libtooling but are otherwise benign as still compiles the TU. 
     // For eg. -Wincompatible-pointer-types
     args.emplace_back("-Wno-everything");
+
+    // collects information about stuff for you. 
+    {
+        clang::Rewriter rewriter;
+        std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
+            rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
+            if (ctx.getLangOpts().CPlusPlus) {
+                InformationCollectorVisitor access_visitor(ctx, rewriter);
+                access_visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
+        }, rewriter);
+        if(isCompilable(tmp_result, filename, args)) {
+            result = std::move(tmp_result);
+        } else {
+            llvm::outs() << "Access Specifier visitor failed\n";
+            return tmp_result;
+        }
+    }
+
+    return result;
 
     // marks every access specifier as public and unconditionally
     // adds a public access specifier at the start of every record

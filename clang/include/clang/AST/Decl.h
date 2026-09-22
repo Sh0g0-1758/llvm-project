@@ -1999,7 +1999,17 @@ class FunctionDecl : public DeclaratorDecl,
                      public Redeclarable<FunctionDecl> {
   // This class stores some data in DeclContext::FunctionDeclBits
   // to save some space. Use the provided accessors to access it.
-public:
+public:     
+
+
+
+
+/*** look here * */
+
+
+
+
+
   /// The kind of templated function a FunctionDecl can be.
   enum TemplatedKind {
     // Not templated.
