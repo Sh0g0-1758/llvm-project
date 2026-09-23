@@ -763,9 +763,10 @@ NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::AS
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (func->isDefaulted() || func->isDeleted()) return true;
+    if (isInsideFunction(func)) return true;
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
-    if (func->isDefaulted() || func->isDeleted()) return true;
 
     std::string def;
     llvm::raw_string_ostream def_out(def);
