@@ -206,8 +206,13 @@ unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::Functio
     unsigned levels = 0;
     for (const clang::DeclContext* decl_context = function_decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
         if (const auto* record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(decl_context)) {
-            if (llvm::isa<clang::ClassTemplateSpecializationDecl>(record_decl)) {
-                ++levels;
+            if (const auto* spec_decl = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record_decl)) {
+                // A class template specialization only needs the template<> keyword if
+                // its not explicitly specialized in the TU. If it is, then its treated
+                // as a normal class. 
+                if (spec_decl->getSpecializationKind() != clang::TSK_ExplicitSpecialization) {
+                    ++levels;
+                }
             }
         }
     }
