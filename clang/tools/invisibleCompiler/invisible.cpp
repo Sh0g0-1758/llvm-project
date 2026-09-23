@@ -497,7 +497,14 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // stripped from these declarations. 
         std::string decl;
         get_function_declaration(func, decl);
-        replace_function_declaration(func, decl);
+        // it is possible for a declaration to not have a body
+        // and still have instantiations. consider : 
+        // template<typename T>
+        // void foo();
+        // <in some function> foo<int>();
+        if (!func->isTemplateInstantiation()) {
+            replace_function_declaration(func, decl);
+        }
         return true;
     }
 
