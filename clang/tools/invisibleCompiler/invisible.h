@@ -127,6 +127,20 @@ class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<Canonicaliz
     std::unordered_map<clang::VarDecl*, std::string> m_var_renames;
 };
 
+// ─── MarkLocalRecordDeclMethodsExplicitVisitor ──────────────────────────────────────
+
+/// Marks an implicit function instantiation in a local record declaration 
+/// explicit so that it shows up when function specializations are printed. 
+class MarkLocalRecordDeclMethodsExplicitVisitor : public clang::RecursiveASTVisitor<MarkLocalRecordDeclMethodsExplicitVisitor> {
+  public:
+    MarkLocalRecordDeclMethodsExplicitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
+    bool shouldVisitTemplateInstantiations() const;
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+};
+
 // ─── AccessSpecifierVisitor ──────────────────────────────────────
 
 /// marks every access specifier as public and unconditionally

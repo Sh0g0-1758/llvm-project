@@ -139,6 +139,25 @@ bool NameTemplateTypeParmVisitor::VisitNonTypeTemplateParmDecl(clang::NonTypeTem
     return true;
 }
 
+// ─── MarkLocalRecordDeclMethodsExplicitVisitor ──────────────────────────────────────────────
+
+MarkLocalRecordDeclMethodsExplicitVisitor::MarkLocalRecordDeclMethodsExplicitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
+    : m_ctx(ctx), m_rewriter(rewriter) { }
+
+bool MarkLocalRecordDeclMethodsExplicitVisitor::shouldVisitTemplateInstantiations() const {
+    return true;
+}
+
+bool MarkLocalRecordDeclMethodsExplicitVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    if (!isInsideFunction(func)) return true;
+    if (!func->isCXXClassMember()) return true;
+
+    if (func->getTemplateSpecializationKind() == clang::TSK_ImplicitInstantiation) {
+        func->setTemplateSpecializationKind(clang::TSK_ExplicitSpecialization, func->getPointOfInstantiation());
+    }
+    return true;
+}
+
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
@@ -4553,15 +4572,26 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             // The trick here is to make the changes within the AST
-            CanonicalizeVarDeclVisitor _visitor(ctx, rewriter);
-            _visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            {
+                CanonicalizeVarDeclVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
 
-            DeclBeforeDefVisitor visitor(ctx, rewriter);
-            visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            // clang printer by default does not print implicit function instantiations
+            {
+                MarkLocalRecordDeclMethodsExplicitVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
 
-            auto& SM = ctx.getSourceManager();
-            auto endOfFile = SM.getLocForEndOfFile(SM.getMainFileID());
-            rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
+            {
+                DeclBeforeDefVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+
+                auto& SM = ctx.getSourceManager();
+                auto endOfFile = SM.getLocForEndOfFile(SM.getMainFileID());
+                rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
+            }
+
         }, rewriter);
         // Remove redefinitions of any record that might have been
         // introduced because of separating Multiple Declarators
