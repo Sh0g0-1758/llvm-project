@@ -344,15 +344,46 @@ void DeclBeforeDefVisitor::get_kr_function_declarations(clang::FunctionDecl* fun
     deferred_decl_out.flush();
 }
 
-void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func_decl, std::string& decl) {
-    llvm::raw_string_ostream decl_out(decl);
-
-    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-        decl_out << "friend ";
+clang::FriendDecl* DeclBeforeDefVisitor::get_friend_declaration(clang::FunctionDecl* func) {
+    if (func->getFriendObjectKind() == clang::Decl::FOK_None) {
+        return nullptr;
     }
     
-    func->print(decl_out, m_inplace_policy);
+    for (const clang::Decl* child = func;;) {
+        auto parents = m_ctx.getParents(*child);
+        if (parents.empty()) {
+            return nullptr;
+        }
+        const auto* parent = parents[0].get<clang::Decl>();
+        if(llvm::isa<clang::FriendDecl>(parent)) {
+            return const_cast<clang::FriendDecl*>(llvm::dyn_cast<clang::FriendDecl>(parent));
+        }
+        child = parent;
+    }
+}
+
+void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, std::string& decl) {
+    llvm::raw_string_ostream decl_out(decl);
+    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+        clang::FriendDecl* friend_decl = get_friend_declaration(func);
+        friend_decl->print(decl_out, m_inplace_policy);
+    } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
+        function_template->print(decl_out, m_inplace_policy);
+    } else {
+        func->print(decl_out, m_inplace_policy);
+    }
     decl_out.flush();
+}
+
+void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* func, std::string& decl) {
+    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+        clang::FriendDecl* friend_decl = get_friend_declaration(func);
+        m_rewriter.ReplaceText(friend_decl->getSourceRange(), decl + ";");
+    } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
+        m_rewriter.ReplaceText(function_template->getSourceRange(), decl + ";");
+    } else {
+        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+    }
 }
 
 /**
@@ -379,8 +410,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // stripped from these declarations. 
         std::string decl;
         get_function_declaration(func, decl);
-        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
-
+        replace_function_declaration(func, decl);
         return true;
     }
 
@@ -392,9 +422,11 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     } else {
         get_function_declaration(func, decl);
 
-        llvm::raw_string_ostream deferred_decl_out(deferred_decl);
-        func->print(deferred_decl_out, m_deferred_policy_decl);
-        deferred_decl_out.flush();
+        if (!func->isDependentContext()) {
+            llvm::raw_string_ostream deferred_decl_out(deferred_decl);
+            func->print(deferred_decl_out, m_deferred_policy_decl);
+            deferred_decl_out.flush();
+        }
     }
 
     // If a functionDecl is not dependent, it is callable
@@ -412,7 +444,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     // Untemplated functions and explicit function template specializations
     // undergoes edit through this only once. 
     if (!func->isTemplateInstantiation()) {
-        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+        replace_function_declaration(func, decl);
     }
     return true;
 }
