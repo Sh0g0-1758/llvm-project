@@ -362,11 +362,34 @@ clang::FriendDecl* DeclBeforeDefVisitor::get_friend_declaration(clang::FunctionD
     }
 }
 
+void DeclBeforeDefVisitor::fix_friend_declaration(std::string& decl) {
+    size_t lt = decl.find('<');
+    int depth = 0;
+    size_t i = lt;
+    for (; i < decl.size(); ++i) {
+        if (decl[i] == '<') ++depth;
+        else if (decl[i] == '>' && --depth == 0) break;
+    }
+
+    std::string header = decl.substr(strlen("friend "), i - strlen("friend ") + 1);
+    std::string rest = decl.substr(i + 1);
+    decl = header + " friend " + rest;
+}
+
 void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, std::string& decl) {
     llvm::raw_string_ostream decl_out(decl);
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
         friend_decl->print(decl_out, m_inplace_policy);
+        decl_out.flush();
+
+        // clang printer prints the friend keyword before the 
+        // template<> syntax which results in an unparsable TU. 
+        // Hence if the friend function is templated, move the friend
+        // keyword after the template syntax
+        if (func->getDescribedFunctionTemplate()) {
+            fix_friend_declaration(decl);
+        }
     } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
         function_template->print(decl_out, m_inplace_policy);
     } else {
@@ -375,12 +398,76 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
     decl_out.flush();
 }
 
+clang::SourceLocation
+DeclBeforeDefVisitor::expand_range_to_include_template_headers(clang::SourceLocation begin) {
+    clang::SourceManager &source_mgr = m_ctx.getSourceManager();
+    const char *buffer_start = source_mgr.getCharacterData(source_mgr.getLocForStartOfFile(source_mgr.getFileID(begin)));
+    const char *cursor = source_mgr.getCharacterData(begin);
+
+    for (;;) {
+        const char *scan = cursor;
+        while (scan > buffer_start && isspace((unsigned char)scan[-1]))
+            --scan;
+        if (scan == buffer_start || scan[-1] != '>')
+            break;
+
+        int angle_depth = 0;
+        while (scan > buffer_start) {
+            --scan;
+            if (*scan == '>') ++angle_depth;
+            else if (*scan == '<' && --angle_depth == 0) break;
+        }
+        if (*scan != '<')
+            break;
+
+        while (scan > buffer_start && isspace((unsigned char)scan[-1]))
+            --scan;
+        if (scan - buffer_start < 8 || strncmp(scan - 8, "template", 8) != 0)
+            break;
+
+        cursor = scan - 8;
+    }
+
+    return begin.getLocWithOffset(cursor - source_mgr.getCharacterData(begin));
+}
+
 void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* func, std::string& decl) {
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
         m_rewriter.ReplaceText(friend_decl->getSourceRange(), decl + ";");
     } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
-        m_rewriter.ReplaceText(function_template->getSourceRange(), decl + ";");
+        /**
+         * A function can be declared using a nested template level. This happens
+         * when along with the function, the class which its a part of is templated
+         * as well. However these extra templates do not show up in the AST at all
+         * and thus the sourceLocation does not reflect this. We manually find the
+         * level of nesting and extend sourceLocation for a proper replacement. 
+         * For eg. 
+         * template<typename T>
+            class hey {
+            public:
+                template<typename U>
+                void foo();
+            };
+
+            template<typename T>
+                template<typename U>
+                    void hey<T>::foo() {
+                        T a;
+                        U b;
+         *          }
+         * Note that friendDecls can be templated as well but will never have 
+         * this kind of nested template chain. Out of Line declarations will always
+         * have only 1 level of template specifier. 
+         */
+        clang::SourceRange corrected_source_range;
+        corrected_source_range.setEnd(function_template->getSourceRange().getEnd());
+        if (func->isCXXClassMember() and func->isOutOfLine()) {
+            corrected_source_range.setBegin(expand_range_to_include_template_headers(function_template->getSourceRange().getBegin()));
+        } else {
+            corrected_source_range.setBegin(function_template->getSourceRange().getBegin());
+        }
+        m_rewriter.ReplaceText(corrected_source_range, decl + ";");
     } else {
         m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
     }
@@ -4347,6 +4434,9 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             result = std::move(*formatted);
     }
 
+    std::string pass_to_run = args[args.size() - 1];
+    args.pop_back();
+
     // Suppress Clang's implicit builtin declarations so that hoisted
     // temporaries use the type names from the user's headers (e.g.
     // `size_t`) rather than Clang-internal typedefs (`__size_t`).
@@ -4357,7 +4447,7 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     args.emplace_back("-Wno-everything");
 
     // collects information about stuff for you. 
-    {
+    if (pass_to_run == "info") {
         clang::Rewriter rewriter;
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
@@ -4369,12 +4459,11 @@ std::string preprocess(const std::string& source, const std::string& filename, s
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
         } else {
-            llvm::outs() << "Access Specifier visitor failed\n";
+            llvm::outs() << "Info Collector failed\n";
             return tmp_result;
         }
+        return result;
     }
-
-    return result;
 
     // marks every access specifier as public and unconditionally
     // adds a public access specifier at the start of every record

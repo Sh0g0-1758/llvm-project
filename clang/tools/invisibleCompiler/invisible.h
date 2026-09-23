@@ -88,6 +88,8 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void get_kr_function_declarations(clang::FunctionDecl* func_decl, std::string& decl, std::string& deferred_decl);
     clang::FriendDecl* get_friend_declaration(clang::FunctionDecl* func);
     void replace_function_declaration(clang::FunctionDecl* func, std::string& decl);
+    void fix_friend_declaration(std::string& decl);
+    clang::SourceLocation expand_range_to_include_template_headers(clang::SourceLocation begin);
 };
 
 // ─── NormalizeMultipleRecordDeclVisitor ──────────────────────────────────────────────
