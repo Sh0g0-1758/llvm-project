@@ -204,6 +204,10 @@ void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDec
 
 unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::FunctionDecl* function_decl) {
     unsigned levels = 0;
+    // an explicit specialization already emits the correct number of enclosing template<> specifiers. 
+    if (function_decl->getTemplateSpecializationKind() == clang::TSK_ExplicitSpecialization) {
+        return levels;
+    }
     for (const clang::DeclContext* decl_context = function_decl->getDeclContext(); decl_context; decl_context = decl_context->getParent()) {
         if (const auto* record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(decl_context)) {
             if (const auto* spec_decl = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record_decl)) {
