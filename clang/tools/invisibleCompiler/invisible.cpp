@@ -252,6 +252,27 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
 }
 
 void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl) {
+    // template instantiations that do not physically live in the current TU should not be deferred. 
+    // Their definitions are still present in the AST. For eg. 
+    //     template<typename T>
+    //     class A {
+    //     public:
+    //         int foo();
+    //     };
+    //    
+    //     int caller() {
+    //         A<int> a;
+    //         a.foo();
+    //     }
+    //    
+    //     extern template class A<int>;
+    // marking a class as extern also makes classes nested in it extern. This is basically 
+    // telling the compiler to just assume that some function `foo` exists. Deferring such 
+    // functions results in an unparsable TU because C++ forbids specialization after 
+    // instantiation. Marking a class as extern is basically instantiating it. 
+    if (func->getTemplateSpecializationKind() == clang::TSK_ExplicitInstantiationDeclaration) {
+        return;
+    }
     /**
      * By default, when printing a templatized function, libTooling
      * only prints one empty template<> brace. However, the function
