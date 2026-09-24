@@ -250,6 +250,12 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
 
     m_deferred_policy_decl = m_policy;
     m_deferred_policy_def = m_policy;
+    // certain types defined within a record are not printed properly ie.
+    // when the types are referenced, they are not properly qualified. 
+    // By printing their canonicalized form, we circumvent this problem. 
+    m_deferred_policy_decl.PrintAsCanonical = true;
+    m_deferred_policy_def.PrintAsCanonical = true;
+
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_deferred_policy_def.FullyQualifiedName = true;
 

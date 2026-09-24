@@ -1,0 +1,536 @@
+Figuring out the `preprocess` failure on b.cc (#include <iostream>, -E -P output)
+====================================================================================
+
+Iteration 1
+-----------
+
+Setup: `./bin/invisible preprocess b.cc -x c++ -c -std=c++23 -ferror-limit=500 normal`
+fails inside the "Declarations Before Definitions Preprocessing" stage, i.e. inside
+`DeclBeforeDefVisitor` (invisible.cpp:4700-4750). Clang reports 335 errors when
+re-parsing the text this stage produced.
+
+Categorizing the 335 diagnostics by normalized message, two families dominate
+everything else:
+
+  A) "use of class template 'X' requires template arguments" / a nested type is
+     printed with the *wrong or missing* template arguments for its enclosing
+     class template specialization.
+  B) "<recovery-expr>(...)" literally baked into the source as text, which then
+     tokenizes into a cascade of "use of undeclared identifier 'recovery'/'expr'",
+     "expected expression", etc.
+
+Both are secondary/cascading noise from the same two root events; the bulk of the
+335 errors are just clang trying (and failing) to parse garbage tokens that our
+own pass wrote into the file, not 335 independent bugs.
+
+Family A: nested member-typedefs losing their template arguments
+------------------------------------------------------------------
+
+Clearest example (output.cc:11325):
+
+    template<> void std::__new_allocator<char>::deallocate(
+        char *___var__4395,
+        std::__new_allocator::size_type ___var__4397 __attribute__((unused)));
+                    ^^^^^^^^^^^^^^^^^^^^ missing <char> here
+
+The function name `std::__new_allocator<char>::deallocate` is qualified
+correctly -- clang knows this declaration belongs to the `<char>` specialization.
+But the *parameter type* `size_type`, which is a member typedef of that very
+same specialization, gets printed with the enclosing class's bare template name
+and no arguments at all: `std::__new_allocator::size_type` instead of
+`std::__new_allocator<char>::size_type`. That's not valid C++ (a class template
+name used without arguments outside of an injected-class-name context), hence
+"use of class template 'std::__new_allocator' requires template arguments".
+
+A related, slightly different-looking variant shows up for
+`std::allocator_traits<std::allocator<char>>::deallocate` (output.cc:11098):
+
+    template<> [[gnu::always_inline]] static void
+    std::allocator_traits<std::allocator<char>>::deallocate(
+        std::allocator_traits<class std::allocator<char>>::allocator_type &___var__51,
+        std::allocator_traits<class std::allocator<char>>::pointer ___var__53,
+        std::allocator_traits<std::allocator<type-parameter-0-0>>::size_type ___var__55);
+                                        ^^^^^^^^^^^^^^^^^^^ should be `char`
+
+Here `allocator_type` and `pointer` (two other member typedefs of the very same
+specialization) print with the correct `<char>` argument, but `size_type`'s
+enclosing-scope argument comes out as `type-parameter-0-0` -- clang's internal,
+Decl-less spelling for "the primary template's own, never-substituted template
+parameter" (`_Tp` of `std::allocator<_Tp>`, referenced by depth/index because it
+has no `TemplateTypeParmDecl`/name attached at that point). `type-parameter-0-0`
+is not a legal identifier expression, so `std::allocator<type-parameter-0-0>`
+gets parsed token-by-token: `type`, `-`, `parameter`, `-`, `0`, `-`, `0`, which is
+exactly where the 43 "undeclared identifier 'type'" and 24 "undeclared identifier
+'parameter'" errors come from (clang even offers "did you mean 'ctype'?" for
+`type`, a real libstdc++ name close in edit distance).
+
+My read: both examples are instances of the *same* underlying weakness. `size_type`
+in libstdc++ is not a trivial alias (unlike `allocator_type`/`pointer`, which are
+just `_Alloc` or `_Alloc::pointer` restated almost verbatim); it is resolved
+through an extra layer of trait-dispatch (a `__size_type_of<_Alloc>`-style helper
+used to decide whether `_Alloc` defines its own `size_type` or falls back to
+`std::size_t`). That extra layer of indirection is exactly the kind of nested,
+dependent, alias-template plumbing that clang's declaration printer does not
+reliably re-qualify/re-substitute when a `FunctionDecl` belonging to an
+*implicitly instantiated* class template specialization is printed in isolation
+via `FunctionDecl::print()` (which is what `DeclBeforeDefVisitor::get_function_declaration`,
+invisible.cpp:512-530, does for every function it hoists). The simple member
+typedefs happen to survive that round-trip; the ones requiring one more level of
+template substitution do not, and the printer falls back to either the bare
+uninstantiated class-template name (Family A, `__new_allocator`) or the fully
+canonical/Decl-less parameter spelling (Family A, `allocator_traits`/`allocator`).
+
+Family B: RecoveryExpr placeholders
+------------------------------------
+
+Example (output.cc:14628):
+
+    const auto ___var__11520 = <recovery-expr>(__detail::__to_chars_len, ___var__11519);
+    ...
+    note: possible target for call
+    template <typename _Tp> constexpr unsigned int
+        __to_chars_len(_Tp ___var__11359, int ___var__11361) noexcept;
+
+`<recovery-expr>(...)` is clang's designated pretty-print spelling for a
+`RecoveryExpr` node: Sema inserts this whenever it hits a real semantic error
+(here, "reference to overloaded function could not be resolved" against
+`__to_chars_len`) but recovers instead of hard-aborting, so it can keep
+type-checking the rest of the translation unit. The RecoveryExpr then gets
+printed back out verbatim by `Stmt::printPretty()` wherever our tool re-emits a
+function body that contains it (again, `DeclBeforeDefVisitor` re-prints full
+definitions when hoisting them, invisible.cpp:654-665 / :670-682). Once it is
+literal text in the file, re-parsing it produces the "undeclared identifier
+'recovery'"/"'expr'" + "expected expression" chain (38+38 = 76 of the 335
+errors, plus the "reference to overloaded function" note itself).
+
+Why would `__to_chars_len` fail to resolve at the point this body gets printed,
+when the original `#include <iostream>` compiles cleanly? My working hypothesis
+is the same shape as Family A: this call sits inside the *body of an implicitly
+instantiated function template* (`to_chars` machinery in `<charconv>`), and what
+gets pretty-printed is effectively the template pattern's body containing a
+dependent call to `__to_chars_len` -- a call that is only meaningful once you're
+inside a live instantiation context with the deduced argument types on hand.
+Printing it back out as free-standing source, disconnected from that
+instantiation context, is exactly the situation where clang's own diagnostic
+machinery (not just our tool) would have trouble resolving the overload -- and
+Sema's answer to "I can't resolve this three-dependent-line" is to emit a
+RecoveryExpr rather than crash.
+
+Structural root cause
+----------------------
+
+`DeclBeforeDefVisitor` is deliberately written to walk into template
+instantiations as well as ordinary declarations (see the doc-comment at
+invisible.cpp:609-620: "This pass also takes care of specializing function
+templates... by enabling the visitor to traverse the template instantiations").
+That is a reasonable design for *user* function templates. The problem is that
+b.cc is the fully macro-expanded text of `<iostream>`, so every bit of libstdc++
+machinery pulled in transitively -- `allocator`, `allocator_traits`,
+`__new_allocator`, `basic_string`, `char_traits`, `locale`, `error_code`, the
+`to_chars`/`charconv` internals, etc. -- is textually "in the main file" and gets
+walked by this visitor exactly like it would walk a user's own templates. Every
+one of those implicitly-instantiated member functions is a fresh opportunity for
+`FunctionDecl::print()` / `Stmt::printPretty()` to hit one of these two corners
+(a nested member-typedef that doesn't re-qualify correctly, or a dependent call
+inside a template pattern's body that only resolves inside a live instantiation).
+That's why the failure isn't one bug at one line -- it's the same structural
+mismatch (treating "print this FunctionDecl in isolation" as a faithful,
+round-trippable operation for arbitrarily deep, implicit STL template
+instantiations) recurring at dozens of independent call/member sites across the
+whole of libstdc++'s <iostream> closure.
+
+Open questions for the next iteration
+--------------------------------------
+
+- Confirm with `-Xclang -ast-dump` on a minimal repro (just
+  `std::allocator<char> a; a.deallocate(...)` or similar) whether
+  `allocator_traits<allocator<char>>::deallocate`'s ParmVarDecl for `size_type`
+  really is stored as a dependent/unsubstituted type in the AST, or whether
+  something upstream of DeclBeforeDefVisitor (CanonicalizeVarDeclVisicor?
+  AccessSpecifierVisitor?) already perturbed it before this stage ran.
+- Check whether skipping/short-circuiting DeclBeforeDefVisitor's traversal for
+  FunctionDecls whose `getTemplateSpecializationKind() == TSK_ImplicitInstantiation`
+  and whose enclosing record is itself outside "user code" (heuristically: came
+  from a system header before -E -P, or just "don't re-print members of
+  implicitly instantiated class templates at all, only their surrounding
+  declarations") removes this whole error family.
+- Check whether the `<recovery-expr>` cases and the `type-parameter-0-0` cases
+  share a single fix point, or need to be handled separately.
+
+Iteration 2: root cause of Family A, and the fix
+--------------------------------------------------
+
+Isolated it with a minimal repro (mirrors __new_allocator exactly):
+
+    namespace std {
+    template<typename _Tp>
+    class __new_allocator {
+    public:
+        typedef unsigned long size_type;
+        void deallocate(_Tp* p, size_type n) {}
+    };
+    }
+    void use() {
+        std::__new_allocator<char> a;
+        a.deallocate(nullptr, 0);
+    }
+
+Running this through `invisible preprocess` reproduces the exact same
+diagnostic as b.cc:
+
+    template<> void std::__new_allocator<char>::deallocate(char *___var__5,
+        std::__new_allocator::size_type ___var__7);
+    error: use of class template 'std::__new_allocator' requires template arguments
+
+The `<char>` on the *function's* qualified name is correct; it's the
+*parameter type*'s qualifier, `std::__new_allocator::size_type`, that is
+missing `<char>`. The key experiment: dropping the `namespace std { ... }`
+wrapper (so the declaration reads `template<> void
+__new_allocator<char>::deallocate(char*, __new_allocator::size_type)`, no
+leading `std::`) makes it compile *successfully*. That isolates the exact
+mechanism:
+
+  C++ has a special "injected-class-name" shortcut: inside a member that is
+  itself qualified by `ClassName<Args>::`, a later *bare*, unqualified
+  mention of `ClassName` (no `<...>`) is understood to mean "the current
+  instantiation", i.e. `ClassName<Args>` again. That's precisely why
+  `__new_allocator::size_type`, immediately following
+  `__new_allocator<char>::deallocate`, parses fine -- lookup for the bare
+  `__new_allocator` starts *from inside* `__new_allocator<char>`'s own
+  scope, so the shortcut fires.
+
+  But once there's a leading `std::`, the parser resolves `__new_allocator`
+  by ordinary qualified lookup *inside namespace std* instead -- a context
+  where the injected-class-name shortcut does not apply, because the lookup
+  never "enters" `__new_allocator<char>`'s own scope; it just finds the
+  plain `ClassTemplateDecl`, which of course requires arguments.
+
+  So this was never really about the type being "wrong" or unsubstituted --
+  clang's printer prints `size_type` as an *unqualified* name (because that's
+  literally how it's written inside the class body, and `size_type` doesn't
+  depend on `_Tp`, so nothing forces the printer to spell it out fully) and
+  relies on the surrounding `ClassName<Args>::method(...)` context to make
+  that unqualified name resolve correctly again when reparsed. That reliance
+  silently breaks the moment there's a namespace (or any other qualifier)
+  in front of the class name -- which is exactly the case for every one of
+  these libstdc++ internals (`std::__new_allocator`, `std::allocator_traits`,
+  ...), but never fires for a class sitting at global scope, which is why "it
+  happens for some cases and not others."
+
+  (The deeper `allocator_traits<allocator<char>>::size_type ->
+  allocator_traits<allocator<type-parameter-0-0>>::size_type` variant from
+  iteration 1 is the same mechanism one level further in: there,
+  `allocator_traits<_Alloc>` has a partial specialization for
+  `_Alloc = allocator<_Tp>`, and `size_type` there is similarly an
+  unqualified/pattern-relative name that needed the injected-class-name
+  shortcut of *that* partial specialization's own `_Tp` to resolve -- which
+  is exactly the parameter that has no name once printed outside of it,
+  hence `type-parameter-0-0`.)
+
+First attempt (retracted): skip the hoist entirely
+-----------------------------------------------------
+
+My first idea was: `deallocate` is defined *inline* inside the class body,
+and C++ already treats every inline member as declared "as of the top of
+the class" -- so why does `DeclBeforeDefVisitor` need to hoist a *duplicate*
+out-of-line declaration + definition for it at all? I added an early return
+in `record_function_definition` for exactly this category
+(`func->isTemplateInstantiation() && !func->getPrimaryTemplate()`, i.e. an
+ordinary member -- not itself a function template -- that is only
+instantiated because its enclosing class template was instantiated), mirroring
+the existing `TSK_ExplicitInstantiationDeclaration` guard right above it.
+
+This is wrong, and the reason is important: skipping the hoist means the
+*only* copy of `deallocate` left in the file is the generic, unsubstituted
+template pattern (`_Tp* p`, not `char* p`). That's fine for something like
+`deallocate`, where nothing downstream needs to see a concretely-substituted
+copy. But plenty of these "plain member of an instantiated class template"
+functions genuinely *are* dependent on the class's template parameter in
+ways that matter -- e.g. `__new_allocator<_Tp>::_M_max_size()` computes
+`std::size_t(...) / sizeof(_Tp)`, and later passes in this same pipeline
+(constant folding, inlining via the line-numbered oracle mechanism in
+main.cpp) expect to find a concrete, monomorphized, textually-addressable
+function for the *specific* instantiation (`sizeof(char)`, folded), not a
+generic template body with `_Tp` still unresolved. Skipping the hoist for
+*all* such functions would silently throw away exactly the specialization
+work the rest of the tool depends on for the dependent ones -- it only
+looked like a fix because `deallocate` and `address` happen to not need it.
+This was pointed out directly and the guard was reverted.
+
+The real fix: stop relying on sugar for this one category
+-------------------------------------------------------------
+
+The actual bug is narrower than "we shouldn't reprint these at all": it's
+specifically that `func->print()` prints `size_type` as an unqualified
+*name* (sugar) and leans on the injected-class-name shortcut to make that
+name resolve correctly again -- and that leaning is what breaks. If we
+print the same declaration with the sugar stripped (i.e. with the
+*canonical*, fully-resolved type, `unsigned long`, instead of the name
+`size_type`), there is no name left to mis-qualify, and the specialization
+is still fully emitted with the class's template parameter genuinely
+substituted (`_Tp* -> char*` still happens the same way it always did; only
+`size_type`'s spelling changes). This preserves exactly the thing the first
+attempt threw away.
+
+`clang::PrintingPolicy` has a field for precisely this: `PrintAsCanonical`
+("Whether to print entities as written or canonically"). Scoped to just the
+functions in question -- `func->isTemplateInstantiation() &&
+!func->getPrimaryTemplate()`, the same predicate as before, but now used to
+pick a *printing policy* rather than to skip printing -- this fixes the
+qualifier without touching how any other (already-working) function gets
+printed.
+
+Patch (invisible.cpp, `DeclBeforeDefVisitor::VisitFunctionDecl`, where
+`deferred_decl` / `deferred_decl_before_def` are built):
+
+    clang::PrintingPolicy decl_policy = m_deferred_policy_decl;
+    clang::PrintingPolicy decl_before_def_policy = m_deferred_policy_decl_before_def;
+    if (func->isTemplateInstantiation() && !func->getPrimaryTemplate()) {
+        decl_policy.PrintAsCanonical = true;
+        decl_before_def_policy.PrintAsCanonical = true;
+    }
+    func->print(deferred_decl_out, decl_policy);
+    ...
+    func->print(deferred_decl_before_def_out, decl_before_def_policy);
+
+Verified on the minimal repro: the pipeline now runs clean end-to-end, and
+`deallocate` is still hoisted as a properly specialized, standalone
+declaration + definition --
+
+    template<> void std::__new_allocator<char>::deallocate(char *___var__5, unsigned long ___var__7);
+    ...
+    template<> void std::__new_allocator<char>::deallocate(char *___var__5, unsigned long ___var__7){ }
+
+-- with `size_type` correctly resolved to `unsigned long` instead of the
+broken qualifier, and the substitution (`_Tp -> char`) still fully present.
+
+On the full b.cc, `type-parameter-0-0` and "requires template arguments"
+occurrences both go from dozens down to **zero**, confirming Family A is
+gone. Using the same counting method throughout, the top-level error count
+goes from 550 (original) to 371 (with this fix) -- fewer than the original,
+but *more* than the retracted skip-the-hoist attempt's 319. That's not a
+regression from this patch: cross-checked directly, the ~15 or so newly
+visible errors (e.g. "default argument not permitted on an explicit
+specialization of function 'allocate'/'__to_chars_len'", "constructor for
+'std::basic_string<char16_t>' must explicitly initialize the member
+'_M_dataplus'") are on lines that, in the *original* broken run, already
+contained the exact same illegal construct (e.g. `allocate`'s out-of-line
+redeclaration already had `= static_cast<const void*>(0)` sitting on an
+explicit specialization, which is unconditionally illegal in C++) --
+clang just never got far enough into that declaration to report it,
+because the `size_type` error on the very same line aborted first. Fixing
+Family A didn't introduce these; it unmasked pre-existing, unrelated bugs
+that were hiding behind it. They're a good candidate for the next
+iteration (tentatively: Family C, "default arguments on explicit member
+specializations", and Family D, "basic_string<char16_t/char32_t> missing
+base-initializer"), but are out of scope for the ask that started this
+iteration.
+
+Iteration 4: the condition was scoped to the wrong thing
+------------------------------------------------------------
+
+The condition above, `func->isTemplateInstantiation() &&
+!func->getPrimaryTemplate()`, was pointed out to have a real gap: it was
+implicitly reasoning "this needs the fix if the function itself isn't a
+template" -- but the injected-class-name-under-a-namespace risk has nothing
+to do with whether `func` is separately templated. It's a property of
+whether `func`'s *enclosing scope* (at any nesting depth) is a class
+template specialization. A member function template nested inside an
+instantiated class is just as exposed:
+
+    namespace std {
+    template<typename _Alloc>
+    struct X {
+        typedef unsigned long size_type;
+        template<typename U>
+        void construct(U* p, size_type n) {}
+    };
+    }
+    void use() { std::X<char> a; a.construct<int>(nullptr, 0); }
+
+Here `construct<int>` *does* have a primary template (`construct` itself),
+so the old condition would have left it printed with sugar -- exposed to
+the exact same bug the moment `size_type` needed re-qualifying. This isn't
+hypothetical for this codebase either: libstdc++'s allocators define
+`construct`/`destroy` exactly this way (member function templates of an
+allocator class template).
+
+Fixed by checking the right thing -- not "is func itself templated" but
+"is func nested inside an instantiated class template, anywhere up the
+enclosing-scope chain" -- via a new helper (helper.cpp / helpers.h):
+
+    bool isMemberOfClassTemplateSpecialization(const clang::Decl* decl) {
+        for (const clang::DeclContext* dc = decl->getDeclContext(); dc; dc = dc->getParent()) {
+            if (llvm::isa<clang::ClassTemplateSpecializationDecl>(dc)) return true;
+        }
+        return false;
+    }
+
+and swapping it in for the old condition in `VisitFunctionDecl`:
+
+    if (isMemberOfClassTemplateSpecialization(func)) {
+        decl_policy.PrintAsCanonical = true;
+        decl_before_def_policy.PrintAsCanonical = true;
+    }
+
+This was also the moment to answer the broader question "should this just
+be true for *any* deferred declaration?" -- no: for a function with no
+class-template-specialization ancestor at all (an ordinary free function,
+or a method of a non-template class), there is no injected-class-name
+mechanism in play anywhere, so canonical printing would buy zero safety
+there while uglifying (and risking unrelated churn in) code that already
+prints correctly. The fix should track the actual mechanism that causes
+the bug, not be broadened past it "just in case."
+
+Verified: the `construct<int>` repro above now compiles clean end-to-end,
+with the specialization fully preserved:
+
+    template<> template<> void std::X<char>::construct<int>(int *___var__9, unsigned long ___var__11);
+    ...
+    template<> template<> void std::X<char>::construct<int>(int *___var__9, unsigned long ___var__11){ }
+
+Re-running on the full b.cc gives an *identical* result to iteration 3 --
+`type-parameter-0-0`/"requires template arguments" still at zero, top-level
+error count still 371 -- confirming the broadened condition covers
+strictly more cases with no regression on this input (b.cc apparently
+never happens to hit the nested-member-function-template shape, but the
+fix is now correct for it regardless).
+
+Iteration 5: why not canonicalize every deferred declaration?
+------------------------------------------------------------------
+
+Reasonable next question: why scope `PrintAsCanonical` to
+`isMemberOfClassTemplateSpecialization(func)` at all -- why not just set it
+for every deferred declaration, unconditionally? Tested it directly rather
+than reasoning about it in the abstract: flipped the condition to `true`
+for all functions and reran on b.cc.
+
+Result: top-level error count went from 371 to 355 -- looks like a
+win -- but a *brand-new* error category appeared that was not present in
+either the original run or the scoped-fix run:
+
+    output.cc:14994:20: error: constructor for 'std::system_error' must
+    explicitly initialize the base class 'std::runtime_error' which does
+    not have a default constructor
+
+`std::system_error` is an ordinary, non-template class -- nothing about it
+should be touched by a fix aimed at class-template-instantiation members.
+Tracing it down: `record_function_definition` (invisible.cpp:414-437)
+extracts a constructor's member-initializer list (`ctor_init`) by printing
+the *same* FunctionDecl twice under two *different* policies -- once as
+`deferred_decl` (whichever policy the caller passed in) and once as `full`
+via `m_deferred_policy_def` (a separate field, untouched by this fix) --
+and then does a literal string prefix match:
+
+    if (llvm::StringRef(full).starts_with(deferred_decl)) { ... }
+
+This assumes both prints spell the function's signature identically up to
+the initializer list. Once `deferred_decl` was made canonical
+unconditionally while `m_deferred_policy_def` (building `full`) stayed
+sugared, `system_error`'s constructor's two prints stopped agreeing
+character-for-character, the prefix match silently failed
+(`brace == npos`), and `ctor_init` was silently left empty -- dropping
+`: std::runtime_error(...)` from the emitted definition with no diagnostic
+at that stage. It only surfaced two compilation steps later as this
+confusing, seemingly-unrelated error.
+
+So the concrete answer: this codebase has more than one piece of fragile
+string-matching logic that assumes two independently-printed copies of the
+same declaration stay textually consistent with each other (this
+ctor-init extraction is one; `fixParameterPack`'s `str.find(name + "<")`
+search, invisible.cpp:284-286, is built the same way and is exposed to the
+same risk). Widening `PrintAsCanonical` to declarations that were never
+part of the injected-class-name problem:
+  - buys zero correctness benefit for Family A (already at zero errors in
+    both the scoped and the unconditional version), but
+  - measurably breaks one of these string-matching assumptions, silently,
+    on completely unrelated code.
+The 371 -> 355 drop is not a real improvement: it's the same underlying
+problems minus some of the visible signal, plus one new *silent*
+correctness bug (a dropped base-class initializer) that would need its own
+follow-up fix. Scoping the change to exactly the declarations that are
+provably exposed to the mechanism we're fixing
+(`isMemberOfClassTemplateSpecialization`) is what keeps every other
+declaration's pair of prints (both the decl/before-def pair *and* their
+`m_deferred_policy_def` counterpart used for ctor_init) mutually
+consistent, and is why the scoped fix hits zero new error categories while
+the unconditional one introduces one.
+
+Iteration 6: canonicalize genuinely everything -- but only where it's valid
+------------------------------------------------------------------------------
+
+Asked directly: types being canonicalized shouldn't be able to cause bugs
+by themselves, so why not just set `m_policy.PrintAsCanonical = true` on
+the root policy and let every derived policy (including `m_inplace_policy`)
+inherit it, instead of scoping to `isMemberOfClassTemplateSpecialization`?
+
+Tried exactly that. It broke immediately, on both minimal repros:
+
+    void deallocate(type-parameter-0-0 *___var__1, unsigned long ___var__3);
+
+The reason is fundamental, not a style tradeoff: `m_inplace_policy` (via
+`get_function_declaration`) is also used to print the class template
+*pattern*'s own member declaration -- `void deallocate(_Tp* p, size_type n);`
+inside `__new_allocator<_Tp>` itself, where `_Tp` is a genuinely
+unresolved template parameter at that point. Canonicalization only strips
+sugar off an *already fully-resolved* type; it can't invent a resolution
+for a type that hasn't been substituted yet. There is no valid canonical
+spelling for a bare, unresolved template parameter other than clang's
+internal placeholder `type-parameter-<depth>-<index>` -- so canonicalizing
+a dependent declaration reintroduces the *exact* bug this whole line of
+work exists to remove, just via a different door.
+
+So "should canonicalizing types cause bugs" has a precise answer: no, not
+by itself -- but printing a *dependent* declaration "canonically" isn't
+really canonicalizing an already-resolved type at all; it's asking the
+printer to spell out a type that doesn't exist yet, which is a different
+operation entirely and always was going to fail. The real, correct rule
+was never "deferred vs in-place" (iteration 4) or "member of a class
+template specialization vs not" (also iteration 4) -- it's simply
+"dependent vs non-dependent". A non-dependent declaration's types are
+always fully resolved, everywhere, unconditionally, so canonicalizing it
+is always safe; a dependent one's aren't, so it never should be.
+
+Fixed by moving the decision to exactly that check, applied uniformly:
+
+  - `m_deferred_policy_decl` / `m_deferred_policy_def` are set canonical
+    directly in the constructor -- safe unconditionally, because every
+    call site that uses them is already inside `if
+    (!func->isDependentContext())` (deferred declarations for a dependent
+    function are never built at all).
+  - `get_function_declaration` and `get_kr_function_declarations` (which
+    both use `m_inplace_policy` and are called for *every* function,
+    dependent or not) now build a local copy of `m_inplace_policy` with
+    `PrintAsCanonical = !func->isDependentContext()` instead of using the
+    field directly.
+  - `m_policy`/`m_inplace_policy` themselves are deliberately left
+    non-canonical, since they're the ones also used to print dependent
+    declarations.
+
+Verified: both `deallocate` and `construct<int>` repros compile clean
+again. On the full b.cc: `type-parameter-0-0`, "requires template
+arguments", and "must explicitly initialize the base class" (the
+std::system_error regression from iteration 5) are all back to **zero**,
+and the top-level error count is now 359 -- *better* than both the
+narrowly-scoped iteration-4 fix (371) and the broken unconditional attempt
+(355, which only looked better because it was silently dropping a base
+initializer).
+
+One loose end: two new error categories appeared relative to iteration 4
+that aren't yet root-caused -- "return type of out-of-line definition of
+'std::basic_istream<char>::ignore' differs from that in the declaration"
+(appears to stem from the returned type being printed as
+`std::basic_istream<char, struct std::char_traits<char>>` -- with the
+default `Traits` argument spelled out and an elaborated `struct` keyword --
+while some other declaration of the same specialization is not) and
+"expected class member or base class name". A minimal repro built to
+mirror this exact shape (a class template with a defaulted second
+parameter, `Traits = char_traits<CharT>`, and a member function declared
+in-class but defined out-of-line in the pattern, then instantiated on
+`char`) compiled *without* error, so whatever triggers this in the real
+b.cc needs something more specific than that shape alone -- possibly an
+interaction with `char_traits<char>`'s own member typedefs, or with one of
+`ignore`'s overloads carrying a default argument. Left for the next
+iteration; not a reason to revert this fix, since it doesn't reproduce
+outside of the exact real-world input and the tracked regression
+categories are all confirmed at zero.
