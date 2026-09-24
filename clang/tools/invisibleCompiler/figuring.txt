@@ -584,3 +584,49 @@ still the single largest bucket by far -- roughly 90+ of the remaining
 `class`/`struct` keyword leaking into a constructor's base-initializer-id
 position (`expected class member or base class name`, 9 occurrences,
 e.g. `: class std::__new_allocator<char16_t>(...)`).
+
+Correction to iteration 7: `override final` ordering
+--------------------------------------------------------
+
+Caught by review: `override` and `final` can legally co-occur on the same
+declaration (`void foo() override final;`), in either order. The original
+`stripRecordDeclOnlySpecifiers` wrapped its entire body -- including the
+trailing `" override"`/`" final"` suffix check -- in an outer
+`for (bool changed = true; changed;)` fixed-point loop, so even if a
+single pass's fixed iteration order missed one of the two (because the
+other was still attached as the actual suffix), a second pass would catch
+it. My rewrite dropped that outer wrapper when it made the leading-keyword
+scan position-independent, leaving the trailing check as a single pass.
+
+Verified the bug directly: for input ending in `override final`, a single
+pass checks `" override"` first (fails to match, since `" final"` is the
+literal suffix at that point), strips `" final"`, and stops -- leaving
+`override` behind. `final override` happens to work by luck of iteration
+order (checks `" override"` first, which matches as the actual suffix and
+exposes `" final"` for the second keyword in the same pass), so the bug is
+order-dependent and easy to miss by only testing one ordering.
+
+Fixed by restoring the fixed-point retry around just that suffix check:
+
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (llvm::StringRef kw : {" override", " final"}) {
+            if (llvm::StringRef(s).ends_with(kw)) {
+                s.resize(s.size() - kw.size());
+                changed = true;
+            }
+        }
+    }
+
+Verified with a standalone reimplementation of the exact algorithm against
+both orderings (both now correctly strip to nothing) plus the earlier
+adversarial battery (identifier substrings, `static_cast`, string
+literals) -- no change in behavior for any of those. Rebuilt and reran on
+the real b.cc: still 183 errors, unchanged (this specific input doesn't
+happen to have a co-occurring override+final case), and all three repros
+(mini3, mini5, mini6) still compile clean.
+
+The known, still-open gap from iteration 7 stands: none of this
+distinguishes a real token from the same text inside a string/char
+literal (confirmed not live in the current b.cc output, but a latent
+limitation worth remembering if this is ever reused on different input).

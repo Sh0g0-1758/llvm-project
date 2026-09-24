@@ -1,0 +1,127 @@
+Minimal reproduction: restoring default arguments breaks parameter names in
+the body of an explicit specialization
+=============================================================================
+
+Context: investigating the <recovery-expr> cascade (Family B in figuring.txt).
+Root cause traced to __to_chars_len(value, base = 10): our tool strips the
+default argument from the primary template's own declaration
+(m_inplace_policy.SuppressInitializers = true) and illegally re-adds it to
+the explicit specialization's printed definition (m_deferred_policy_decl has
+no such suppression), so by the time a call site passes only one argument,
+there is no legal declaration anywhere carrying the default, and Sema gives
+up with a RecoveryExpr.
+
+Proposed two-part fix (NOT applied, this is a reproduction of why it's unsafe
+as written):
+
+  1. In get_function_declaration's `function_template->print(...)` branch,
+     stop suppressing initializers, so the primary template's own
+     declaration keeps its default argument (the one legal place for it).
+  2. Where `deferred_decl` is built via `func->print(..., m_deferred_policy_decl)`,
+     suppress initializers specifically when `func->getPrimaryTemplate()` is
+     non-null, so a specialization's printed definition never repeats an
+     illegal default.
+
+Objection raised: part 1 in particular risks printing something that
+references a variable "not declared at that point". Below is a minimal,
+concrete case where implementing exactly this fix produces exactly that
+failure -- not on the default argument expression itself (which turned out
+to be fine, see below), but on the body of the specialization's definition.
+
+Repro source (mini10.cc)
+-------------------------
+
+    namespace ns {
+    constexpr int kDefaultBase = 10;
+
+    template<typename _Tp>
+    constexpr int compute(_Tp value, int base = kDefaultBase) noexcept;
+    }
+
+    namespace ns {
+    template<> constexpr int compute<int>(int value, int base) noexcept {
+        return value + base;
+    }
+    }
+
+    int use(int x) {
+        return ns::compute(x);
+    }
+
+Run: `invisible preprocess mini10.cc -x c++ -std=c++23 -ferror-limit=200 normal`
+
+Baseline (current committed code, unmodified) -- confirmed correct
+----------------------------------------------------------------------
+
+    namespace ns {
+    constexpr int ___var__0 = 10;
+    ;
+
+    template <typename _Tp> constexpr int compute(_Tp ___var__2, int ___var__4) noexcept;;
+    } // namespace ns
+
+    namespace ns {
+    template<> constexpr int compute<int>(int ___var__6, int ___var__8) noexcept;
+    } // namespace ns
+
+    int use(int ___var__10);
+
+    template<> constexpr int ns::compute<int>(int ___var__6, int ___var__8) noexcept;
+    int use(int ___var__10);
+
+    template<> constexpr int ns::compute<int>(int ___var__6, int ___var__8 = ___var__0) noexcept{
+        return ___var__6 + ___var__8;
+    }
+
+    int use(int ___var__10){
+        return <recovery-expr>(ns::compute, ___var__10);
+    }
+
+Errors: "default argument not permitted on an explicit specialization of
+function 'compute'" (the already-known Family C bug) and the <recovery-expr>
+cascade in `use`. The specialization's body correctly says
+`return ___var__6 + ___var__8;`, matching its own declared parameter names.
+This confirms: the default argument value itself (`___var__0`, i.e.
+kDefaultBase, declared before the template) resolves fine wherever it's
+printed -- restoring it on the primary template's declaration was never
+going to hit an out-of-order-declaration problem for the *default value
+expression itself* in this shape.
+
+With the two-part fix applied -- confirmed broken, and NOT a pre-existing
+issue (verified by toggling only this code path against the identical input)
+--------------------------------------------------------------------------------
+
+    template<> constexpr int ns::compute<int>(int ___var__6, int ___var__8) noexcept{
+        return ___var__2 + ___var__4;
+    }
+
+Errors:
+
+    output.cc:18:12: error: use of undeclared identifier '___var__2'
+    output.cc:18:24: error: use of undeclared identifier '___var__4'
+
+The specialization's declared parameters are `___var__6`/`___var__8` (correct,
+matches its own signature), but the printed BODY now refers to
+`___var__2`/`___var__4` -- the primary template pattern's own parameter names,
+which belong to a completely different declaration and are never in scope
+here. This is exactly the "using variables not declared at that point"
+failure: not from the default argument's value expression (which is fine),
+but from the specialization's own body silently referencing the wrong
+declaration's parameters once `SuppressInitializers` is toggled off via a
+policy copy on this print path.
+
+Confirmed via direct A/B test: reverting to the committed baseline (same
+input, same flags) reproduces the correct `___var__6 + ___var__8`, and
+re-applying only this fix reproduces the mismatch every time -- so this is
+caused specifically by the proposed change, not a latent, already-present
+bug that happened to surface here.
+
+Not yet root-caused: why toggling `SuppressInitializers` on a *copy* of
+`m_deferred_policy_decl` (used only for the declarator/signature and,
+separately, apparently affecting how the body's parameter DeclRefExprs
+get printed) changes which ParmVarDecls the body's names are resolved
+against. Given this, part 2 of the proposed fix is unsafe as written and
+needs a different mechanism -- possibly stripping the default argument
+textually from `deferred_decl` after printing (string surgery, narrowly
+scoped to the parameter list) rather than via a PrintingPolicy toggle,
+so nothing about how the body gets printed is disturbed.

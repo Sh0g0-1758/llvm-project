@@ -77,6 +77,43 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
         return true;
     }
 
+    if (m_in_default_arg) {
+        if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+            clang::NamedDecl* decl = ref->getDecl();
+            if (!decl->getDeclContext()->isFunctionOrMethod()) {
+                stream << decl->getQualifiedNameAsString();
+                return true;
+            }
+        }
+    }
+
+    if (auto* call = llvm::dyn_cast<clang::CallExpr>(stmt)) {
+        bool has_default = false;
+        for (clang::Expr* arg : call->arguments()) {
+            if (llvm::isa<clang::CXXDefaultArgExpr>(arg)) { has_default = true; break; }
+        }
+        if (has_default) {
+            call->getCallee()->printPretty(stream, this, m_policy);
+            stream << "(";
+            bool first = true;
+            for (clang::Expr* arg : call->arguments()) {
+                if (!first) stream << ", ";
+                first = false;
+                auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg);
+                if (default_arg) {
+                    bool saved = m_in_default_arg;
+                    m_in_default_arg = true;
+                    default_arg->getExpr()->printPretty(stream, this, m_policy);
+                    m_in_default_arg = saved;
+                } else {
+                    arg->printPretty(stream, this, m_policy);
+                }
+            }
+            stream << ")";
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -251,6 +288,7 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_deferred_policy_def = m_policy;
     m_deferred_policy_def.PrintAsCanonical = true;
     m_deferred_policy_def.FullyQualifiedName = true;
+    m_deferred_policy_def.SuppressInitializers = true;
 
 
     m_deferred_policy_decl = m_policy;
@@ -260,6 +298,9 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_deferred_policy_decl.PrintAsCanonical = true;
     m_deferred_policy_decl.FullyQualifiedName = true;
     m_deferred_policy_decl.TerseOutput = true;
+    // default arguments are not printed for any function declaration.
+    // instead, the default arguments are materialized at the callSite itself. 
+    m_deferred_policy_decl.SuppressInitializers = true;
 
 
     m_deferred_policy_decl_before_def = m_deferred_policy_decl;
@@ -269,10 +310,6 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_inplace_policy = m_policy;
     m_inplace_policy.TerseOutput = true;
     m_inplace_policy.SuppressTemplateArgsInCXXConstructors = true;
-    // there can be multiple declarations of a function and each declaration
-    // can specify default arguments for some of the function parameters. 
-    // if we don't supress them, they will all accumulate everywhere. Instead
-    // we emit all the initializers in the deferred declaration. 
     m_inplace_policy.SuppressInitializers = true;
 
 
@@ -649,8 +686,6 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
         // re-emit each function declaration so that if it uses
         // any global variables, the renamed versions of those are printed. 
-        // The printing policy also ensures that default initializers are 
-        // stripped from these declarations. 
         std::string decl;
         get_function_declaration(func, decl);
         // it is possible for a declaration to not have a body

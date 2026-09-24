@@ -52,11 +52,12 @@ class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
   private:
     clang::ASTContext& m_ctx;
     clang::PrintingPolicy m_policy;
+    bool m_in_default_arg = false;
 };
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
-/// Puts all function declarations before all function definitions 
+/// Puts all function declarations before all function definitions
 class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisitor> {
   public:
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
