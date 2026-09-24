@@ -241,30 +241,30 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_def_var(m_ctx.getLangOpts()),m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
     m_policy.IncludeTagDefinition = true;
     m_policy.SuppressTagKeyword = false;
 
-    m_deferred_policy_decl = m_policy;
     m_deferred_policy_def = m_policy;
+    m_deferred_policy_def.PrintAsCanonical = true;
+    m_deferred_policy_def.FullyQualifiedName = true;
+
+
+    m_deferred_policy_decl = m_policy;
     // certain types defined within a record are not printed properly ie.
     // when the types are referenced, they are not properly qualified. 
     // By printing their canonicalized form, we circumvent this problem. 
     m_deferred_policy_decl.PrintAsCanonical = true;
-    m_deferred_policy_def.PrintAsCanonical = true;
+    m_deferred_policy_decl.FullyQualifiedName = true;
+    m_deferred_policy_decl.TerseOutput = true;
 
-    if (m_ctx.getLangOpts().CPlusPlus) {
-        m_deferred_policy_def.FullyQualifiedName = true;
 
-        m_deferred_policy_decl.FullyQualifiedName = true;
-        m_deferred_policy_decl.TerseOutput = true;
+    m_deferred_policy_decl_before_def = m_deferred_policy_decl;
+    m_deferred_policy_decl_before_def.SuppressInitializers = true;
 
-        m_deferred_policy_decl_before_def = m_deferred_policy_decl;
-        m_deferred_policy_decl_before_def.SuppressInitializers = true;
-    }
 
     m_inplace_policy = m_policy;
     m_inplace_policy.TerseOutput = true;
@@ -274,6 +274,10 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     // if we don't supress them, they will all accumulate everywhere. Instead
     // we emit all the initializers in the deferred declaration. 
     m_inplace_policy.SuppressInitializers = true;
+
+
+    m_deferred_policy_def_var = m_deferred_policy_def;
+    m_deferred_policy_def_var.PrintAsCanonical = false;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -807,7 +811,7 @@ bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
 
             decl = "";
         } else {
-            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def, m_ctx);
+            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def_var, m_ctx);
         }
     } else {
         glob_decl->print(decl_out, m_policy);
