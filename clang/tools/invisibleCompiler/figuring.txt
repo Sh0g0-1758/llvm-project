@@ -534,3 +534,53 @@ interaction with `char_traits<char>`'s own member typedefs, or with one of
 iteration; not a reason to revert this fix, since it doesn't reproduce
 outside of the exact real-world input and the tracked regression
 categories are all confirmed at zero.
+
+Iteration 7: record-decl-only specifiers surviving onto out-of-line copies
+------------------------------------------------------------------------------
+
+After further printing-policy changes (m_deferred_policy_def gained
+FullyQualifiedName/PrintAsCanonical, a separate m_deferred_policy_def_var
+was split out for VarDecls), the error count dropped to 216. Next-largest
+fully-diagnosed category: "'static'/'explicit' can only be specified
+inside the class definition" (27 + 6 = 33 of 216). Two causes:
+
+1. `stripRecordDeclOnlySpecifiers` (invisible.cpp:337) only stripped these
+   keywords when they were the very first thing in the string
+   (`starts_with`). `allocator_traits<Alloc>::deallocate` prints as
+   `[[gnu::always_inline]] static void ...` -- the attribute comes first,
+   so the check never matched and `static` survived onto the hoisted,
+   out-of-line declaration where it's illegal.
+
+2. The stripping call was only ever wired up from
+   `record_function_definition`, which only runs for non-dependent
+   functions. `basic_ostream<CharT,Traits>::sentry::sentry` is a
+   genuinely dependent constructor, declared `explicit` inside the class
+   but originally *defined out-of-line* (confirmed in b.cc:22208-22209 vs.
+   its separate out-of-line definition). That out-of-line definition goes
+   through `get_function_declaration` -> `replace_function_declaration`
+   (the in-place path, using `m_inplace_policy`), which never called
+   `stripRecordDeclOnlySpecifiers` at all -- so `explicit` survived on a
+   replacement that's textually outside the class, which is illegal for
+   the same reason as (1), even though replacing an *inline* definition
+   (still textually inside the class) would have been fine.
+
+Fixed both at once: made `stripRecordDeclOnlySpecifiers` search for each
+keyword anywhere in the string (word-boundary checked) instead of only at
+position 0, and call it from `get_function_declaration` too, guarded by
+`func->isCXXClassMember() && func->isOutOfLine()`. Searching the whole
+string rather than only skipping a specific enumerated prefix
+(`template<>`, then `[[attr]]`, then...) means any prefix -- and any
+specifier position, e.g. after the return type rather than before it --
+is handled for free, without needing to special-case each shape.
+
+Verified: full error count 216 -> 183 (exactly -33, the whole target
+category), the category itself disappears completely, every other
+category's count is unchanged, and all three prior repros (mini3, mini5,
+mini6) still compile clean.
+
+Next candidates, still open: the `<recovery-expr>` cascade (Family B,
+still the single largest bucket by far -- roughly 90+ of the remaining
+183 once every downstream error it causes is counted) and the elaborated
+`class`/`struct` keyword leaking into a constructor's base-initializer-id
+position (`expected class member or base class name`, 9 occurrences,
+e.g. `: class std::__new_allocator<char16_t>(...)`).

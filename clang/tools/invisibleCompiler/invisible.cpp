@@ -335,32 +335,42 @@ unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::Functio
 
 // strip specifiers that are legal only inside the class definition
 void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
-    for (bool changed = true; changed;) {
-        changed = false;
+    auto isWordChar = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
 
-        for (llvm::StringRef kw : {"static ", "virtual ", "friend "}) {
-            if (llvm::StringRef(s).starts_with(kw)) {
-                s.erase(0, kw.size());
-                changed = true;
+    for (llvm::StringRef kw : {"static ", "virtual ", "friend "}) {
+        size_t pos = 0;
+        while ((pos = s.find(kw.str(), pos)) != std::string::npos) {
+            if (pos > 0 && isWordChar(s[pos - 1])) {
+                ++pos;
+                continue;
             }
+            s.erase(pos, kw.size());
         }
-        if (llvm::StringRef(s).starts_with("explicit")) {
-            size_t i = 8;
-            if (i < s.size() && s[i] == '(') {
-                for (size_t depth = 0; i < s.size(); ++i) {
-                    if (s[i] == '(') ++depth;
-                    else if (s[i] == ')' && --depth == 0) { ++i; break; }
-                }
-            }
-            while (i < s.size() && s[i] == ' ') ++i;
-            s.erase(0, i);
-            changed = true;
+    }
+
+    size_t pos = 0;
+    while ((pos = s.find("explicit", pos)) != std::string::npos) {
+        if (pos > 0 && isWordChar(s[pos - 1])) {
+            ++pos;
+            continue;
         }
-        for (llvm::StringRef kw : {" override", " final"}) {
-            if (llvm::StringRef(s).ends_with(kw)) {
-                s.resize(s.size() - kw.size());
-                changed = true;
+        size_t i = pos + 8;
+        if (i < s.size() && s[i] == '(') {
+            for (size_t depth = 0; i < s.size(); ++i) {
+                if (s[i] == '(') ++depth;
+                else if (s[i] == ')' && --depth == 0) { ++i; break; }
             }
+        } else if (i < s.size() && isWordChar(s[i])) {
+            ++pos;
+            continue;
+        }
+        while (i < s.size() && s[i] == ' ') ++i;
+        s.erase(pos, i - pos);
+    }
+
+    for (llvm::StringRef kw : {" override", " final", " override"}) {
+        if (llvm::StringRef(s).ends_with(kw)) {
+            s.resize(s.size() - kw.size());
         }
     }
 }
@@ -539,6 +549,9 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
         func->print(decl_out, m_inplace_policy);
     }
     decl_out.flush();
+    if (func->isCXXClassMember() && func->isOutOfLine()) {
+        stripRecordDeclOnlySpecifiers(decl);
+    }
 }
 
 clang::SourceLocation
