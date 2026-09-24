@@ -445,6 +445,7 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     }
 
     m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
+    m_deferred_declarations.push_back(prefix + deferred_decl);
 }
 
 void DeclBeforeDefVisitor::get_kr_function_declarations(clang::FunctionDecl* func, std::string& decl, std::string& deferred_decl) {
@@ -685,8 +686,21 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         m_rewriter.ReplaceText(decl_range, it.second.first);
     }
 
-    std::string all_defs;
+    std::string all_decls;
     size_t total = 1;
+    for (const auto& decl : m_deferred_declarations) {
+        total += decl.size() + 1;
+    }
+    all_decls.reserve(total);
+
+    all_decls += '\n';
+    for(auto& decl : m_deferred_declarations) {
+        all_decls += std::move(decl);
+        all_decls += "\n";
+    }
+
+    std::string all_defs;
+    total = 1;
     for (const auto& def : m_deferred_definitions)
         total += def.size() + 1;
     all_defs.reserve(total);
@@ -697,7 +711,7 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         all_defs += "\n";
     }
 
-    return all_defs;
+    return all_decls + all_defs;
 }
 
 /**

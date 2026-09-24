@@ -78,6 +78,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::PrintingPolicy m_inplace_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
+    std::vector<std::string> m_deferred_declarations;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
     std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
