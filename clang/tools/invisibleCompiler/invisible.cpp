@@ -241,7 +241,7 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
@@ -255,6 +255,9 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
 
         m_deferred_policy_decl.FullyQualifiedName = true;
         m_deferred_policy_decl.TerseOutput = true;
+
+        m_deferred_policy_decl_before_def = m_deferred_policy_decl;
+        m_deferred_policy_decl_before_def.SuppressInitializers = true;
     }
 
     m_inplace_policy = m_policy;
@@ -352,7 +355,7 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
     }
 }
 
-void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl) {
+void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl, std::string& deferred_decl_before_def) {
     // template instantiations that do not physically live in the current TU should not be deferred. 
     // Their definitions are still present in the AST. For eg. 
     //     template<typename T>
@@ -437,15 +440,17 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     if (auto primary_template = func->getPrimaryTemplate()) {
         if (primary_template->getTemplateParameters()->hasParameterPack()) {
             fixParameterPack(deferred_decl, func);
+            fixParameterPack(deferred_decl_before_def, func);
         }
     }
 
     if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
         stripRecordDeclOnlySpecifiers(deferred_decl);
+        stripRecordDeclOnlySpecifiers(deferred_decl_before_def);
     }
 
     m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
-    m_deferred_declarations.push_back(prefix + deferred_decl);
+    m_deferred_declarations.push_back(prefix + deferred_decl_before_def + ";");
 }
 
 void DeclBeforeDefVisitor::get_kr_function_declarations(clang::FunctionDecl* func, std::string& decl, std::string& deferred_decl) {
@@ -638,9 +643,13 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     std::string decl;
     std::string deferred_decl;
+    // declaration to be emitted not as part of the definition
+    // but before it. See getDeferredDefinitions. 
+    std::string deferred_decl_before_def;
 
     if (!func->hasWrittenPrototype() && func->getNumParams() > 0) {
         get_kr_function_declarations(func, decl, deferred_decl);
+        deferred_decl_before_def = deferred_decl;
     } else {
         get_function_declaration(func, decl);
 
@@ -648,6 +657,10 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             llvm::raw_string_ostream deferred_decl_out(deferred_decl);
             func->print(deferred_decl_out, m_deferred_policy_decl);
             deferred_decl_out.flush();
+
+            llvm::raw_string_ostream deferred_decl_before_def_out(deferred_decl_before_def);
+            func->print(deferred_decl_before_def_out, m_deferred_policy_decl_before_def);
+            deferred_decl_before_def_out.flush();
         }
     }
 
@@ -655,7 +668,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     // within the TU and hence we record its definition to emit
     // it at the end of the TU. 
     if (!func->isDependentContext()) {
-        record_function_definition(func, deferred_decl);
+        record_function_definition(func, deferred_decl, deferred_decl_before_def);
     }
 
     // Removes all in-place function definitions.
@@ -685,6 +698,31 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         decl_range.setEnd(it.second.second);
         m_rewriter.ReplaceText(decl_range, it.second.first);
     }
+
+    // emitting declarations for deferred definitions beforehand
+    // helps avoiding emitting specializations after instantiations. 
+    // If we do not emit declarations, its possible one function definition
+    // instantiates a template, but a template specialization of that is present
+    // after this definition. Eg. : 
+    /*
+        template<typename T>
+        int foo();
+
+        template<typename U>
+        int bar() {
+            U a;
+            U b;
+        }
+
+        template<typename T>
+        int foo() {
+            bar<T>();
+        }
+
+        int zed() {
+            foo<int>();
+        }
+    */
 
     std::string all_decls;
     size_t total = 1;
