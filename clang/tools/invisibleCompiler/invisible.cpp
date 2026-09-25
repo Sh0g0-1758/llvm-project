@@ -1110,9 +1110,6 @@ class ReplaceThisVisitor : public clang::RecursiveASTVisitor<ReplaceThisVisitor>
     // presence of the `this` keyword.
     bool TraverseCXXRecordDecl(clang::CXXRecordDecl*) { return true; }
 
-    // Only the syntactic form of the AST is traversed, which is also the one
-    // StmtPrinter prints. Children are traversed before their slots are patched,
-    // so we never walk into m_replacement (whose base is itself a CXXThisExpr).
     bool TraverseStmt(clang::Stmt* stmt) {
         if (!stmt) return true;
         if (!clang::RecursiveASTVisitor<ReplaceThisVisitor>::TraverseStmt(stmt)) return false;
