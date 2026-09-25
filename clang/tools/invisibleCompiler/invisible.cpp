@@ -241,17 +241,18 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_def(m_ctx.getLangOpts()), m_deferred_policy_def_var(m_ctx.getLangOpts()),m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_ctor(m_ctx.getLangOpts()), m_deferred_policy_def_var(m_ctx.getLangOpts()),m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
     m_policy.IncludeTagDefinition = true;
     m_policy.SuppressTagKeyword = false;
 
-    m_deferred_policy_def = m_policy;
-    m_deferred_policy_def.PrintAsCanonical = true;
-    m_deferred_policy_def.FullyQualifiedName = true;
-    m_deferred_policy_def.SuppressInitializers = true;
+
+    m_deferred_policy_ctor = m_policy;
+    m_deferred_policy_ctor.PrintAsCanonical = true;
+    m_deferred_policy_ctor.FullyQualifiedName = true;
+    m_deferred_policy_ctor.SuppressTagKeyword = true;
 
 
     m_deferred_policy_decl = m_policy;
@@ -276,8 +277,8 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_inplace_policy.SuppressInitializers = true;
 
 
-    m_deferred_policy_def_var = m_deferred_policy_def;
-    m_deferred_policy_def_var.PrintAsCanonical = false;
+    m_deferred_policy_def_var = m_policy;
+    m_deferred_policy_def_var.FullyQualifiedName = true;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -393,6 +394,74 @@ void DeclBeforeDefVisitor::materializeDefaultArgs(clang::Stmt* node) {
     }
 }
 
+std::string DeclBeforeDefVisitor::printCtorInitializers(clang::CXXConstructorDecl* ctor) {
+    std::string result;
+    llvm::raw_string_ostream out(result);
+    bool has_initializer_list = false;
+
+    for (const clang::CXXCtorInitializer* init : ctor->inits()) {
+        if (init->isInClassMemberInitializer()) continue;
+        if (!init->isWritten()) continue;
+
+        if (!has_initializer_list) {
+            out << " : ";
+            has_initializer_list = true;
+        } else {
+            out << ", ";
+        }
+
+        if (init->isAnyMemberInitializer()) {
+            out << init->getAnyMember()->getName();
+        } else if (init->isDelegatingInitializer()) {
+            out << ctor->getNameAsString();
+        } else {
+            out << clang::QualType(init->getBaseClass(), 0).getAsString(m_deferred_policy_ctor);
+        }
+
+        if (clang::Expr* expr = init->getInit()) {
+            bool out_parens = !llvm::isa<clang::InitListExpr>(expr);
+            if (out_parens) out << "(";
+
+            if (auto* cleanups = llvm::dyn_cast<clang::ExprWithCleanups>(expr))
+                expr = cleanups->getSubExpr();
+            expr = expr->IgnoreParens();
+
+            clang::Expr* simple_init = nullptr;
+            clang::Expr** args = nullptr;
+            unsigned num_args = 0;
+
+            if (auto* paren_list = llvm::dyn_cast<clang::ParenListExpr>(expr)) {
+                args = paren_list->getExprs();
+                num_args = paren_list->getNumExprs();
+            } else if (auto* construct = llvm::dyn_cast<clang::CXXConstructExpr>(expr)) {
+                args = construct->getArgs();
+                num_args = construct->getNumArgs();
+            } else {
+                simple_init = expr;
+            }
+
+            if (simple_init) {
+                simple_init->printPretty(out, &m_custom_printer, m_deferred_policy_ctor);
+            } else {
+                for (unsigned i = 0; i != num_args; ++i) {
+                    if (llvm::isa<clang::CXXDefaultArgExpr>(args[i])) break;
+                    if (i) out << ", ";
+                    args[i]->printPretty(out, &m_custom_printer, m_deferred_policy_ctor);
+                }
+            }
+
+            if (out_parens) out << ")";
+        } else {
+            out << "()";
+        }
+
+        if (init->isPackExpansion()) out << "...";
+    }
+
+    out.flush();
+    return result;
+}
+
 void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl, std::string& deferred_decl_before_def) {
     // template instantiations that do not physically live in the current TU should not be deferred. 
     // Their definitions are still present in the AST. For eg. 
@@ -452,28 +521,7 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
 
     std::string ctor_init{};
     if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) {
-        std::string full;
-        llvm::raw_string_ostream full_out(full);
-        func->print(full_out, m_deferred_policy_def);
-        full_out.flush();
-
-        if (llvm::StringRef(full).starts_with(deferred_decl)) {
-            size_t end = full.find_last_of('}');
-            size_t brace = std::string::npos;
-            if (end != std::string::npos && end >= deferred_decl.size()) {
-                size_t depth = 0;
-                for (size_t i = end + 1; i-- > deferred_decl.size(); ) {
-                    if (full[i] == '}') {
-                        ++depth;
-                    } else if (full[i] == '{') {
-                        if (--depth == 0) { brace = i; break; }
-                    }
-                }
-            }
-            if (brace != std::string::npos) {
-                ctor_init = full.substr(deferred_decl.size(), brace - deferred_decl.size());
-            }
-        }
+        ctor_init = printCtorInitializers(ctor);
     }
 
     if (auto primary_template = func->getPrimaryTemplate()) {
@@ -946,9 +994,7 @@ NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::AS
     m_policy.SuppressTagKeyword = false;
 
     m_deferred_policy_def = m_policy;
-    if (m_ctx.getLangOpts().CPlusPlus) {
-        m_deferred_policy_def.FullyQualifiedName = true;
-    }
+    m_deferred_policy_def.FullyQualifiedName = true;
 }
 
 bool NormalizeMultipleRecordDeclVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {

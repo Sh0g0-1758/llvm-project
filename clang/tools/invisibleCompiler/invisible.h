@@ -73,7 +73,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
-    clang::PrintingPolicy m_deferred_policy_def;
+    clang::PrintingPolicy m_deferred_policy_ctor;
     clang::PrintingPolicy m_deferred_policy_decl;
     clang::PrintingPolicy m_deferred_policy_decl_before_def;
     clang::PrintingPolicy m_deferred_policy_def_var;
@@ -87,6 +87,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);
     void materializeDefaultArgs(clang::Stmt* node);
+    std::string printCtorInitializers(clang::CXXConstructorDecl* ctor);
     void record_function_definition(clang::FunctionDecl* func_decl, std::string& deferred_decl, std::string& deferred_decl_before_def);
     void get_function_declaration(clang::FunctionDecl* func_decl, std::string& decl);
     void get_kr_function_declarations(clang::FunctionDecl* func_decl, std::string& decl, std::string& deferred_decl);
