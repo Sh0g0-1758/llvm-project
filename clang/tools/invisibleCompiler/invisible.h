@@ -114,6 +114,29 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     DeclBeforeDefPrinterHelper m_custom_printer;
 };
 
+// ─── MaterializeLambdaVisitor ──────────────────────────────────────
+
+/// Materialize Lamda Expressions as individual RecordDecls. Captured variables
+/// are represented as field members and captured `this` keyword is renamed to a 
+/// custom field member. The function represented by the lamda is emitted as an
+/// operator() call and the lamdaExpression itself is replaced by an object of 
+/// the corresponding recordDecl. 
+class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLambdaVisitor> {
+  public:
+    MaterializeLambdaVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    bool VisitLambdaExpr(clang::LambdaExpr* lambda);
+    bool changed() const { return m_changed; }
+  private:
+    clang::ASTContext& m_ctx;
+    clang::Rewriter& m_rewriter;
+    clang::PrintingPolicy m_policy;
+    clang::PrintingPolicy m_field_policy;
+    bool m_changed = false;
+    static size_t s_counter;
+    bool containsNestedLambda(clang::Stmt* node);
+    void rewriteCapturedThis(clang::ASTContext& ctx, clang::Stmt* node, clang::Expr* replacement);
+};
+
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
 
 /// Canonicalize all local / global variables defined in a translation unit. 
