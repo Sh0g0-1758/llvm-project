@@ -1103,53 +1103,41 @@ bool MaterializeLambdaVisitor::containsNestedLambda(clang::Stmt* node) {
 
 class ReplaceThisVisitor : public clang::RecursiveASTVisitor<ReplaceThisVisitor> {
   public:
-    ReplaceThisVisitor(clang::ASTContext& ctx, clang::Expr* replacement) : m_ctx(ctx), m_replacement(replacement) {}
-
-    bool TraverseCXXRecordDecl(clang::CXXRecordDecl*) { return true; }
+    ReplaceThisVisitor(clang::Expr* replacement) : m_replacement(replacement) {}
 
     // skip traversing records as their methods will have CXXThisExpr
     // which we do not intend to modify. We only want to mutate top-level
-    // presence of the `this` keyword. 
+    // presence of the `this` keyword.
     bool TraverseCXXRecordDecl(clang::CXXRecordDecl*) { return true; }
 
-    // syntactic and semantic forms of initListExpr share the same child pointer 
-    // (no conversion needed), the OTHER form's own InitExprs array never gets recorded as a
-    // parent, even though StmtPrinter prints the syntactic form. So a getParents()-based 
-    // mutation can silently miss the array. 
-    bool VisitInitListExpr(clang::InitListExpr* ile) {
-        replaceThisInInits(ile);
-        replaceThisInInits(ile->getSyntacticForm());
-        replaceThisInInits(ile->getSemanticForm());
-        return true;
-    }
-
-    bool VisitCXXThisExpr(clang::CXXThisExpr* this_expr) {
-        for (const auto& parent_node : m_ctx.getParents(*this_expr)) {
-            auto* parent = const_cast<clang::Stmt*>(parent_node.get<clang::Stmt>());
-            if (!parent) continue;
-            for (clang::Stmt*& child : parent->children()) {
-                if (child == this_expr)
-                    child = m_replacement;
-            }
-        }
+    // Only the syntactic form of the AST is traversed, which is also the one
+    // StmtPrinter prints. Children are traversed before their slots are patched,
+    // so we never walk into m_replacement (whose base is itself a CXXThisExpr).
+    bool TraverseStmt(clang::Stmt* stmt) {
+        if (!stmt) return true;
+        if (!clang::RecursiveASTVisitor<ReplaceThisVisitor>::TraverseStmt(stmt)) return false;
+        replaceThisInChildren(stmt);
+        // parents point at the semantic form of an InitListExpr, but RAV traverses
+        // (and StmtPrinter prints) its syntactic form, which has its own array.
+        if (auto* ile = llvm::dyn_cast<clang::InitListExpr>(stmt))
+            replaceThisInChildren(ile->getSyntacticForm());
         return true;
     }
 
   private:
-    void replaceThisInInits(clang::InitListExpr* ile) {
-        if (!ile) return;
-        for (unsigned i = 0; i < ile->getNumInits(); i++) {
-            if (llvm::isa_and_nonnull<clang::CXXThisExpr>(ile->getInit(i)))
-                ile->setInit(i, m_replacement);
+    void replaceThisInChildren(clang::Stmt* stmt) {
+        if (!stmt) return;
+        for (clang::Stmt*& child : stmt->children()) {
+            if (llvm::isa_and_nonnull<clang::CXXThisExpr>(child))
+                child = m_replacement;
         }
     }
 
-    clang::ASTContext& m_ctx;
     clang::Expr* m_replacement;
 };
 
-void MaterializeLambdaVisitor::rewriteCapturedThis(clang::ASTContext& ctx, clang::Stmt* node, clang::Expr* replacement) {
-    ReplaceThisVisitor visitor(ctx, replacement);
+void MaterializeLambdaVisitor::rewriteCapturedThis(clang::Stmt* node, clang::Expr* replacement) {
+    ReplaceThisVisitor visitor(replacement);
     visitor.TraverseStmt(node);
 }
 
@@ -1238,7 +1226,7 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             this_field, clang::DeclAccessPair::make(this_field, this_field->getAccess()),
             clang::DeclarationNameInfo(this_field->getDeclName(), clang::SourceLocation()), nullptr,
             this_field->getType(), clang::VK_LValue, clang::OK_Ordinary, clang::NOUR_None);
-        rewriteCapturedThis(m_ctx, call_op->getBody(), replacement);
+        rewriteCapturedThis(call_op->getBody(), replacement);
     }
 
     call_op->print(struct_out, m_policy);
@@ -5045,8 +5033,8 @@ std::string preprocess(const std::string& source, const std::string& filename, s
     llvm::outs() << "[Invisible]: MaterializeLambdaVisitor succeeded\n";
 
     // Gather function definitions and move them after all function
-    // declarations and Canonicalize all local / global variables defined 
-    // in a translation unit. 
+    // declarations and Canonicalize all local / global variables defined
+    // in a translation unit.
     {
         clang::Rewriter rewriter;
         std::string tmp_result = runInMemory(result, filename, args, [&rewriter](clang::ASTContext& ctx, clang::Sema& sema) {
