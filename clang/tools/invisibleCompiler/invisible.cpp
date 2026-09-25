@@ -77,43 +77,6 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
         return true;
     }
 
-    if (m_in_default_arg) {
-        if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
-            clang::NamedDecl* decl = ref->getDecl();
-            if (!decl->getDeclContext()->isFunctionOrMethod()) {
-                stream << decl->getQualifiedNameAsString();
-                return true;
-            }
-        }
-    }
-
-    if (auto* call = llvm::dyn_cast<clang::CallExpr>(stmt)) {
-        bool has_default = false;
-        for (clang::Expr* arg : call->arguments()) {
-            if (llvm::isa<clang::CXXDefaultArgExpr>(arg)) { has_default = true; break; }
-        }
-        if (has_default) {
-            call->getCallee()->printPretty(stream, this, m_policy);
-            stream << "(";
-            bool first = true;
-            for (clang::Expr* arg : call->arguments()) {
-                if (!first) stream << ", ";
-                first = false;
-                auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg);
-                if (default_arg) {
-                    bool saved = m_in_default_arg;
-                    m_in_default_arg = true;
-                    default_arg->getExpr()->printPretty(stream, this, m_policy);
-                    m_in_default_arg = saved;
-                } else {
-                    arg->printPretty(stream, this, m_policy);
-                }
-            }
-            stream << ")";
-            return true;
-        }
-    }
-
     return false;
 }
 
@@ -412,6 +375,24 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
     }
 }
 
+// recurse into the callExpr, visit all its children and reason
+// if any of them is a default argument. If so, fully qualify the
+// identifiers used by this expression. 
+void DeclBeforeDefVisitor::materializeDefaultArgs(clang::Stmt* node) {
+    if (!node) return;
+
+    for (clang::Stmt*& child : node->children()) {
+        if (!child) continue;
+
+        if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(child)) {
+            child = default_arg->getExpr();
+            qualifyNonLocalNames(child, m_ctx);
+        }
+
+        materializeDefaultArgs(child);
+    }
+}
+
 void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func, std::string& deferred_decl, std::string& deferred_decl_before_def) {
     // template instantiations that do not physically live in the current TU should not be deferred. 
     // Their definitions are still present in the AST. For eg. 
@@ -458,6 +439,7 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     // in fact, fully qualifying this can lead to errors, for 
     // instance re-declaration of functions in block scope. 
     llvm::raw_string_ostream def_out(def);
+    materializeDefaultArgs(func->getBody());
     func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
     def_out.flush();
 

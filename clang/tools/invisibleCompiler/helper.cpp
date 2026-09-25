@@ -1,6 +1,8 @@
 #include "helpers.h"
 
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/DeclCXX.h"
+#include "clang/AST/Expr.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/Tooling.h"
@@ -99,6 +101,39 @@ bool isInsideFunction(const clang::Decl* decl) {
         if (llvm::isa<clang::BlockDecl>(decl_context)) return true;
     }
     return false;
+}
+
+clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc) {
+    if (!dc || dc->isTranslationUnit()) return clang::NestedNameSpecifier(std::nullopt);
+
+    if (auto* ns = llvm::dyn_cast<clang::NamespaceDecl>(dc))
+        return clang::NestedNameSpecifier(ctx, ns, buildQualifierForContext(ctx, dc->getParent()));
+
+    if (auto* rec = llvm::dyn_cast<clang::CXXRecordDecl>(dc))
+        return clang::NestedNameSpecifier(
+            ctx.getTypeDeclType(clang::ElaboratedTypeKeyword::None, std::nullopt, rec).getTypePtr());
+
+    return clang::NestedNameSpecifier(std::nullopt);
+}
+
+// Fully qualifies all the declarations present in a given Stmt AST node in-place. 
+void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
+    if (!node) return;
+
+    if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node)) {
+        if (!ref->hasQualifier() && !ref->getDecl()->getDeclContext()->isFunctionOrMethod()) {
+            clang::NestedNameSpecifier qualifier = buildQualifierForContext(ctx, ref->getDecl()->getDeclContext());
+            if (qualifier) {
+                node = clang::DeclRefExpr::Create(
+                    ctx, clang::NestedNameSpecifierLoc(qualifier, nullptr), clang::SourceLocation(),
+                    ref->getDecl(), false, ref->getLocation(), ref->getType(), ref->getValueKind());
+            }
+        }
+        return;
+    }
+
+    for (clang::Stmt*& child : node->children())
+        qualifyNonLocalNames(child, ctx);
 }
 
 }  // namespace invisible

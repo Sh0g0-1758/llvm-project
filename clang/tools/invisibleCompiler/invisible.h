@@ -52,7 +52,6 @@ class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
   private:
     clang::ASTContext& m_ctx;
     clang::PrintingPolicy m_policy;
-    bool m_in_default_arg = false;
 };
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
@@ -87,6 +86,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);
+    void materializeDefaultArgs(clang::Stmt* node);
     void record_function_definition(clang::FunctionDecl* func_decl, std::string& deferred_decl, std::string& deferred_decl_before_def);
     void get_function_declaration(clang::FunctionDecl* func_decl, std::string& decl);
     void get_kr_function_declarations(clang::FunctionDecl* func_decl, std::string& decl, std::string& deferred_decl);

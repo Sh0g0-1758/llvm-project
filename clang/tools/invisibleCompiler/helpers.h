@@ -1,6 +1,7 @@
 #pragma once
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/NestedNameSpecifier.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/Sema.h"
 #include <functional>
@@ -27,5 +28,9 @@ bool isCompilable(const std::string& source, const std::string& filename, const 
 void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx);
 
 bool isInsideFunction(const clang::Decl* decl);
+
+clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc);
+
+void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
 
 }  // namespace invisible
