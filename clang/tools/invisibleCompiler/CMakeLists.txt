@@ -5,6 +5,29 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_tool(invisible
   invisible.cpp
+  inline/InlineVisitor.cpp
+  preprocess/information_collector/InformationCollectorVisitor.cpp
+  common/DeclBeforeDefPrinterHelper.cpp
+  preprocess/decl_before_def/DeclBeforeDefVisitor.cpp
+  preprocess/normalize_multiple_record_decl/NormalizeMultipleRecordDeclVisitor.cpp
+  preprocess/materialize_lambda/MaterializeLambdaVisitor.cpp
+  preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.cpp
+  preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.cpp
+  preprocess/break_local_record_decl_stmt/BreakLocalRecordDeclStmtVisitor.cpp
+  preprocess/access_specifier/AccessSpecifierVisitor.cpp
+  preprocess/name_template_type_parm/NameTemplateTypeParmVisitor.cpp
+  preprocess/short_circuit_operator_to_ir/ShortCircuitOperatorToIRVisitor.cpp
+  preprocess/mark_switch_case/MarkSwitchCaseVisitor.cpp
+  preprocess/loop_to_ir/LoopToIRVisitor.cpp
+  preprocess/compound_stmt_wrapper/CompoundStmtWrapperVisitor.cpp
+  preprocess/paren_expr_wrapper/ParenExprWrapperVisitor.cpp
+  preprocess/comma_init/CommaInitVisitor.cpp
+  preprocess/func_call_cleanup/FuncCallCleanupVisitor.cpp
+  separate_functions/SeparateFunctions.cpp
+  constant_fold/ConstantFoldVisitor.cpp
+  dead_code_elim/DeadCodeElimVisitor.cpp
+  copy_propagation/CopyPropagationVisitor.cpp
+  dead_store_elim/DeadStoreElimVisitor.cpp
   helper.cpp
   main.cpp
   )
