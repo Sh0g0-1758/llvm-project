@@ -23,7 +23,6 @@ ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool ParenExprWrapperVisitor::VisitBinaryOperator(clang::BinaryOperator* bin_op) {

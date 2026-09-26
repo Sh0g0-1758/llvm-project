@@ -44,7 +44,6 @@ deadCodeElimVisitor::deadCodeElimVisitor(clang::ASTContext& context, clang::Rewr
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool deadCodeElimVisitor::did_elim() {
@@ -272,7 +271,6 @@ deadCodeElimCfgAnalysisVisitor::deadCodeElimCfgAnalysisVisitor(clang::ASTContext
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool deadCodeElimCfgAnalysisVisitor::did_elim() {

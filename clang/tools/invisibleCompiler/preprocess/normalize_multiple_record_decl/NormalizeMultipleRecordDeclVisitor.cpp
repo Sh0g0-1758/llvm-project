@@ -23,7 +23,6 @@ NormalizeMultipleRecordDeclVisitor::NormalizeMultipleRecordDeclVisitor(clang::AS
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 
     m_deferred_policy_def = m_policy;
     m_deferred_policy_def.FullyQualifiedName = true;

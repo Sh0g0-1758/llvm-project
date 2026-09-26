@@ -24,7 +24,6 @@ MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewr
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {

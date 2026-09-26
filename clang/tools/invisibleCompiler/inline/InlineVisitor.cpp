@@ -44,7 +44,6 @@ InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string tar
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
-        m_policy.SuppressTagKeyword = false;
       }
 
 void InlinePrinterHelper::renameFuncParamInType(clang::QualType T) {
@@ -325,7 +324,6 @@ InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, 
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -602,7 +600,6 @@ FunctionDeclMapVisitor::FunctionDeclMapVisitor(clang::ASTContext& ctx, clang::Re
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool FunctionDeclMapVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {

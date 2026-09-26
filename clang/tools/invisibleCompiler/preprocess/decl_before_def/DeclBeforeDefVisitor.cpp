@@ -26,13 +26,11 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
         m_policy.adjustForCPlusPlus();
     }
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 
 
     m_deferred_policy_ctor = m_policy;
     m_deferred_policy_ctor.PrintAsCanonical = true;
     m_deferred_policy_ctor.FullyQualifiedName = true;
-    m_deferred_policy_ctor.SuppressTagKeyword = true;
 
 
     m_deferred_policy_decl = m_policy;

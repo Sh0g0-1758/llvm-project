@@ -26,7 +26,6 @@ MaterializeLambdaVisitor::MaterializeLambdaVisitor(clang::ASTContext& ctx, clang
 
     m_field_policy = m_policy;
     m_field_policy.PrintAsCanonical = true;
-    m_field_policy.SuppressTagKeyword = true;
 }
 
 class ContainsLambdaVisitor : public clang::RecursiveASTVisitor<ContainsLambdaVisitor> {

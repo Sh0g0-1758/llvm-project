@@ -24,7 +24,6 @@ LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewrit
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {

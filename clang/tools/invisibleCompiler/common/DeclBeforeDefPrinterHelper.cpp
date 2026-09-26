@@ -24,7 +24,6 @@ DeclBeforeDefPrinterHelper::DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, c
         if (m_ctx.getLangOpts().CPlusPlus)
             m_policy.adjustForCPlusPlus();
         m_policy.IncludeTagDefinition = true;
-        m_policy.SuppressTagKeyword = false;
       }
 
 bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {

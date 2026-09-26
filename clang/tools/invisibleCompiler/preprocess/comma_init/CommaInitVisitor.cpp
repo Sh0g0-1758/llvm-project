@@ -24,7 +24,6 @@ CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewr
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
-    m_policy.SuppressTagKeyword = false;
 }
 
 clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
