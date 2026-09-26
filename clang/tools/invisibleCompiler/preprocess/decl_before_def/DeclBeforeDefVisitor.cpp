@@ -561,27 +561,31 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             func->print(deferred_decl_before_def_out, m_deferred_policy_decl_before_def);
             deferred_decl_before_def_out.flush();
 
-            // when printing declarations with the auto keyword, the printer will try 
-            // to print the deduced type. This can lead to errors if one declaration has the
-            // auto keyword and the other have its deduced form. Two declarations can only
-            // differ in the return type deduction if one of them has more information about 
-            // its type than the other. Such a case is only true for template instantiations. 
-            // Hence if a declaration is an instantiation and its return type has the auto keyword
-            // and its deduced, revert it back to the auto keyword to maintain uniformity. 
+            // the printer prints a deduced return type (eg. `auto`, `decltype(auto)` or
+            // `Small auto`) as the type it was deduced to. For template instantiations
+            // this doesn't match the primary template, which stays generic in the TU:
+            // a specialization of a function declared with a placeholder return type
+            // must repeat that exact placeholder. Hence the deduced return type is
+            // replaced back with the return type as spelled in the pattern.
+            // Non-template functions keep the deduced type, as every declaration of
+            // them is re-printed with it.
             auto* auto_type = func->getReturnType()->getContainedAutoType();
-            if (func->isTemplateInstantiation() && auto_type && !auto_type->getDeducedType().isNull()) {
-                std::string deduced;
-                llvm::raw_string_ostream deduced_out(deduced);
-                auto_type->getDeducedType().print(deduced_out, m_deferred_policy_decl);
-                deduced_out.flush();
-
-                size_t pos = deferred_decl.find(deduced);
-                if (pos != std::string::npos)
-                    deferred_decl.replace(pos, deduced.size(), "auto");
-
-                pos = deferred_decl_before_def.find(deduced);
-                if (pos != std::string::npos)
-                    deferred_decl_before_def.replace(pos, deduced.size(), "auto");
+            const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern();
+            if (func->isTemplateInstantiation() && auto_type && auto_type->isDeduced() && pattern) {
+                std::string deduced = func->getReturnType().getAsString(m_deferred_policy_decl);
+                std::string placeholder = pattern->getReturnType().getAsString(m_deferred_policy_decl);
+                auto restore_placeholder = [&](std::string& decl) {
+                    size_t pos = decl.find(deduced);
+                    if (pos == std::string::npos) return;
+                    decl.replace(pos, deduced.size(), placeholder);
+                    // `int &get()` has no space after the deduced type, `decltype(auto) get()` needs one.
+                    size_t end = pos + placeholder.size();
+                    if (end < decl.size() && (isalnum((unsigned char)decl[end]) || decl[end] == '_') &&
+                        (isalnum((unsigned char)placeholder.back()) || placeholder.back() == ')'))
+                        decl.insert(end, " ");
+                };
+                restore_placeholder(deferred_decl);
+                restore_placeholder(deferred_decl_before_def);
             }
         }
     }
