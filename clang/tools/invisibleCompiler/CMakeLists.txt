@@ -21,6 +21,7 @@ add_clang_tool(invisible
   preprocess/short_circuit_operator_to_ir/ShortCircuitOperatorToIRVisitor.cpp
   preprocess/mark_switch_case/MarkSwitchCaseVisitor.cpp
   preprocess/loop_to_ir/LoopToIRVisitor.cpp
+  preprocess/disassemble_cxx_for_range_stmt/DisassembleCXXForRangeStmtVisitor.cpp
   preprocess/compound_stmt_wrapper/CompoundStmtWrapperVisitor.cpp
   preprocess/paren_expr_wrapper/ParenExprWrapperVisitor.cpp
   preprocess/comma_init/CommaInitVisitor.cpp

@@ -31,6 +31,7 @@
 #include "preprocess/short_circuit_operator_to_ir/ShortCircuitOperatorToIRVisitor.h"
 #include "preprocess/mark_switch_case/MarkSwitchCaseVisitor.h"
 #include "preprocess/loop_to_ir/LoopToIRVisitor.h"
+#include "preprocess/disassemble_cxx_for_range_stmt/DisassembleCXXForRangeStmtVisitor.h"
 #include "preprocess/compound_stmt_wrapper/CompoundStmtWrapperVisitor.h"
 #include "preprocess/paren_expr_wrapper/ParenExprWrapperVisitor.h"
 #include "preprocess/comma_init/CommaInitVisitor.h"

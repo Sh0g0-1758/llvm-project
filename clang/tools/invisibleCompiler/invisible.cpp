@@ -184,6 +184,16 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
             });
         }});
 
+    passes.push_back({{"disassemble-cxx-for-range-stmt", "Rewrite range based for loops as for loops", false},
+        [&](const std::string& source, unsigned, bool&) {
+            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
+                if (ctx.getLangOpts().CPlusPlus) {
+                    DisassembleCXXForRangeStmtVisitor visitor(ctx, rewriter);
+                    visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+                }
+            });
+        }});
+
     // Writes Loops in their IR form at the source code level. 
     passes.push_back({{"loop-to-ir", "Rewrite loops into their IR form", false},
         [&](const std::string& source, unsigned, bool&) {
