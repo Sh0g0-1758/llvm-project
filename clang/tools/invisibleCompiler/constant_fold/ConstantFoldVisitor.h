@@ -31,6 +31,7 @@ private:
 public:
     constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitExpr(clang::Expr* expr);
+    bool TraverseParmVarDecl(clang::ParmVarDecl* param);
     bool did_fold();
 };
 

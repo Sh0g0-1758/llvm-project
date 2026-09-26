@@ -24,6 +24,18 @@ bool constantFoldVisitor::did_fold() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
 
+// a parameter that inherits its default argument (eg. the redeclaration of a member in a
+// deferred specialization) points to the same expression as the declaration it was written
+// on. Folding it again would edit the same source text twice, so only the declaration that
+// wrote the default folds it.
+bool constantFoldVisitor::TraverseParmVarDecl(clang::ParmVarDecl* param) {
+    if (!param->hasInheritedDefaultArg())
+        return clang::RecursiveASTVisitor<constantFoldVisitor>::TraverseParmVarDecl(param);
+    if (clang::TypeSourceInfo* type_info = param->getTypeSourceInfo())
+        return TraverseTypeLoc(type_info->getTypeLoc());
+    return true;
+}
+
 bool constantFoldVisitor::skip_if_bad_parent(clang::Expr* expr) {
     if (!expr) return false;
 
