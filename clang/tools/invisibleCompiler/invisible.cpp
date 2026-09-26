@@ -141,6 +141,11 @@ std::string preprocess(const std::string& source, const std::string& filename, s
             rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
             // The trick here is to make the changes within the AST
             {
+                FunctionalCastToCStyleCastVisitor visitor(ctx, sema);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            }
+
+            {
                 CanonicalizeVarDeclVisitor visitor(ctx, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             }
