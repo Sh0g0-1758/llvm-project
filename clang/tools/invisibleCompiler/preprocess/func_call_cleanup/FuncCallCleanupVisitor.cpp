@@ -163,9 +163,9 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
         if (parents.empty())
             return {};
         const auto& parent = parents[0];
-        // a call in a member initializer, a default member initializer or a member
-        // function of a local class can't be hoisted into the enclosing function,
-        // whose variables aren't visible there.
+        // a call in a constructor initializer, a default member initializer of a local
+        // class or the signature of a function declared inside a block can't be hoisted
+        // into the enclosing function, whose variables aren't visible there.
         if (parent.get<clang::CXXCtorInitializer>() || parent.get<clang::TagDecl>() || parent.get<clang::FunctionDecl>())
             return {};
         if (parent.get<clang::CompoundStmt>() != nullptr)
