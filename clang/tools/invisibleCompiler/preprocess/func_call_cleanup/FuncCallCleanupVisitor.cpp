@@ -86,6 +86,7 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
 
     std::string ret_var{};
     std::string clean_call{};
+    bool direct_init = false;
     llvm::raw_string_ostream out(clean_call);
 
     if (!call->getType()->isVoidType()) {
@@ -119,7 +120,16 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         }
 
         decl_ty.print(out, m_policy, ret_var);
-        out << " = ";
+
+        // a conversion operator applied implicitly, eg. by `if (obj)`, has no source text
+        // of its own and may be explicit, which copy-initialization can't call. Direct
+        // initialization can, and is what a condition does.
+        if (const auto* member_call = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
+            const auto* member = llvm::dyn_cast<clang::MemberExpr>(member_call->getCallee());
+            direct_init = member && llvm::isa<clang::CXXConversionDecl>(member->getMemberDecl()) &&
+                          member->getMemberLoc().isInvalid();
+        }
+        out << (direct_init ? "(" : " = ");
 
         if (lang_opts.CPlusPlus) {
             if (call->isPRValue()) {
@@ -138,7 +148,7 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
     } else {
         ret_var = "(void)0";
     }
-    out << call_text << ";\n";
+    out << call_text << (direct_init ? ");\n" : ";\n");
     out.flush();
 
     if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
