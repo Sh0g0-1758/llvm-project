@@ -52,6 +52,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void replace_function_declaration(clang::FunctionDecl* func, std::string& decl);
     void fix_friend_declaration(std::string& decl);
     clang::SourceLocation expand_range_to_include_template_headers(clang::SourceLocation begin);
+    clang::SourceLocation expand_range_to_terminating_semi(clang::SourceLocation end);
 };
 
 }  // namespace invisible

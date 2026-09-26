@@ -488,6 +488,13 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
         if (func->getDescribedFunctionTemplate()) {
             fix_friend_declaration(decl);
         }
+        // a friend naming a specialization, eg. `friend void h<>(S);`, is printed
+        // as `friend template<> void h<>(S)`, but a friend declaration can't carry
+        // a template header.
+        if (func->isFunctionTemplateSpecialization()) {
+            size_t pos = decl.find("friend template<> ");
+            if (pos != std::string::npos) decl.erase(pos + strlen("friend "), strlen("template<> "));
+        }
     } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
         function_template->print(decl_out, inplace_policy);
     } else {
@@ -532,11 +539,38 @@ DeclBeforeDefVisitor::expand_range_to_include_template_headers(clang::SourceLoca
     return begin.getLocWithOffset(cursor - source_mgr.getCharacterData(begin));
 }
 
+// clang reports a truncated end location for a function declaration whose trailing
+// return type is a `decltype(...)`: the range ends at the function name. For
+// declarations without a body, walk forward to the terminating `;` so that the whole
+// declaration is replaced. For correct ranges this is a no-op. Brackets are tracked
+// as a `decltype` may contain a lambda with its own `;`.
+clang::SourceLocation DeclBeforeDefVisitor::expand_range_to_terminating_semi(clang::SourceLocation end) {
+    const clang::SourceManager& source_mgr = m_ctx.getSourceManager();
+    const clang::LangOptions& lang_opts = m_ctx.getLangOpts();
+    // the range of a definition ends at the closing brace of its body.
+    if (*source_mgr.getCharacterData(end) == '}') return end;
+    clang::SourceLocation cursor = end;
+    int depth = 0;
+    for (;;) {
+        std::optional<clang::Token> next = clang::Lexer::findNextToken(cursor, source_mgr, lang_opts);
+        if (!next || next->is(clang::tok::eof)) return end;
+        if (depth == 0 && next->is(clang::tok::semi)) return cursor;
+        // a body at the top level means this is not a bare declaration.
+        if (depth == 0 && next->is(clang::tok::l_brace)) return end;
+        if (next->isOneOf(clang::tok::l_paren, clang::tok::l_square, clang::tok::l_brace)) ++depth;
+        else if (next->isOneOf(clang::tok::r_paren, clang::tok::r_square, clang::tok::r_brace)) --depth;
+        cursor = next->getLocation();
+    }
+}
+
 void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* func, std::string& decl) {
     respellDecayedVaList(decl);
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
-        m_rewriter.ReplaceText(friend_decl->getSourceRange(), decl + ";");
+        clang::SourceRange range = friend_decl->getSourceRange();
+        if (!func->doesThisDeclarationHaveABody())
+            range.setEnd(expand_range_to_terminating_semi(range.getEnd()));
+        m_rewriter.ReplaceText(range, decl + ";");
     } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
         /**
          * A function can be declared using a nested template level. This happens
@@ -564,6 +598,8 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
          */
         clang::SourceRange corrected_source_range;
         corrected_source_range.setEnd(function_template->getSourceRange().getEnd());
+        if (!func->doesThisDeclarationHaveABody())
+            corrected_source_range.setEnd(expand_range_to_terminating_semi(corrected_source_range.getEnd()));
         if (func->isCXXClassMember() and func->isOutOfLine()) {
             corrected_source_range.setBegin(expand_range_to_include_template_headers(function_template->getSourceRange().getBegin()));
         } else {
@@ -571,7 +607,10 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
         }
         m_rewriter.ReplaceText(corrected_source_range, decl + ";");
     } else {
-        m_rewriter.ReplaceText(func->getSourceRange(), decl + ";");
+        clang::SourceRange range = func->getSourceRange();
+        if (!func->doesThisDeclarationHaveABody())
+            range.setEnd(expand_range_to_terminating_semi(range.getEnd()));
+        m_rewriter.ReplaceText(range, decl + ";");
     }
 }
 
@@ -595,14 +634,15 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
         // re-emit each function declaration so that if it uses
         // any global variables, the renamed versions of those are printed. 
-        std::string decl;
-        get_function_declaration(func, decl);
         // it is possible for a declaration to not have a body
         // and still have instantiations. consider : 
         // template<typename T>
         // void foo();
         // <in some function> foo<int>();
+        // instantiated copies are not re-emitted, hence not printed either.
         if (!isInstantiatedCopy(func)) {
+            std::string decl;
+            get_function_declaration(func, decl);
             replace_function_declaration(func, decl);
         }
         return true;
@@ -618,7 +658,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         get_kr_function_declarations(func, decl, deferred_decl);
         deferred_decl_before_def = deferred_decl;
     } else {
-        get_function_declaration(func, decl);
+        if (!isInstantiatedCopy(func)) get_function_declaration(func, decl);
 
         if (!func->isDependentContext()) {
             llvm::raw_string_ostream deferred_decl_out(deferred_decl);
