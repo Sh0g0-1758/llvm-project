@@ -111,6 +111,23 @@ void DeclBeforeDefVisitor::stripConstructorTemplateArgs(std::string& str, clang:
     }
 }
 
+// removes the exception specification following a destructor's empty parameter
+// list, ie. the ` noexcept` or ` noexcept(...)` in `~Name() noexcept`.
+void DeclBeforeDefVisitor::stripDestructorExceptionSpec(std::string& str) {
+    const std::string spec = "() noexcept";
+    const size_t pos = str.find(spec);
+    if (pos == std::string::npos) return;
+    const size_t begin = pos + 2;
+    size_t end = pos + spec.size();
+    if (end < str.size() && str[end] == '(') {
+        for (size_t depth = 0; end < str.size(); ++end) {
+            if (str[end] == '(') ++depth;
+            else if (str[end] == ')' && --depth == 0) { ++end; break; }
+        }
+    }
+    str.erase(begin, end - begin);
+}
+
 unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::FunctionDecl* function_decl) {
     unsigned levels = 0;
     // an explicit specialization already emits the correct number of enclosing template<> specifiers. 
@@ -335,6 +352,18 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
         }
     }
 
+    // destructors are implicitly noexcept and the printer spells that out. A
+    // specialization declared and defined with an explicit `noexcept` while the
+    // destructor in the pattern has no written exception specification is
+    // rejected, hence the printed one is dropped in that case.
+    if (auto* dtor = llvm::dyn_cast<clang::CXXDestructorDecl>(func)) {
+        const clang::FunctionDecl* pattern = dtor->getTemplateInstantiationPattern();
+        if (pattern && pattern->getExceptionSpecSourceRange().isInvalid()) {
+            stripDestructorExceptionSpec(deferred_decl);
+            stripDestructorExceptionSpec(deferred_decl_before_def);
+        }
+    }
+
     if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) {
         stripRecordDeclOnlySpecifiers(deferred_decl);
         stripRecordDeclOnlySpecifiers(deferred_decl_before_def);
@@ -433,9 +462,19 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
     // are still needed in unevaluated contexts that stay generic in the TU (eg.
     // SFINAE checks like `decltype(a.allocate(n))`). A friend declaration with
     // default arguments must be the only declaration and a definition, which no
-    // longer holds once its definition is deferred.
+    // longer holds once its definition is deferred. The same holds for attributes
+    // on a friend declaration. Both are kept on the deferred definition.
     clang::PrintingPolicy inplace_policy = m_inplace_policy;
     inplace_policy.SuppressInitializers = func->getFriendObjectKind() != clang::Decl::FOK_None;
+    inplace_policy.PolishForDeclaration = func->getFriendObjectKind() != clang::Decl::FOK_None;
+    // out-of-line members of class templates carry their `template <...>` header
+    // as an outer template parameter list, which the printer emits after the
+    // attributes, resulting in `__attribute__((x)) template <...> ...`. The
+    // attributes aren't needed on this redeclaration, the in-class declaration
+    // and the deferred specializations keep them.
+    if (!func->getDescribedFunctionTemplate() && func->getNumTemplateParameterLists() > 0) {
+        inplace_policy.PolishForDeclaration = true;
+    }
     InheritedDefaultArgsHider hider(func);
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
