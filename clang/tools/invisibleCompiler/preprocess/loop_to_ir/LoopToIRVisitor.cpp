@@ -32,15 +32,23 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
      * is transformed into
      * for (init;;) {
      *   if (!(cond)) { break; }
-     *   body [stripped of surrounding braces]
+     *   { body }
      *   expr
+     * }
+     *
+     * {if body has a continue}
+     * `for (init, cond, inc) body`
+     * is transformed into
+     * for (init;;) {
+     *   if (!(cond)) { break; }
+     *   { body [continue replaced by goto __loop_continue_#id] }
+     *   __loop_continue_#id: { expr }
      * }
      */
     bool hasCond = for_stmt->getCond() != nullptr;
     bool hasInc  = for_stmt->getInc() != nullptr;
-    if(!hasCond && !hasInc) return true;
-    if(hasCond && !exprHasFuncCall(for_stmt->getCond()) &&
-      (hasInc && !exprHasFuncCall(for_stmt->getInc()))) return true;
+    if(!(hasCond && exprHasFuncCall(for_stmt->getCond())) &&
+       !(hasInc && exprHasFuncCall(for_stmt->getInc()))) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
@@ -55,16 +63,21 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     }
     inc_out.flush();
 
+    std::string label = hasInc ? jumpContinuesToLabel(for_stmt->getBody()) : "";
+
     if (hasCond) m_rewriter.ReplaceText(for_stmt->getCond()->getSourceRange(), "");
     if (hasInc) m_rewriter.ReplaceText(for_stmt->getInc()->getSourceRange(), "");
 
     std::string cond_wrapped_in_if;
     llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
     if(hasCond) cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
+    cond_wrapped_out << "{\n";
     cond_wrapped_out.flush();
-    
-    if(hasCond) m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
-    if(hasInc) m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getEnd(), inc);
+    // calls hoisted out of expr stay inside the block, the goto can't jump over them
+    if(!label.empty()) inc = label + ": {\n" + inc + "\n}\n";
+
+    m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
+    m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getEnd(), "}\n" + inc);
 
     return true;
 }
@@ -122,8 +135,16 @@ bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
      * `do body while (cond);`
      * is transformed into
      * do {
-     *   body [stripped of surrounding braces]
+     *   { body }
      *   if (!(cond)) { break; }
+     * } while(1);
+     *
+     * {if body has a continue}
+     * `do body while (cond);`
+     * is transformed into
+     * do {
+     *   { body [continue replaced by goto __loop_continue_#id] }
+     *   __loop_continue_#id: { if (!(cond)) { break; } }
      * } while(1);
      */
     if (!exprHasFuncCall(do_stmt->getCond())) return true;
@@ -140,9 +161,37 @@ bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
     cond_wrapped_out.flush();
 
-    m_rewriter.InsertTextBefore(do_stmt->getBody()->getSourceRange().getEnd(), cond_wrapped_in_if);
+    std::string label = jumpContinuesToLabel(do_stmt->getBody());
+    if (!label.empty()) cond_wrapped_in_if = label + ": {\n" + cond_wrapped_in_if + "}\n";
+
+    m_rewriter.InsertTextBefore(do_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), "{\n");
+    m_rewriter.InsertTextBefore(do_stmt->getBody()->getSourceRange().getEnd(), "}\n" + cond_wrapped_in_if);
 
     return true;
+}
+
+// continues of the loop whose body is stmt, nested loops own theirs
+void LoopToIRVisitor::collectContinues(clang::Stmt* stmt, std::vector<clang::ContinueStmt*>& continues) {
+    if (!stmt) return;
+    if (auto* cont = llvm::dyn_cast<clang::ContinueStmt>(stmt)) {
+        continues.push_back(cont);
+        return;
+    }
+    if (llvm::isa<clang::ForStmt, clang::WhileStmt, clang::DoStmt, clang::CXXForRangeStmt>(stmt)) return;
+    for (clang::Stmt* child : stmt->children())
+        collectContinues(child, continues);
+}
+
+// turns the continues of the loop into gotos to a new label, empty if there are none
+std::string LoopToIRVisitor::jumpContinuesToLabel(clang::Stmt* body) {
+    std::vector<clang::ContinueStmt*> continues;
+    collectContinues(body, continues);
+    if (continues.empty()) return "";
+
+    std::string label = "__loop_continue_" + std::to_string(m_label_index++);
+    for (clang::ContinueStmt* cont : continues)
+        m_rewriter.ReplaceText(cont->getSourceRange(), "goto " + label);
+    return label;
 }
 
 bool LoopToIRVisitor::exprHasFuncCall(clang::Expr* expr) {

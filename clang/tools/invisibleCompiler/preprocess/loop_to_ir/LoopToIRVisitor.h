@@ -28,9 +28,12 @@ class LoopToIRVisitor : public clang::RecursiveASTVisitor<LoopToIRVisitor> {
     bool VisitDoStmt(clang::DoStmt* do_stmt);
     bool exprHasFuncCall(clang::Expr* expr);
   private:
+    void collectContinues(clang::Stmt* stmt, std::vector<clang::ContinueStmt*>& continues);
+    std::string jumpContinuesToLabel(clang::Stmt* body);
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    size_t m_label_index = 0;
 };
 
 }  // namespace invisible
