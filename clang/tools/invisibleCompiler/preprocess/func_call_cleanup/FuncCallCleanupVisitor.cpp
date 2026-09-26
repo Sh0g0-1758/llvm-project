@@ -23,6 +23,9 @@ FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Re
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    // a hoisted temporary is declared in the caller, where the typedefs the callee's
+    // return type was written with, eg. a member typedef, may not be visible.
+    m_policy.PrintAsCanonical = true;
 }
 
 bool FuncCallCleanupVisitor::did_cleanup() {
@@ -91,11 +94,6 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
 
     if (!call->getType()->isVoidType()) {
         clang::QualType ret_ty = call->getType();
-        // builtins such as __builtin_strlen return clang's predefined `__size_t` (or
-        // `__signed_size_t`, `__ptrdiff_t`) sugar, which can't be spelled in source.
-        // Declare the temporary with the type it stands for instead.
-        if (const auto* sugar = llvm::dyn_cast<clang::PredefinedSugarType>(ret_ty.getTypePtr()))
-            ret_ty = m_ctx.getQualifiedType(sugar->desugar(), ret_ty.getLocalQualifiers());
         ret_var = "__func_hoist_ret__" + std::to_string(m_current_index++);
 
         clang::QualType decl_ty = ret_ty;
