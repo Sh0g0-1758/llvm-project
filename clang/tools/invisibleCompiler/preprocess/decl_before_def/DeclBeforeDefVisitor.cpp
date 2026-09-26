@@ -324,7 +324,19 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     // instance re-declaration of functions in block scope. 
     llvm::raw_string_ostream def_out(def);
     materializeDefaultArgs(func->getBody());
-    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
+    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
+        // a friend is not a member: its deferred decl is not qualified by the class,
+        // so its body is not in the class scope either. Print the types canonically
+        // and qualify the names so that the class's typedefs, enumerators and static
+        // members still resolve.
+        clang::PrintingPolicy body_policy = m_policy;
+        body_policy.PrintAsCanonical = true;
+        clang::Stmt* body = func->getBody();
+        qualifyNonLocalNames(body, m_ctx);
+        body->printPretty(def_out, &m_custom_printer, body_policy);
+    } else {
+        func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
+    }
     def_out.flush();
 
     std::string prefix{};

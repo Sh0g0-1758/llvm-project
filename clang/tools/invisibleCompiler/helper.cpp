@@ -222,11 +222,14 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
     if (!node) return;
 
     if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node)) {
-        if (!ref->hasQualifier() && !ref->getDecl()->getDeclContext()->isFunctionOrMethod()) {
-            clang::NestedNameSpecifier qualifier = buildQualifierForContext(ctx, ref->getDecl()->getDeclContext());
+        clang::DeclContext* context = ref->getDecl()->getDeclContext()->getRedeclContext();
+        if (!ref->hasQualifier() && !context->isFunctionOrMethod()) {
+            clang::NestedNameSpecifier qualifier = buildQualifierForContext(ctx, context);
             if (qualifier) {
+                clang::NestedNameSpecifierLocBuilder builder;
+                builder.MakeTrivial(ctx, qualifier, ref->getSourceRange());
                 node = clang::DeclRefExpr::Create(
-                    ctx, clang::NestedNameSpecifierLoc(qualifier, nullptr), clang::SourceLocation(),
+                    ctx, builder.getWithLocInContext(ctx), clang::SourceLocation(),
                     ref->getDecl(), false, ref->getLocation(), ref->getType(), ref->getValueKind());
             }
         }
