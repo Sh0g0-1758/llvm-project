@@ -21,6 +21,7 @@
 #include "preprocess/normalize_multiple_record_decl/NormalizeMultipleRecordDeclVisitor.h"
 #include "preprocess/materialize_lambda/MaterializeLambdaVisitor.h"
 #include "preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.h"
+#include "preprocess/rename_global_var_refs/RenameGlobalVarRefsVisitor.h"
 #include "preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.h"
 #include "preprocess/break_local_record_decl_stmt/BreakLocalRecordDeclStmtVisitor.h"
 #include "preprocess/access_specifier/AccessSpecifierVisitor.h"

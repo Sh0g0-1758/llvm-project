@@ -12,6 +12,7 @@ add_clang_tool(invisible
   preprocess/normalize_multiple_record_decl/NormalizeMultipleRecordDeclVisitor.cpp
   preprocess/materialize_lambda/MaterializeLambdaVisitor.cpp
   preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.cpp
+  preprocess/rename_global_var_refs/RenameGlobalVarRefsVisitor.cpp
   preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.cpp
   preprocess/break_local_record_decl_stmt/BreakLocalRecordDeclStmtVisitor.cpp
   preprocess/access_specifier/AccessSpecifierVisitor.cpp

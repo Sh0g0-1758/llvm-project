@@ -25,12 +25,6 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
   public:
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
-    bool VisitVarDecl(clang::VarDecl* decl);
-    bool VisitEnumDecl(clang::EnumDecl* enum_decl);
-    bool VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl);
-    bool VisitTypedefDecl(clang::TypedefDecl* typdef_decl); 
-    bool VisitTypeAliasDecl(clang::TypeAliasDecl* using_decl);
-    bool VisitFieldDecl(clang::FieldDecl* field_decl);
     std::string getDeferredDefinitions();
     bool shouldVisitTemplateInstantiations() const;
   private:
@@ -40,13 +34,10 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::PrintingPolicy m_deferred_policy_ctor;
     clang::PrintingPolicy m_deferred_policy_decl;
     clang::PrintingPolicy m_deferred_policy_decl_before_def;
-    clang::PrintingPolicy m_deferred_policy_def_var;
     clang::PrintingPolicy m_inplace_policy;
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
     std::vector<std::string> m_deferred_declarations;
-    std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_globals;
-    std::map<clang::SourceLocation, std::pair<std::string, clang::SourceLocation>> m_deferred_typedefs;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);

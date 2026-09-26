@@ -21,7 +21,7 @@ namespace invisible {
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_ctor(m_ctx.getLangOpts()), m_deferred_policy_def_var(m_ctx.getLangOpts()),m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy), m_deferred_globals({}) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_ctor(m_ctx.getLangOpts()), m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
@@ -55,10 +55,6 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_inplace_policy.TerseOutput = true;
     m_inplace_policy.SuppressTemplateArgsInCXXConstructors = true;
     m_inplace_policy.SuppressInitializers = true;
-
-
-    m_deferred_policy_def_var = m_policy;
-    m_deferred_policy_def_var.FullyQualifiedName = true;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -376,11 +372,46 @@ void DeclBeforeDefVisitor::fix_friend_declaration(std::string& decl) {
     decl = header + " friend " + rest;
 }
 
+// Clang copies a default argument onto every redeclaration that inherits it and
+// the printer would print it on all of them. Hides the inherited ones while the
+// declaration is printed, so that each default only appears where it was written.
+class InheritedDefaultArgsHider {
+  public:
+    explicit InheritedDefaultArgsHider(clang::FunctionDecl* func) {
+        for (clang::ParmVarDecl* param : func->parameters()) {
+            if (!param->hasInheritedDefaultArg()) continue;
+            bool uninstantiated = param->hasUninstantiatedDefaultArg();
+            clang::Expr* arg = uninstantiated ? param->getUninstantiatedDefaultArg() : param->getInit();
+            m_hidden.push_back({param, arg, uninstantiated});
+            param->setDefaultArg(nullptr);
+        }
+    }
+
+    ~InheritedDefaultArgsHider() {
+        for (const auto& [param, arg, uninstantiated] : m_hidden) {
+            if (uninstantiated) param->setUninstantiatedDefaultArg(arg);
+            else param->setDefaultArg(arg);
+        }
+    }
+
+  private:
+    struct Hidden { clang::ParmVarDecl* param; clang::Expr* arg; bool uninstantiated; };
+    std::vector<Hidden> m_hidden;
+};
+
 void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, std::string& decl) {
     llvm::raw_string_ostream decl_out(decl);
+    // default arguments are kept on the declaration they were written on as they
+    // are still needed in unevaluated contexts that stay generic in the TU (eg.
+    // SFINAE checks like `decltype(a.allocate(n))`). A friend declaration with
+    // default arguments must be the only declaration and a definition, which no
+    // longer holds once its definition is deferred.
+    clang::PrintingPolicy inplace_policy = m_inplace_policy;
+    inplace_policy.SuppressInitializers = func->getFriendObjectKind() != clang::Decl::FOK_None;
+    InheritedDefaultArgsHider hider(func);
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
-        friend_decl->print(decl_out, m_inplace_policy);
+        friend_decl->print(decl_out, inplace_policy);
         decl_out.flush();
 
         // clang printer prints the friend keyword before the 
@@ -391,9 +422,9 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
             fix_friend_declaration(decl);
         }
     } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
-        function_template->print(decl_out, m_inplace_policy);
+        function_template->print(decl_out, inplace_policy);
     } else {
-        func->print(decl_out, m_inplace_policy);
+        func->print(decl_out, inplace_policy);
     }
     decl_out.flush();
     if (func->isCXXClassMember() && func->isOutOfLine()) {
@@ -576,20 +607,6 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 }
 
 std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
-    for(const auto& it : m_deferred_globals) {
-        clang::SourceRange decl_range;
-        decl_range.setBegin(it.first);
-        decl_range.setEnd(it.second.second);
-        m_rewriter.ReplaceText(decl_range, it.second.first);
-    }
-
-    for(const auto& it : m_deferred_typedefs) {
-        clang::SourceRange decl_range;
-        decl_range.setBegin(it.first);
-        decl_range.setEnd(it.second.second);
-        m_rewriter.ReplaceText(decl_range, it.second.first);
-    }
-
     // emitting declarations for deferred definitions beforehand
     // helps avoiding emitting specializations after instantiations. 
     // If we do not emit declarations, its possible one function definition
@@ -641,150 +658,6 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     }
 
     return all_decls + all_defs;
-}
-
-/**
- * templatized global variables are mostly left as they are. 
- * We only re-emit the templatized body because it can use variables
- * that have now been renamed. We do not emit any specializations.
- * Guards for this, ie. to not rename templatized globals are put
- * in canonicalize and normalize Visitors as well. 
- */
-bool DeclBeforeDefVisitor::VisitVarDecl(clang::VarDecl* glob_decl) {
-    if (glob_decl->isLocalVarDeclOrParm()) return true;
-    if (isInsideFunction(glob_decl)) return true;
-    // skip static member variable instantiations but still re-emit its 
-    // templated version because it might be using variables which are now
-    // renamed. The same is true for templated global variables. 
-    if (glob_decl->getInstantiatedFromStaticDataMember()) return true;
-    if (llvm::isa<clang::VarTemplateSpecializationDecl>(glob_decl)) return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-
-    // An out of line declaration needs to preserve the namespaces when 
-    // its emitted. Hence we emit the fully Qualified variable name. 
-    // static const data members of a class need to be declared outside
-    // of the class (because of ODR). This went away with static constexpr
-    // data members though. The problem is that if the inital declaration
-    // had an initializer, then at the point of definition for the static
-    // const data member, the AST says that it has a definition even though
-    // its not physically present. Its a remnant of its earlier declaration
-    // within the class. Hence when emitting out of line definitions for 
-    // static const data members, we strip away the initializer. 
-    if (glob_decl->isOutOfLine()) {
-        if (glob_decl->isStaticDataMember()) {
-            // TODO: properly print a templated out of line static data member of a class. 
-            // The problem is that well for one the template pattern is not a part of the 
-            // varDecl node at all. We have to print that manually. Secondly and more importantly
-            // If we are to print it in its FullyQualified form, if some types are to be templated
-            // in the fully qualified form, that does not show up at all. We will have to manually 
-            // print the qualifiers. The first part is presented here, the second part is left. 
-            // for now, we just completely omit the out of line static class member declaration. 
-            //
-            // if (clang::NestedNameSpecifier qual = glob_decl->getQualifier(); qual != std::nullopt) {
-            //     for (unsigned i = 0, n = glob_decl->getNumTemplateParameterLists(); i != n; ++i) {
-            //         glob_decl->getTemplateParameterList(i)->print(decl_out, m_ctx, m_policy);
-            //         decl_out << '\n';
-            //     }
-            // }
-            // printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_decl, m_ctx);
-
-            decl = "";
-        } else {
-            printQualifiedVarDecl(decl_out, glob_decl, m_deferred_policy_def_var, m_ctx);
-        }
-    } else {
-        glob_decl->print(decl_out, m_policy);
-    }
-
-    decl_out.flush();
-
-    clang::SourceRange decl_range = glob_decl->getSourceRange();
-
-    if (m_deferred_globals.find(decl_range.getBegin()) != m_deferred_globals.end())
-        m_deferred_globals[decl_range.getBegin()].first += (decl + ";\n");
-    else
-        m_deferred_globals[decl_range.getBegin()].first = (decl + ";\n");
-    m_deferred_globals[decl_range.getBegin()].second = decl_range.getEnd();
-    return true;
-}
-
-// re-emitting field declarations because they can use variables which
-// might be now renamed. 
-bool DeclBeforeDefVisitor::VisitFieldDecl(clang::FieldDecl* field_decl) {
-    if (!field_decl->getType()->isDependentType()) return true;
-    if (isInsideFunction(field_decl)) return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    field_decl->print(decl_out, m_policy);
-    decl_out.flush();
-
-    clang::SourceRange decl_range = field_decl->getSourceRange();
-
-    if (m_deferred_globals.find(decl_range.getBegin()) != m_deferred_globals.end())
-        m_deferred_globals[decl_range.getBegin()].first += (decl + ";\n");
-    else
-        m_deferred_globals[decl_range.getBegin()].first = (decl + ";\n");
-    m_deferred_globals[decl_range.getBegin()].second = decl_range.getEnd();
-    return true;
-}
-
-bool DeclBeforeDefVisitor::VisitEnumDecl(clang::EnumDecl* enum_decl) {
-    if (!enum_decl->getDeclContext()->isFileContext()) return true;
-    if (clang::isTemplateInstantiation(enum_decl->getTemplateSpecializationKind()))
-        return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    enum_decl->print(decl_out, m_policy);
-    decl_out.flush();
-
-    m_rewriter.ReplaceText(enum_decl->getSourceRange(), decl);
-    return true;
-}
-
-bool DeclBeforeDefVisitor::VisitTypeAliasDecl(clang::TypeAliasDecl* using_decl) {
-    if (!using_decl->getDeclContext()->isFileContext()) return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    using_decl->print(decl_out, m_policy);
-    decl_out.flush();
-
-    m_rewriter.ReplaceText(using_decl->getSourceRange(), decl);
-    return true;
-}
-
-bool DeclBeforeDefVisitor::VisitStaticAssertDecl(clang::StaticAssertDecl* static_assert_decl) {
-    if (!static_assert_decl->getDeclContext()->isFileContext()) return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    static_assert_decl->print(decl_out, m_policy);
-    decl_out.flush();
-
-    m_rewriter.ReplaceText(static_assert_decl->getSourceRange(), decl);
-    return true;
-}
-
-bool DeclBeforeDefVisitor::VisitTypedefDecl(clang::TypedefDecl* typdef_decl) {
-    if (!typdef_decl->getDeclContext()->isFileContext()) return true;
-
-    std::string decl;
-    llvm::raw_string_ostream decl_out(decl);
-    typdef_decl->print(decl_out, m_policy);
-    decl_out.flush();
-
-    clang::SourceRange decl_range = typdef_decl->getSourceRange();
-
-    if (m_deferred_typedefs.find(decl_range.getBegin()) != m_deferred_typedefs.end())
-        m_deferred_typedefs[decl_range.getBegin()].first += (decl + ";\n");
-    else
-        m_deferred_typedefs[decl_range.getBegin()].first = (decl + ";\n");
-    m_deferred_typedefs[decl_range.getBegin()].second = decl_range.getEnd();
-    return true;
 }
 
 }  // namespace invisible
