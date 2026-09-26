@@ -9,6 +9,28 @@
 
 namespace invisible {
 
+/// Settings shared by every pass, set once by the command line driver.
+struct ToolSettings {
+    bool verbose = false;  ///< show the passes' progress chatter
+    bool color = false;    ///< color clang's diagnostics
+};
+ToolSettings& settings();
+
+/// Stream for the passes' progress chatter, only shown with --verbose.
+llvm::raw_ostream& verbose();
+
+/// Add the flags every pipeline parses with to the user's clang flags.
+void addPipelineFlags(std::vector<std::string>& args);
+
+/// The last source isCompilable() rejected, and what clang reported for it.
+struct CompileFailure {
+    std::string source;
+    std::string filename;     ///< name the diagnostics refer to
+    std::string diagnostics;  ///< clang's rendered diagnostics
+    unsigned errors = 0;
+};
+const CompileFailure& lastCompileFailure();
+
 /// Callback invoked once the AST of an in-memory source file is ready.
 using TUCallback = std::function<void(clang::ASTContext&, clang::Sema&)>;
 
@@ -17,12 +39,13 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 
 /// Run a TUCallback on an in-memory source string via
 /// runToolOnCodeWithArgs and return the (possibly rewritten) source.
-/// Throws std::runtime_error if Clang fails to parse the source.
+/// Clang's diagnostics go to verbose(), since the caller checks the result with isCompilable().
 std::string runInMemory(const std::string& source, const std::string& filename, std::vector<std::string>& args, TUCallback callback,
                         clang::Rewriter& rewriter);
 
 /// Run what clang -fsyntax-only does using Libtooling so we can hedge ourselves from an offending 
-/// transformation and skip the edge cases. 
+/// transformation and skip the edge cases. Diagnostics aren't printed; when the source
+/// doesn't compile, it is recorded with them in lastCompileFailure().
 bool isCompilable(const std::string& source, const std::string& filename, const std::vector<std::string>& compiler_flags);
 
 void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx);

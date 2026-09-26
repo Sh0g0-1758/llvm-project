@@ -5,11 +5,40 @@
 #include "clang/AST/Expr.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Tooling/Tooling.h"
 
 #include <stdexcept>
 
 namespace invisible {
+
+// ─── Settings shared by the passes ─────────────────────────────────
+
+ToolSettings& settings() {
+    static ToolSettings tool_settings;
+    return tool_settings;
+}
+
+llvm::raw_ostream& verbose() {
+    return settings().verbose ? llvm::errs() : llvm::nulls();
+}
+
+void addPipelineFlags(std::vector<std::string>& args) {
+    // Suppress Clang's implicit builtin declarations so that hoisted
+    // temporaries use the type names from the user's headers (e.g.
+    // `size_t`) rather than Clang-internal typedefs (`__size_t`).
+    args.emplace_back("-fno-builtin");
+    // Suppress warnings that show up as errors while parsing using
+    // libtooling but are otherwise benign as still compiles the TU. 
+    // For eg. -Wincompatible-pointer-types
+    args.emplace_back("-Wno-everything");
+}
+
+static CompileFailure last_compile_failure;
+
+const CompileFailure& lastCompileFailure() {
+    return last_compile_failure;
+}
 
 // ─── Clang in-memory pass infrastructure ───────────────────────────
 
@@ -22,6 +51,15 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 }
 
 namespace {
+
+/// Renders the diagnostics of a clang run into a string instead of stderr.
+void captureDiagnostics(clang::CompilerInstance& ci, llvm::raw_ostream& out) {
+    ci.getDiagnosticOpts().ShowColors = settings().color;
+    out.enable_colors(settings().color);
+    ci.getDiagnostics().setClient(new clang::TextDiagnosticPrinter(out, ci.getDiagnosticOpts()), /*ShouldOwnClient=*/true);
+    // clang prints the "N errors generated." summary there
+    ci.setVerboseOutputStream(out);
+}
 
 class InvisibleConsumer : public clang::ASTConsumer {
   public:
@@ -36,7 +74,13 @@ class InvisibleConsumer : public clang::ASTConsumer {
 
 class InvisibleAction : public clang::ASTFrontendAction {
   public:
-    explicit InvisibleAction(TUCallback callback) : m_callback(std::move(callback)) {}
+    InvisibleAction(TUCallback callback, llvm::raw_ostream& diagnostics)
+        : m_callback(std::move(callback)), m_diagnostics(diagnostics) {}
+
+    bool BeginInvocation(clang::CompilerInstance& ci) override {
+        captureDiagnostics(ci, m_diagnostics);
+        return true;
+    }
 
   protected:
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance& ci, llvm::StringRef) override {
@@ -45,33 +89,50 @@ class InvisibleAction : public clang::ASTFrontendAction {
 
   private:
     TUCallback m_callback;
+    llvm::raw_ostream& m_diagnostics;
 };
 
 }  // namespace
 
 std::string runInMemory(const std::string& source, const std::string& filename, std::vector<std::string>& args, TUCallback callback,
                         clang::Rewriter& rewriter) {
-    auto action = std::make_unique<InvisibleAction>(std::move(callback));
+    std::string diagnostics;
+    llvm::raw_string_ostream diagnostics_out(diagnostics);
+    auto action = std::make_unique<InvisibleAction>(std::move(callback), diagnostics_out);
     if (!clang::tooling::runToolOnCodeWithArgs(std::move(action), source, args, filename))
-        llvm::outs() << "Clang failed to process: " << filename;
+        verbose() << "clang failed to parse " << filename << " while running a pass\n";
+    verbose() << diagnostics;
     return getRewrittenSource(rewriter, source);
 }
 
 bool isCompilable(const std::string& source, const std::string& filename,
                   const std::vector<std::string>& compiler_flags) {
+    // the tool owns and destroys the action, so it reports into variables owned here.
     class CheckAction : public clang::SyntaxOnlyAction {
     public:
-        bool hasErrors = false;
+        CheckAction(llvm::raw_ostream& diagnostics, unsigned& errors) : m_diagnostics(diagnostics), m_errors(errors) {}
+        bool BeginInvocation(clang::CompilerInstance& ci) override {
+            captureDiagnostics(ci, m_diagnostics);
+            return true;
+        }
         void EndSourceFile() override {
-            hasErrors = getCompilerInstance().getDiagnostics().hasErrorOccurred();
+            m_errors = getCompilerInstance().getDiagnostics().getClient()->getNumErrors();
             clang::SyntaxOnlyAction::EndSourceFile();
         }
+    private:
+        llvm::raw_ostream& m_diagnostics;
+        unsigned& m_errors;
     };
 
-    auto action = std::make_unique<CheckAction>();
-    auto* raw = action.get();
-    clang::tooling::runToolOnCodeWithArgs(std::move(action), source, compiler_flags, filename);
-    return !raw->hasErrors;
+    std::string diagnostics;
+    llvm::raw_string_ostream diagnostics_out(diagnostics);
+    unsigned errors = 0;
+    bool ran = clang::tooling::runToolOnCodeWithArgs(std::make_unique<CheckAction>(diagnostics_out, errors), source,
+                                                     compiler_flags, filename);
+    if (ran && errors == 0)
+        return true;
+    last_compile_failure = {source, filename, std::move(diagnostics), std::max(errors, 1u)};
+    return false;
 }
 
 void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx) {

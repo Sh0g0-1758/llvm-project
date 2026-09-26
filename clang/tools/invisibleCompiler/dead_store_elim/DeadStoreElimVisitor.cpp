@@ -133,7 +133,7 @@ bool transferLivenessStmtVisitor::VisitBinaryOperator(clang::BinaryOperator* bin
                     m_live_variables.mark_as_live(identifier);
                 }
                 m_live_variables.record_usage(identifier);
-                llvm::outs() << "Recording usage of " << identifier->getNameAsString() << "\n";
+                invisible::verbose() << "Recording usage of " << identifier->getNameAsString() << "\n";
             }
         }
     }
@@ -148,7 +148,7 @@ bool transferLivenessStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr*
             if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
                 m_live_variables.mark_as_live(var_decl);
                 m_live_variables.record_usage(var_decl);
-                llvm::outs() << "Recording usage of " << var_decl->getNameAsString() << "\n";
+                invisible::verbose() << "Recording usage of " << var_decl->getNameAsString() << "\n";
             }
         }
     }
@@ -169,10 +169,10 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                             bool init_has_side_effects = has_init ? init->HasSideEffects(m_ctx, /* includePossibleSideEffects = */ true) : false;
                             bool var_has_usage = m_live_variables.has_usage(var_decl);
     
-                            llvm::outs() << var_decl->getNameAsString() << " is to be eliminated and ";
+                            invisible::verbose() << var_decl->getNameAsString() << " is to be eliminated and ";
                             if(var_has_usage) {
                                 if (has_init && !init_has_side_effects) {
-                                    llvm::outs() << "it has usage and retains init\n";
+                                    invisible::verbose() << "it has usage and retains init\n";
                                     clang::VarDecl *NewVD = clang::VarDecl::Create(
                                         m_ctx,
                                         const_cast<clang::DeclContext*>(var_decl->getDeclContext()),
@@ -202,18 +202,18 @@ bool transferLivenessStmtVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
                                     m_did_elim = true;
                                     m_source_loc_updated[decl_stmt->getSourceRange().getBegin().getRawEncoding()] = true;
                                 } else {
-                                    llvm::outs() << "it has usage but no init\n";
+                                    invisible::verbose() << "it has usage but no init\n";
                                 }
                             } else {
-                                llvm::outs() << "does not have usage ";
+                                invisible::verbose() << "does not have usage ";
                                 std::string replacement{};
                                 llvm::raw_string_ostream replacement_stream(replacement);
         
                                 if (has_init && init_has_side_effects) {
-                                    llvm::outs() << "and retains init\n";
+                                    invisible::verbose() << "and retains init\n";
                                     init->printPretty(replacement_stream, nullptr, m_policy);
                                 } else {
-                                    llvm::outs() << "does not retain init\n";
+                                    invisible::verbose() << "does not retain init\n";
                                 }
 
                                 replacement_stream << ";";
@@ -530,8 +530,8 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if (!mapped_cfg) return true;
-    mapped_cfg->dump(m_ctx.getLangOpts(), true);
-    llvm::outs() << "==============================================\n\n";
+    if (settings().verbose) mapped_cfg->dump(m_ctx.getLangOpts(), true);
+    invisible::verbose() << "==============================================\n\n";
 
     std::deque<clang::CFGBlock*> work_queue;
     work_queue.push_back(&(mapped_cfg->getExit()));
@@ -626,7 +626,7 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             block_live_vars_map[_block] = live_variables;
     }
 
-    llvm::outs() << "starting the second iteration\n";
+    invisible::verbose() << "starting the second iteration\n";
 
     // once the live_variables are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates

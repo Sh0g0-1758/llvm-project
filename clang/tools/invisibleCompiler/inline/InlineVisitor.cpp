@@ -626,14 +626,7 @@ void updateInlineLocInfo(std::vector<size_t>& m_call_sites, size_t m_current_ind
 
 InlineResult inline_functions(const std::string& source, const std::string& filename,
                               const std::vector<InlineEntry>& entries, std::vector<std::string>& args) {
-    // Suppress Clang's implicit builtin declarations so that hoisted
-    // temporaries use the type names from the user's headers (e.g.
-    // `size_t`) rather than Clang-internal typedefs (`__size_t`).
-    args.emplace_back("-fno-builtin");
-    // Suppress warnings that show up as errors while parsing using
-    // libtooling but are otherwise benign as still compiles the TU. 
-    // For eg. -Wincompatible-pointer-types
-    args.emplace_back("-Wno-everything");
+    addPipelineFlags(args);
     
     std::vector<std::pair<std::string, std::string>> oracle;
     std::vector<size_t> call_sites;
@@ -666,7 +659,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter, _visitor.get_function_decl_map());
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 if(!visitor.matched())
-                    llvm::outs() << "could not find any matching pair for this: " << oracle[i].first << " " << oracle[i].second << " " << call_sites[i] << "\n";
+                    llvm::errs() << "invisible: warning: no call from '" << oracle[i].first << "' to '" << oracle[i].second << "' at line " << call_sites[i] << "\n";
                 succeeded[i] = visitor.matched();
                 net_lines = visitor.get_net_change();
             },
@@ -677,10 +670,12 @@ InlineResult inline_functions(const std::string& source, const std::string& file
             // that shifted due to inserted code.
             updateInlineLocInfo(call_sites, i, net_lines);
         } else {
-            llvm::outs() << "Inlined failed for -> " << i << "\n";
+            llvm::errs() << "invisible: warning: inlining '" << oracle[i].second << "' into '" << oracle[i].first << "' at line " << call_sites[i]
+                         << " produced code that does not compile, skipped it\n";
+            verbose() << lastCompileFailure().diagnostics;
             succeeded[i] = false;
         }
-        llvm::outs() << "Done with Number -> " << i << "\n";
+        verbose() << "done with oracle entry " << i << "\n";
     }
 
     return {result, succeeded};

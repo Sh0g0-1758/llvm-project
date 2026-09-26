@@ -303,7 +303,7 @@ void deadCodeElimCfgAnalysisVisitor::extend_unreachable_loc_for_parent(std::vect
     }
     
     if (const clang::ParenExpr* paren_expr = llvm::dyn_cast<clang::ParenExpr>(parent_stmt)) {
-        paren_expr->dump();
+        if (settings().verbose) paren_expr->dump();
         const clang::Expr* current = paren_expr;
 
         while (true) {
@@ -332,7 +332,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     m_cfg_options.AddScopes = true;
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
-    mapped_cfg->dump(m_ctx.getLangOpts(), true);
+    if (settings().verbose) mapped_cfg->dump(m_ctx.getLangOpts(), true);
     std::unordered_map<clang::CFGBlock*, bool> reachable_block;
     std::queue<clang::CFGBlock*> reachability_queue;
     std::unordered_map<clang::CFGBlock*, bool> block_visited;

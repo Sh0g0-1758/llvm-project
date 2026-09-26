@@ -115,7 +115,7 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
                         if (!m_source_loc_updated[expr->getSourceRange().getBegin().getRawEncoding()]) {
                             if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                                 to_copy = "(" + to_copy + ")";
-                                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                                invisible::verbose() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                                 m_rewriter.ReplaceText(expr->getSourceRange(), to_copy);
                                 m_did_propagate = true;
                                 m_source_loc_updated[expr->getSourceRange().getBegin().getRawEncoding()] = true;
@@ -141,7 +141,7 @@ void transferStmtVisitor::transfer_vars_in_type(clang::QualType T) {
                         if (!m_source_loc_updated[size->getSourceRange().getBegin().getRawEncoding()]) {
                             if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
                                 to_copy = "(" + to_copy + ")";
-                                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                                invisible::verbose() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                                 m_rewriter.ReplaceText(size->getSourceRange(), to_copy);
                                 m_did_propagate = true;
                                 m_source_loc_updated[size->getSourceRange().getBegin().getRawEncoding()] = true;
@@ -205,7 +205,7 @@ bool transferStmtVisitor::VisitImplicitCastExpr(clang::ImplicitCastExpr* ice) {
         if(is_primitive_type(decl_ref_expr->getType())) {
             if (clang::VarDecl *var_decl = llvm::dyn_cast<clang::VarDecl>(decl_ref_expr->getDecl())) {
                 if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
-                    llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                    invisible::verbose() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                     m_rewriter.ReplaceText(decl_ref_expr->getSourceRange(), to_copy);
                     m_did_propagate = true;
                     m_source_loc_updated[decl_ref_expr->getSourceRange().getBegin().getRawEncoding()] = true;
@@ -280,7 +280,7 @@ bool transferStmtVisitor::VisitArraySubscriptExpr(clang::ArraySubscriptExpr* ase
         if(is_primitive_type(var_decl->getType())) {
             if (m_source_loc_updated[ase->getBase()->getSourceRange().getBegin().getRawEncoding()]) return true;
             if(std::string to_copy = m_copies.find_if_copy_exists(var_decl, m_ctx, m_policy); !to_copy.empty()) {
-                llvm::outs() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
+                invisible::verbose() << "Replacing " << var_decl->getNameAsString() << " with " << to_copy << "\n";
                 m_rewriter.ReplaceText(ase->getBase()->getSourceRange(), to_copy);
                 m_did_propagate = true;
                 m_source_loc_updated[ase->getBase()->getSourceRange().getBegin().getRawEncoding()] = true;
@@ -461,8 +461,8 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     m_cfg_options.AddScopes = true;
     std::unique_ptr<clang::CFG> mapped_cfg = clang::CFG::buildCFG(func, func->getBody(), &m_ctx, m_cfg_options);
     if(!mapped_cfg) return true;
-    mapped_cfg->dump(m_ctx.getLangOpts(), true);
-    llvm::outs() << "==============================================\n\n";
+    if (settings().verbose) mapped_cfg->dump(m_ctx.getLangOpts(), true);
+    invisible::verbose() << "==============================================\n\n";
 
     std::deque<clang::CFGBlock*> work_queue;
     work_queue.push_back(&(mapped_cfg->getEntry()));
@@ -565,7 +565,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             block_copies_map[_block] = reaching_copies;
     }
 
-    llvm::outs() << "Running the second iteration\n";
+    invisible::verbose() << "Running the second iteration\n";
 
     // once the reaching_copies are stabilized, run the algorithm again,
     // only this time, allow the transfer function to do updates
