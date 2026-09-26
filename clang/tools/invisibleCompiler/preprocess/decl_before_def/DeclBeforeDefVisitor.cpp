@@ -87,6 +87,30 @@ void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDec
     str.replace(open, close + 1 - open, correct);
 }
 
+// removes the template argument list following the constructor's name, ie. the
+// `<...>` in `::Name<...>(`. The class's own template arguments in the qualifier
+// (`Name<...>::`) are followed by `::` instead and are left untouched.
+void DeclBeforeDefVisitor::stripConstructorTemplateArgs(std::string& str, clang::CXXConstructorDecl* ctor) {
+    const std::string name = "::" + ctor->getParent()->getNameAsString() + "<";
+    for (size_t pos = str.find(name); pos != std::string::npos; pos = str.find(name, pos + 1)) {
+        const size_t open = pos + name.size() - 1;
+        size_t depth = 0;
+        size_t close = std::string::npos;
+        for (size_t i = open; i < str.size(); ++i) {
+            if (str[i] == '<') {
+                ++depth;
+            } else if (str[i] == '>' && --depth == 0) {
+                close = i;
+                break;
+            }
+        }
+        if (close != std::string::npos && close + 1 < str.size() && str[close + 1] == '(') {
+            str.erase(open, close + 1 - open);
+            return;
+        }
+    }
+}
+
 unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::FunctionDecl* function_decl) {
     unsigned levels = 0;
     // an explicit specialization already emits the correct number of enclosing template<> specifiers. 
@@ -298,7 +322,13 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
         ctor_init = printCtorInitializers(ctor);
     }
 
-    if (auto primary_template = func->getPrimaryTemplate()) {
+    // constructor templates can't be given explicit template arguments, they are
+    // always deduced from the parameters. Hence the specialization's template
+    // arguments are dropped from its name, which also covers parameter packs.
+    if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func); ctor && ctor->getPrimaryTemplate()) {
+        stripConstructorTemplateArgs(deferred_decl, ctor);
+        stripConstructorTemplateArgs(deferred_decl_before_def, ctor);
+    } else if (auto primary_template = func->getPrimaryTemplate()) {
         if (primary_template->getTemplateParameters()->hasParameterPack()) {
             fixParameterPack(deferred_decl, func);
             fixParameterPack(deferred_decl_before_def, func);
@@ -464,6 +494,7 @@ DeclBeforeDefVisitor::expand_range_to_include_template_headers(clang::SourceLoca
 }
 
 void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* func, std::string& decl) {
+    respellDecayedVaList(decl);
     if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
         clang::FriendDecl* friend_decl = get_friend_declaration(func);
         m_rewriter.ReplaceText(friend_decl->getSourceRange(), decl + ";");
@@ -659,7 +690,9 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         all_defs += "\n";
     }
 
-    return all_decls + all_defs;
+    std::string result = all_decls + all_defs;
+    respellDecayedVaList(result);
+    return result;
 }
 
 }  // namespace invisible

@@ -113,6 +113,36 @@ bool isInstantiatedCopy(const clang::FunctionDecl* func) {
     return false;
 }
 
+void respellDecayedVaList(std::string& text) {
+    static const std::string tag = "__va_list_tag ";
+    auto is_ident = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
+    size_t pos = 0;
+    while ((pos = text.find(tag, pos)) != std::string::npos) {
+        // `struct __va_list_tag` in C, where the tag keyword is still printed
+        size_t begin = pos;
+        if (begin >= 7 && text.compare(begin - 7, 7, "struct ") == 0) begin -= 7;
+        size_t cursor = pos + tag.size();
+        std::string replacement = "__builtin_va_list";
+        if (cursor < text.size() && text[cursor] == '*') {
+            // decayed parameter type: `__va_list_tag *` or `__va_list_tag *ap`
+            cursor++;
+            if (cursor < text.size() && is_ident(text[cursor])) replacement += " ";
+        } else {
+            // canonical parameter type as written: `__va_list_tag ap[1]` or `__va_list_tag [1]`
+            size_t name_end = cursor;
+            while (name_end < text.size() && is_ident(text[name_end])) name_end++;
+            if (text.compare(name_end, 3, "[1]") != 0) {
+                pos = cursor;
+                continue;
+            }
+            if (name_end > cursor) replacement += " " + text.substr(cursor, name_end - cursor);
+            cursor = name_end + 3;
+        }
+        text.replace(begin, cursor - begin, replacement);
+        pos = begin + replacement.size();
+    }
+}
+
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc) {
     if (!dc || dc->isTranslationUnit()) return clang::NestedNameSpecifier(std::nullopt);
 

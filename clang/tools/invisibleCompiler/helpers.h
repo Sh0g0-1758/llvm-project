@@ -38,6 +38,13 @@ bool isInsideFunction(const clang::Decl* decl);
  */
 bool isInstantiatedCopy(const clang::FunctionDecl* func);
 
+/// On targets where `__builtin_va_list` is an array (eg. x86-64 `__va_list_tag[1]`),
+/// a va_list parameter is printed as `__va_list_tag *` (decayed) or, when printed
+/// canonically, as `__va_list_tag name[1]`.
+/// `__va_list_tag` is a compiler internal name that can't be spelled in source, so
+/// respell it as `__builtin_va_list`, which decays back to the same parameter type.
+void respellDecayedVaList(std::string& text);
+
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc);
 
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
