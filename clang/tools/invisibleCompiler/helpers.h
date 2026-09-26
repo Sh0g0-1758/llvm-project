@@ -29,6 +29,15 @@ void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, c
 
 bool isInsideFunction(const clang::Decl* decl);
 
+/**
+ * Declarations clang creates while instantiating a class template point to the
+ * source text of the pattern they were copied from. Besides template instantiations
+ * this includes copies that are not marked as one, eg. members of the instantiated
+ * class that are explicitly specialized later on, member templates and friends.
+ * Such declarations must not rewrite the pattern's text.
+ */
+bool isInstantiatedCopy(const clang::FunctionDecl* func);
+
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc);
 
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);

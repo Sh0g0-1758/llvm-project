@@ -103,6 +103,16 @@ bool isInsideFunction(const clang::Decl* decl) {
     return false;
 }
 
+bool isInstantiatedCopy(const clang::FunctionDecl* func) {
+    if (func->isTemplateInstantiation()) return true;
+    for (const clang::DeclContext* dc = func->getLexicalDeclContext(); dc; dc = dc->getLexicalParent()) {
+        if (const auto* spec = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(dc)) {
+            if (spec->getSpecializationKind() != clang::TSK_ExplicitSpecialization) return true;
+        }
+    }
+    return false;
+}
+
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc) {
     if (!dc || dc->isTranslationUnit()) return clang::NestedNameSpecifier(std::nullopt);
 

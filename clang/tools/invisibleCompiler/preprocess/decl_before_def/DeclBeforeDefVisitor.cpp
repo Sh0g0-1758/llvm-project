@@ -477,7 +477,7 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
 }
 
 /**
- * This pass also takes care of specializing function templates. 
+ * This pass also takes care of specializing function templates.
  * We don't specialize class templates because that is just a type 
  * at the end of the day. The way we do that is by enabling the visitor
  * to traverse the template instantiations as well. Without this, the visitor
@@ -503,7 +503,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         // template<typename T>
         // void foo();
         // <in some function> foo<int>();
-        if (!func->isTemplateInstantiation()) {
+        if (!isInstantiatedCopy(func)) {
             replace_function_declaration(func, decl);
         }
         return true;
@@ -568,8 +568,8 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     // and hence an edit through only of them will suffice. 
     // We choose the primaryTemplate (uninstantiated) for this. 
     // Untemplated functions and explicit function template specializations
-    // undergoes edit through this only once. 
-    if (!func->isTemplateInstantiation()) {
+    // undergoes edit through this only once.
+    if (!isInstantiatedCopy(func)) {
         replace_function_declaration(func, decl);
     }
     return true;
