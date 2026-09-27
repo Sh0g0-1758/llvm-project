@@ -58,8 +58,9 @@ class CloneConstantEvaluatedVisitor : public clang::RecursiveASTVisitor<CloneCon
     /// Conversion, Construct, Converting: by `expr`, Converting constructs from a
     /// single argument without parentheses. Point: by nothing, if not by another use at
     /// its offset. Unspelled: by nothing. Body: `range`, eg. a default member
-    /// initializer, is evaluated.
-    enum class Kind { Name, Dependent, Operator, Conversion, Construct, Converting, Point, Unspelled, Body };
+    /// initializer, is evaluated. ObjectCall: by `expr`, a call in a template to an
+    /// object of class type, which may be any of the call operators of the class.
+    enum class Kind { Name, Dependent, Operator, Conversion, Construct, Converting, Point, Unspelled, Body, ObjectCall };
     using Key = std::pair<unsigned, Kind>;
 
     struct Use {
@@ -103,6 +104,7 @@ class CloneConstantEvaluatedVisitor : public clang::RecursiveASTVisitor<CloneCon
     void visitUse(clang::Expr* expr);
     void visitBlocker(clang::Expr* expr);
     std::string writtenName(const Use& use) const;
+    std::vector<const clang::FunctionDecl*> callOperators(const Use& use) const;
     bool isSpelledByName(const std::string& name) const;
 
     static const clang::FunctionDecl* patternOf(const clang::FunctionDecl* function);
@@ -125,12 +127,15 @@ class CloneConstantEvaluatedVisitor : public clang::RecursiveASTVisitor<CloneCon
 
     std::vector<Range> m_constant;
     std::vector<Range> m_unevaluated;
+    /// the bodies and member initializers of definitions, which DeclBeforeDef defers
+    std::vector<Range> m_bodies;
     std::vector<Use> m_uses;
     std::set<Key> m_blocked;
     std::set<Range> m_scalars;
     /// the callees of operator calls, and the operators rewritten comparisons are evaluated with
     std::set<const clang::Expr*> m_operator_callees;
     std::map<const clang::Expr*, std::pair<std::string, std::string>> m_rewritten;
+    std::set<unsigned> m_rewritten_offsets;
     std::map<unsigned, const clang::Expr*> m_dependent_objects;
     /// The initializations in templates of an object of dependent type, whose
     /// arguments end at `end`: `T t = x`, `T t(x)`, `T(x)`, and `: m(x)` of a
@@ -142,6 +147,8 @@ class CloneConstantEvaluatedVisitor : public clang::RecursiveASTVisitor<CloneCon
     };
     std::map<Key, DependentInit> m_dependent_inits;
     std::vector<const clang::CXXMethodDecl*> m_overriders;
+    /// what is instantiated where it is written, before DeclBeforeDef can specialize it
+    std::vector<const clang::FunctionDecl*> m_eager;
     unsigned m_instantiating = 0;
 
     std::set<const clang::FunctionDecl*> m_reached;

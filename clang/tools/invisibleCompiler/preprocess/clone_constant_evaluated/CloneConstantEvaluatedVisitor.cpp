@@ -62,10 +62,21 @@ bool CloneConstantEvaluatedVisitor::declRange(const clang::FunctionDecl* redecl,
     // deduction declares a specialization at its template before it is explicitly specialized
     const clang::FunctionTemplateDecl* primary = redecl->getPrimaryTemplate();
     if (primary && redecl->getBeginLoc() == primary->getTemplatedDecl()->getBeginLoc()) return false;
+    // and a member of a class template specialization is declared at its template
+    const clang::FunctionDecl* member = redecl->getInstantiatedFromMemberFunction();
+    if (member && redecl->getBeginLoc() == member->getBeginLoc()) return false;
     const clang::Decl* decl = redecl;
-    if (const auto* tmpl = redecl->getDescribedFunctionTemplate()) decl = tmpl;
+    // an abbreviated function template, eg. `void f(auto x)`, has no template head
+    if (const auto* tmpl = redecl->getDescribedFunctionTemplate(); tmpl && tmpl->getBeginLoc().isValid()) decl = tmpl;
     if (!rangeOf(decl->getSourceRange(), out)) return false;
+    // an out-of-line member template starts with the template heads of its class
+    if (unsigned outer; offsetOf(redecl->getOuterLocStart(), outer)) out.first = std::min(out.first, outer);
     if (redecl->doesThisDeclarationHaveABody()) return true;
+    // the range of a declaration stops at its name when it has a trailing return type
+    for (const clang::Stmt* end : {static_cast<const clang::Stmt*>(redecl->getTrailingRequiresClause().ConstraintExpr)})
+        if (Range tail; end && rangeOf(end->getSourceRange(), tail)) out.second = std::max(out.second, tail.second);
+    if (const clang::TypeSourceInfo* type = redecl->getTypeSourceInfo())
+        if (Range tail; rangeOf(type->getTypeLoc().getSourceRange(), tail)) out.second = std::max(out.second, tail.second);
     size_t semi = m_text.find_first_not_of(" \t\r\n", out.second);
     if (semi != llvm::StringRef::npos && m_text[semi] == ';') out.second = semi + 1;
     return true;
@@ -79,8 +90,15 @@ void CloneConstantEvaluatedVisitor::addRange(std::vector<Range>& ranges, const c
 void CloneConstantEvaluatedVisitor::addUse(Kind kind, clang::SourceLocation loc, const clang::FunctionDecl* function,
                                            const clang::Expr* expr, clang::SourceRange range) {
     Use use{0, kind, function, expr, {0, 0}, 0, m_instantiating > 0};
-    if ((!function && kind != Kind::Body && kind != Kind::Dependent) || !offsetOf(loc, use.offset)) return;
+    if ((!function && kind != Kind::Body && kind != Kind::Dependent && kind != Kind::ObjectCall) ||
+        !offsetOf(loc, use.offset))
+        return;
     if (range.isValid() && !rangeOf(range, use.range)) return;
+    // the `0` a rewritten comparison is compared with is where its operator is written,
+    // it is left as written
+    bool constructs = llvm::isa_and_nonnull<clang::CXXConstructorDecl>(function) &&
+                      (kind == Kind::Construct || kind == Kind::Converting);
+    if (constructs && m_rewritten_offsets.count(use.offset)) use.kind = Kind::Unspelled;
     m_uses.push_back(use);
 }
 
@@ -143,9 +161,29 @@ bool CloneConstantEvaluatedVisitor::VisitDecl(clang::Decl* decl) {
         // a use during template argument deduction, eg. in an enable_if, leaves no
         // expression behind, only the point where the specialization was first needed.
         if (function->isTemplateInstantiation()) addUse(Kind::Point, function->getPointOfInstantiation(), function);
+        // nor the exception specification an instantiation evaluated
+        if (const auto* proto = function->getType()->getAs<clang::FunctionProtoType>();
+            proto && function->isTemplateInstantiation() && clang::isComputedNoexcept(proto->getExceptionSpecType())) {
+            addRange(m_constant, proto->getNoexceptExpr());
+            TraverseStmt(proto->getNoexceptExpr());
+        }
+        const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
+        unsigned begin, end;
+        if (function->doesThisDeclarationHaveABody() && !m_instantiating && !isFriendLeftAsWritten(function) &&
+            !(method && method->getParent()->isLambda()) && offsetOf(function->getBody()->getBeginLoc(), begin) &&
+            offsetOf(function->getBody()->getEndLoc(), end)) {
+            if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(function))
+                for (const clang::CXXCtorInitializer* init : ctor->inits())
+                    if (unsigned at; init->isWritten() && offsetOf(init->getSourceLocation(), at)) begin = std::min(begin, at);
+            m_bodies.push_back({begin, end + 1});
+        }
     }
     if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(decl); method && method->size_overridden_methods())
         m_overriders.push_back(method);
+    // a constexpr virtual function is instantiated with its class
+    if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(decl);
+        method && method->isVirtual() && method->isConstexpr() && method->isTemplateInstantiation())
+        m_eager.push_back(method);
     // `: m(1)` constructs a member of class type for some instantiations only
     if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(decl))
         for (const clang::CXXCtorInitializer* init : ctor->inits()) {
@@ -174,6 +212,10 @@ void CloneConstantEvaluatedVisitor::addDependentInit(Kind kind, clang::SourceLoc
     if (m_instantiating || !type || !init || !type->getType()->isDependentType() ||
         type->getType()->isReferenceType() || type->getType()->getContainedAutoType() ||
         llvm::isa<clang::InitListExpr>(init) || !rangeOf(type->getTypeLoc().getSourceRange(), written))
+        return;
+    // a braced list can't be forwarded through the construct helper, eg. `T t({a, b})`
+    if (kind == Kind::Construct &&
+        llvm::any_of(init->children(), [](const clang::Stmt* arg) { return llvm::isa_and_nonnull<clang::InitListExpr>(arg); }))
         return;
     unsigned offset, last;
     if (kind == Kind::Construct ? !offsetOf(end, last) : !rangeOf(init->getSourceRange(), arg_range)) return;
@@ -257,7 +299,9 @@ void CloneConstantEvaluatedVisitor::visitUse(clang::Expr* expr) {
             addUse(Kind::Conversion, member->getBase()->getBeginLoc(), function, member->getBase());
     } else if (auto* call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
         m_operator_callees.insert(call->getCallee()->IgnoreImpCasts());
-        addUse(Kind::Operator, call->getOperatorLoc(), call->getDirectCallee(), call);
+        // the comparison of the result of a rewritten one with `0` is left as written
+        addUse(m_operator_callees.count(call) ? Kind::Unspelled : Kind::Operator, call->getOperatorLoc(),
+               call->getDirectCallee(), call);
     } else if (auto* rewritten = llvm::dyn_cast<clang::CXXRewrittenBinaryOperator>(expr)) {
         // `a != b` calls `!(a == b)`, `a < b` calls `(a <=> b) < 0`
         const clang::Expr* semantic = rewritten->getSemanticForm()->IgnoreImplicit();
@@ -270,11 +314,18 @@ void CloneConstantEvaluatedVisitor::visitUse(clang::Expr* expr) {
             before = "(";
             after = " " + comparison->getOpcodeStr().str() + " 0)";
             semantic = comparison->getLHS()->IgnoreImplicit();
+        } else if (const auto* category = llvm::dyn_cast<clang::CXXOperatorCallExpr>(semantic);
+                   category && category->getNumArgs() == 2) {
+            before = "(";
+            after = " " + std::string(clang::getOperatorSpelling(category->getOperator())) + " 0)";
+            semantic = category->getArg(0)->IgnoreImplicit();
         }
         if (const auto* inner = llvm::dyn_cast<clang::CXXOperatorCallExpr>(semantic))
             m_rewritten[inner] = {before, after};
         // the operands of a reversed one are called in the opposite order
         if (rewritten->isReversed()) block(Kind::Operator, rewritten->getOperatorLoc());
+        unsigned offset;
+        if (offsetOf(rewritten->getOperatorLoc(), offset)) m_rewritten_offsets.insert(offset);
     } else if (auto* construct = llvm::dyn_cast<clang::CXXConstructExpr>(expr)) {
         clang::SourceLocation paren = construct->getParenOrBraceRange().getBegin();
         bool converting = construct->getNumArgs() && !llvm::isa<clang::CXXDefaultArgExpr>(construct->getArg(0)) &&
@@ -311,6 +362,17 @@ void CloneConstantEvaluatedVisitor::visitUse(clang::Expr* expr) {
         if (!object->isListInitialization())
             addDependentInit(Kind::Construct, object->getLParenLoc(), object->getTypeSourceInfo(), object,
                              object->getRParenLoc(), object->getNumArgs());
+    } else if (auto* call = llvm::dyn_cast<clang::CallExpr>(expr); call && call->isTypeDependent()) {
+        // at the place of the operator of the calls its instantiations make. The
+        // class may not be complete yet within itself, eg. in a requires clause.
+        const clang::Expr* callee = call->getCallee()->IgnoreParenImpCasts();
+        const clang::CXXRecordDecl* record = callee->getType()->getAsCXXRecordDecl();
+        Range within;
+        unsigned at;
+        if (!llvm::isa<clang::CXXOperatorCallExpr>(call) && !callee->isTypeDependent() && record &&
+            record->hasDefinition() && offsetOf(call->getBeginLoc(), at) &&
+            !(rangeOf(record->getDefinition()->getSourceRange(), within) && within.first <= at && at < within.second))
+            addUse(Kind::ObjectCall, call->getRParenLoc(), nullptr, call, callee->getSourceRange());
     }
 }
 
@@ -351,6 +413,9 @@ const clang::FunctionDecl* CloneConstantEvaluatedVisitor::patternOf(const clang:
 bool CloneConstantEvaluatedVisitor::isDefinedHere(const clang::FunctionDecl* pattern) const {
     const clang::FunctionDecl* definition = nullptr;
     unsigned offset;
+    // the call operator of a lambda is written in the lambda expression
+    if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(pattern); method && method->getParent()->isLambda())
+        return false;
     return pattern->hasBody(definition) && !definition->isDefaulted() && !definition->isDeleted() &&
            !pattern->isImplicit() && offsetOf(definition->getLocation(), offset);
 }
@@ -362,8 +427,12 @@ std::string CloneConstantEvaluatedVisitor::cloneName(const clang::FunctionDecl* 
             if (!isalnum((unsigned char)c)) c = '_';
         return kPrefix + std::string("operator_") + type;
     }
+    // the clone of a free operator can't be named like a member one: a member of that
+    // name, eg. the clone of a member operator of the class it is called in, would
+    // hide it from the lookup of the call, operators being looked up both ways.
     if (pattern->isOverloadedOperator())
-        return kPrefix + std::string("operator_") + operatorName(pattern->getOverloadedOperator());
+        return kPrefix + std::string(llvm::isa<clang::CXXMethodDecl>(pattern) ? "operator_" : "free_operator_") +
+               operatorName(pattern->getOverloadedOperator());
     if (pattern->getDeclName().isIdentifier()) return kPrefix + pattern->getName().str();
     return "";
 }
@@ -425,12 +494,27 @@ void CloneConstantEvaluatedVisitor::reachAll() {
         else if (use.function)
             reach(use.function);
         // a dependent name is any of the functions of its name
-        else if (use.kind == Kind::Dependent)
+        else if (use.kind == Kind::Dependent) {
             if (auto named = m_named.find(writtenName(use)); named != m_named.end() && !named->second.others)
                 for (const clang::FunctionDecl* function : named->second.functions) reach(function);
+        } else if (use.kind == Kind::ObjectCall) {
+            for (const clang::FunctionDecl* function : callOperators(use)) reach(function);
+        }
+    };
+    // an unevaluated operand deduces the return type of a specialization from its
+    // definition, which DeclBeforeDef defers
+    auto deduced = [](const clang::FunctionDecl* pattern) {
+        return pattern && pattern->isTemplated() && pattern->getReturnType()->getContainedDeducedType();
+    };
+    auto deduces = [&](const Use& use) {
+        if (use.function) return use.function->isTemplateInstantiation() && deduced(patternOf(use.function));
+        if (use.kind == Kind::ObjectCall) return llvm::any_of(callOperators(use), deduced);
+        if (use.kind != Kind::Dependent) return false;
+        auto named = m_named.find(writtenName(use));
+        return named != m_named.end() && llvm::any_of(named->second.functions, deduced);
     };
     for (size_t i = 0; i < m_uses.size(); ++i)
-        if (innermost[i] && innermost[i]->constant) visit(m_uses[i], 1);
+        if (innermost[i] && (innermost[i]->constant || deduces(m_uses[i]))) visit(m_uses[i], 1);
     while (!m_work.empty()) {
         Range range = m_work.back();
         m_work.pop_back();
@@ -440,6 +524,15 @@ void CloneConstantEvaluatedVisitor::reachAll() {
             if (!m_uses[i].reached && !(innermost[i] && innermost[i]->range.first >= range.first))
                 visit(m_uses[i], 2);
     }
+}
+
+std::vector<const clang::FunctionDecl*> CloneConstantEvaluatedVisitor::callOperators(const Use& use) const {
+    std::vector<const clang::FunctionDecl*> operators;
+    const clang::Expr* callee = llvm::cast<clang::CallExpr>(use.expr)->getCallee()->IgnoreParenImpCasts();
+    const clang::CXXRecordDecl* record = callee->getType()->getAsCXXRecordDecl()->getDefinition();
+    for (const clang::NamedDecl* found : record->lookup(m_ctx.DeclarationNames.getCXXOperatorName(clang::OO_Call)))
+        if (const clang::FunctionDecl* function = found->getAsFunction()) operators.push_back(patternOf(function));
+    return operators;
 }
 
 std::string CloneConstantEvaluatedVisitor::writtenName(const Use& use) const {
@@ -457,6 +550,10 @@ std::vector<CloneConstantEvaluatedVisitor::Edit> CloneConstantEvaluatedVisitor::
     std::string name;
     if (use.kind == Kind::Dependent) {
         if (isSpelledByName(writtenName(use))) name = kPrefix + writtenName(use);
+    } else if (use.kind == Kind::ObjectCall) {
+        std::vector<const clang::FunctionDecl*> operators = callOperators(use);
+        if (!operators.empty() && llvm::all_of(operators, [this](const clang::FunctionDecl* function) { return isCloned(function); }))
+            name = cloneName(operators.front());
     } else if (isCloned(patternOf(use.function))) {
         name = cloneName(patternOf(use.function));
     }
@@ -464,7 +561,14 @@ std::vector<CloneConstantEvaluatedVisitor::Edit> CloneConstantEvaluatedVisitor::
     bool constructs = use.kind == Kind::Construct || use.kind == Kind::Converting;
     if (name.empty() && !(constructs && isCloned(patternOf(use.function)))) return edits;
 
-    auto range = [this](const clang::Stmt* stmt, Range& out) { return stmt && rangeOf(stmt->getSourceRange(), out); };
+    // from the start of a token: a literal of a literal operator template, eg. `10s`, begins at its suffix
+    auto range = [this](const clang::Stmt* stmt, Range& out) {
+        const auto& src_mgr = m_ctx.getSourceManager();
+        return stmt && rangeOf(stmt->getSourceRange(), out) &&
+               offsetOf(clang::Lexer::GetBeginningOfToken(src_mgr.getExpansionLoc(stmt->getBeginLoc()), src_mgr,
+                                                          m_ctx.getLangOpts()),
+                        out.first);
+    };
     auto replace = [&edits](Range at, std::string text) {
         edits.push_back({at.first, at.second - at.first, std::move(text), kReplace});
     };
@@ -518,6 +622,16 @@ std::vector<CloneConstantEvaluatedVisitor::Edit> CloneConstantEvaluatedVisitor::
         long length = 2 * long(arg.second - arg.first) + 1;
         edits.push_back({arg.first, 0, type + "(" + kTag + "{}, ", kBefore - length});
         edits.push_back({arg.second, 0, ")", length});
+        break;
+    }
+    case Kind::ObjectCall: {
+        // `f(a)` is spelled `(f).__invisible_clone_operator_Call(a)`, as its instantiations spell it
+        const clang::Expr* callee = llvm::cast<clang::CallExpr>(use.expr)->getCallee()->IgnoreParenImpCasts();
+        Range whole, object;
+        if (!range(use.expr, whole) || !range(callee, object)) break;
+        long length = 2 * long(whole.second - whole.first);
+        edits.push_back({object.first, 0, "(", kBefore - length});
+        edits.push_back({object.second, 0, ")." + name, length});
         break;
     }
     case Kind::Operator: {
@@ -585,6 +699,11 @@ void CloneConstantEvaluatedVisitor::keepUnspelled() {
         if (use.reached && use.kind == Kind::Dependent && !isSpelledByName(writtenName(use)))
             if (auto named = m_named.find(writtenName(use)); named != m_named.end())
                 for (const clang::FunctionDecl* function : named->second.functions) keep(function);
+        if (use.reached && use.kind == Kind::ObjectCall) {
+            auto spelling = m_spellings.find({use.offset, Kind::Operator});
+            if (spelling == m_spellings.end() || spelling->second.conflicts || spelling->second.edits.empty())
+                for (const clang::FunctionDecl* function : callOperators(use)) keep(function);
+        }
         if (!use.reached || !use.function) continue;
         if (use.kind == Kind::Point) {
             if (!llvm::isa<clang::CXXConstructorDecl>(use.function) && !spelled.count(use.offset)) keep(use.function);
@@ -596,6 +715,29 @@ void CloneConstantEvaluatedVisitor::keepUnspelled() {
                 keep(use.function);
         }
     }
+    // a constexpr specialization used by what stays in place, eg. a default member
+    // initializer, is instantiated there, before DeclBeforeDef can specialize it
+    std::sort(m_bodies.begin(), m_bodies.end());
+    std::vector<Range> bodies;
+    for (const Range& body : m_bodies) {
+        if (!bodies.empty() && body.first < bodies.back().second) bodies.back().second = std::max(bodies.back().second, body.second);
+        else bodies.push_back(body);
+    }
+    auto in_body = [&bodies](unsigned offset) {
+        auto it = std::upper_bound(bodies.begin(), bodies.end(), offset,
+                                   [](unsigned at, const Range& body) { return at < body.first; });
+        return it != bodies.begin() && offset < std::prev(it)->second;
+    };
+    for (const Use& use : m_uses) {
+        if (!use.function || use.kind == Kind::Point || !use.function->isConstexpr() ||
+            !use.function->isTemplateInstantiation() || in_body(use.offset))
+            continue;
+        auto spelling = m_spellings.find({use.offset, use.kind});
+        if (spelling == m_spellings.end() || spelling->second.conflicts || spelling->second.edits.empty() ||
+            spelling->second.in_clone_only)
+            keep(use.function);
+    }
+    for (const clang::FunctionDecl* function : m_eager) keep(function);
     // what a kept function uses is kept as well
     while (!work.empty()) {
         const clang::FunctionDecl* pattern = work.back();
@@ -639,6 +781,8 @@ std::string CloneConstantEvaluatedVisitor::memberInits(const clang::CXXConstruct
             }))
             continue;
         std::string value = apply(range, editsWithin(range));
+        // `m = {1}` is initialized as `m{1}`
+        value.erase(0, value.find_first_not_of("= \t\n"));
         inits += (inits.empty() ? "" : ", ") + field->getName().str() + (value[0] == '{' ? value : "(" + value + ")");
     }
     return inits;
@@ -729,7 +873,9 @@ void CloneConstantEvaluatedVisitor::run() {
     // the uses at one place in different instantiations are spelled alike, or not at all
     for (const Use& use : m_uses) {
         if (!use.reached || use.kind == Kind::Point || use.kind == Kind::Unspelled || use.kind == Kind::Body) continue;
-        Key key{use.offset, use.kind == Kind::Dependent ? Kind::Name : use.kind};
+        Key key{use.offset, use.kind == Kind::Dependent    ? Kind::Name
+                            : use.kind == Kind::ObjectCall ? Kind::Operator
+                                                           : use.kind};
         if (m_blocked.count(key) && !m_dependent_inits.count(key)) continue;
         std::vector<Edit> edits = spell(use);
         bool unsafe = (use.kind == Kind::Conversion || use.kind == Kind::Converting) && edits.empty() &&
