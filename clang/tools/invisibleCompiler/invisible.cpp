@@ -25,13 +25,34 @@ namespace {
 
 using Visit = std::function<void(clang::ASTContext&, clang::Sema&, clang::Rewriter&)>;
 
+// clang prints `__typeof(x)` as `typeof(x)`, which is a keyword in C23 and the GNU
+// modes only. `__typeof__` is one in every mode.
+std::string spellTypeofAsKeyword(const std::string& source) {
+    clang::LangOptions lang_opts;
+    lang_opts.CPlusPlus = true;
+    clang::Lexer lexer(clang::SourceLocation(), lang_opts, source.data(), source.data(), source.data() + source.size());
+    std::string result;
+    size_t copied = 0;
+    clang::Token token;
+    do {
+        lexer.LexFromRawLexer(token);
+        if (!token.is(clang::tok::raw_identifier)) continue;
+        llvm::StringRef name = token.getRawIdentifier();
+        if (name != "typeof" && name != "typeof_unqual") continue;
+        size_t at = name.data() - source.data();
+        result.append(source, copied, at - copied).append("__" + name.str() + "__");
+        copied = at + name.size();
+    } while (token.isNot(clang::tok::eof));
+    return result.append(source, copied, std::string::npos);
+}
+
 /// Runs @p visit on the AST of @p source and returns the rewritten source.
 std::string rewrite(const std::string& source, const std::string& filename, std::vector<std::string>& args, const Visit& visit) {
     clang::Rewriter rewriter;
-    return runInMemory(source, filename, args, [&rewriter, &visit](clang::ASTContext& ctx, clang::Sema& sema) {
+    return spellTypeofAsKeyword(runInMemory(source, filename, args, [&rewriter, &visit](clang::ASTContext& ctx, clang::Sema& sema) {
         rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
         visit(ctx, sema, rewriter);
-    }, rewriter);
+    }, rewriter));
 }
 
 // Insert braces around single-statement control flow bodies.
