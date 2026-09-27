@@ -681,6 +681,21 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             func->print(deferred_decl_before_def_out, m_deferred_policy_decl_before_def);
             deferred_decl_before_def_out.flush();
 
+            // a specialization is already constrained by its template and can't
+            // repeat the trailing requires clause.
+            if (const clang::Expr* constraint = func->getTrailingRequiresClause().ConstraintExpr) {
+                auto erase_requires = [&](std::string& printed, clang::PrintingPolicy policy) {
+                    policy.SuppressSpecifiers = false;
+                    std::string clause = " requires ";
+                    llvm::raw_string_ostream clause_out(clause);
+                    constraint->printPretty(clause_out, nullptr, policy, 0, "\n", &m_ctx);
+                    size_t pos = printed.rfind(clause);
+                    if (pos != std::string::npos) printed.erase(pos, clause.size());
+                };
+                erase_requires(deferred_decl, m_deferred_policy_decl);
+                erase_requires(deferred_decl_before_def, m_deferred_policy_decl_before_def);
+            }
+
             // the printer prints a deduced return type (eg. `auto`, `decltype(auto)` or
             // `Small auto`) as the type it was deduced to. For template instantiations
             // this doesn't match the primary template, which stays generic in the TU:
