@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -14,6 +15,9 @@ namespace invisible {
 /// and end variables declared before the loop
 class DisassembleCXXForRangeStmtVisitor : public clang::RecursiveASTVisitor<DisassembleCXXForRangeStmtVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<DisassembleCXXForRangeStmtVisitor>::TraverseDecl(decl);
+    }
     DisassembleCXXForRangeStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitCXXForRangeStmt(clang::CXXForRangeStmt* for_stmt);
   private:

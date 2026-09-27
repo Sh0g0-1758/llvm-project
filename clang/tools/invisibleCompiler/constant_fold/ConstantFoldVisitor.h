@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -29,6 +30,9 @@ private:
     bool is_constant_literal(clang::Expr* inner);
 
 public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<constantFoldVisitor>::TraverseDecl(decl);
+    }
     constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitExpr(clang::Expr* expr);
     bool TraverseParmVarDecl(clang::ParmVarDecl* param);

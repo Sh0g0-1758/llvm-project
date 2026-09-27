@@ -640,6 +640,8 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (func->isDefaulted() || func->isDeleted()) return true;
+    // constant expressions evaluate these where they are written
+    if (isLeftForConstantEvaluation(func)) return true;
     // only re-emit declarations at the global level. Declarations
     // inside functions are re-emitted when the function defs are printed
     if (isInsideFunction(func)) return true;

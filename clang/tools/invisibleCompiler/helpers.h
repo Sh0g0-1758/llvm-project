@@ -52,6 +52,15 @@ void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, c
 
 bool isInsideFunction(const clang::Decl* decl);
 
+/// Whether @p func is left where it is written for constant expressions to
+/// evaluate: a clone made by CloneConstantEvaluatedVisitor, or an original it
+/// marked because a clone of it can't be called.
+bool isLeftForConstantEvaluation(const clang::FunctionDecl* func);
+
+/// The passes after DeclBeforeDef leave templates and what constant expressions
+/// evaluate as written.
+bool isLeftAsWritten(const clang::Decl* decl);
+
 /**
  * Declarations clang creates while instantiating a class template point to the
  * source text of the pattern they were copied from. Besides template instantiations

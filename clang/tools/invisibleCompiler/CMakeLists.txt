@@ -11,6 +11,7 @@ add_clang_tool(invisible
   preprocess/decl_before_def/DeclBeforeDefVisitor.cpp
   preprocess/normalize_multiple_record_decl/NormalizeMultipleRecordDeclVisitor.cpp
   preprocess/materialize_lambda/MaterializeLambdaVisitor.cpp
+  preprocess/clone_constant_evaluated/CloneConstantEvaluatedVisitor.cpp
   preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.cpp
   preprocess/rename_global_var_refs/RenameGlobalVarRefsVisitor.cpp
   preprocess/functional_cast_to_c_style_cast/FunctionalCastToCStyleCastVisitor.cpp

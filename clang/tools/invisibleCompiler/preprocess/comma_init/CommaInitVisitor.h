@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -23,6 +24,9 @@ namespace invisible {
 /// statements (e.g. `int a, b = 1;` → `int a;\nint b = 1;\n`).
 class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<CommaInitVisitor>::TraverseDecl(decl);
+    }
     CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
 
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt);

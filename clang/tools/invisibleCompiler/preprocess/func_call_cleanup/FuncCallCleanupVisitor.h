@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -28,6 +29,9 @@ namespace invisible {
 /// time.
 class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanupVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<FuncCallCleanupVisitor>::TraverseDecl(decl);
+    }
     FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
 
     bool VisitCallExpr(clang::CallExpr* call);

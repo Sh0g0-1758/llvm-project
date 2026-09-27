@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -22,6 +23,9 @@ namespace invisible {
 /// Writes Loops in their IR form at the source code level
 class LoopToIRVisitor : public clang::RecursiveASTVisitor<LoopToIRVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<LoopToIRVisitor>::TraverseDecl(decl);
+    }
     LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitForStmt(clang::ForStmt* for_stmt);
     bool VisitWhileStmt(clang::WhileStmt* while_stmt);

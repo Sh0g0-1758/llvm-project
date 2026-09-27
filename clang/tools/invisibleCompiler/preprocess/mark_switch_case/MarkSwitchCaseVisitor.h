@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -24,6 +25,9 @@ namespace invisible {
 /// for case is hoisted as part of the case and not above it. 
 class MarkSwitchCaseVisitor : public clang::RecursiveASTVisitor<MarkSwitchCaseVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<MarkSwitchCaseVisitor>::TraverseDecl(decl);
+    }
     MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitCaseStmt(clang::CaseStmt* case_stmt);
     bool VisitDefaultStmt(clang::DefaultStmt* default_stmt);

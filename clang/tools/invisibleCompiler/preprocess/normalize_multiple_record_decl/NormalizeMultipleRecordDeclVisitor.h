@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -23,6 +24,9 @@ namespace invisible {
 /// Puts all function declarations before all function definitions 
 class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<NormalizeMultipleRecordDeclVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<NormalizeMultipleRecordDeclVisitor>::TraverseDecl(decl);
+    }
     NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool VisitVarDecl(clang::VarDecl* decl);

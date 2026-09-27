@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -22,6 +23,9 @@ namespace invisible {
 /// Writes short-circuit operations in their IR form at the source code level
 class ShortCircuitOperatorToIRVisitor : public clang::RecursiveASTVisitor<ShortCircuitOperatorToIRVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<ShortCircuitOperatorToIRVisitor>::TraverseDecl(decl);
+    }
     ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
     bool VisitBinaryOperator(clang::BinaryOperator* binary_op);
     bool VisitConditionalOperator(clang::ConditionalOperator* conditional_op);

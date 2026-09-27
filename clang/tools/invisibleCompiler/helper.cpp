@@ -164,6 +164,21 @@ bool isInsideFunction(const clang::Decl* decl) {
     return false;
 }
 
+bool isLeftForConstantEvaluation(const clang::FunctionDecl* func) {
+    if (func->getDeclName().isIdentifier() && func->getName().starts_with("__invisible_clone_")) return true;
+    if (const auto* kept = func->getAttr<clang::AnnotateAttr>())
+        if (kept->getAnnotation() == "invisible_constant_evaluated") return true;
+    const auto* tag = func->getNumParams() ? func->getParamDecl(0)->getType()->getAsRecordDecl() : nullptr;
+    return tag && tag->getDeclName().isIdentifier() && tag->getName() == "__invisible_clone_tag";
+}
+
+bool isLeftAsWritten(const clang::Decl* decl) {
+    if (const auto* func = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl))
+        if (isLeftForConstantEvaluation(func)) return true;
+    const auto* context = llvm::dyn_cast_or_null<clang::DeclContext>(decl);
+    return context && context->isDependentContext();
+}
+
 bool isInstantiatedCopy(const clang::FunctionDecl* func) {
     if (func->isTemplateInstantiation()) return true;
     for (const clang::DeclContext* dc = func->getLexicalDeclContext(); dc; dc = dc->getLexicalParent()) {

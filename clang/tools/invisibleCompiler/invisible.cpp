@@ -103,6 +103,15 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
             });
         }});
 
+    // Give the functions constant expressions evaluate clones that stay
+    // as written, so that the originals can be deferred and specialized.
+    passes.push_back({{"clone-constant-evaluated", "Clone the functions evaluated by constant expressions", false},
+        [&](const std::string& source, unsigned, bool&) {
+            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
+                CloneConstantEvaluatedVisitor(ctx, rewriter).run();
+            });
+        }});
+
     // Gather function definitions and move them after all function
     // declarations and Canonicalize all local / global variables defined
     // in a translation unit.

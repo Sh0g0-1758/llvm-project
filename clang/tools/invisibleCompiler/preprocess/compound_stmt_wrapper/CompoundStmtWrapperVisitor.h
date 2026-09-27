@@ -1,5 +1,6 @@
 #pragma once
 
+#include "helpers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -23,6 +24,9 @@ namespace invisible {
 /// This helps provide a valid space to hoist a comma separated declarator list
 class CompoundStmtWrapperVisitor : public clang::RecursiveASTVisitor<CompoundStmtWrapperVisitor> {
   public:
+    bool TraverseDecl(clang::Decl* decl) {
+        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<CompoundStmtWrapperVisitor>::TraverseDecl(decl);
+    }
     CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitForStmt(clang::ForStmt* for_stmt);
     bool VisitIfStmt(clang::IfStmt* if_stmt);
