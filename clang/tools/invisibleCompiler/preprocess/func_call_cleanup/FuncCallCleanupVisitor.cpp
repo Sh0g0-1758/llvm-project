@@ -87,6 +87,19 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(call->getSourceRange()), src_mgr, lang_opts)
             .str();
 
+    // `obj->m` calls `obj.operator->()` and applies `->` to what it returns, the
+    // text of the call being `obj->`.
+    std::string arrow;
+    if (const auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(call);
+        op_call && op_call->getOperator() == clang::OO_Arrow) {
+        call_text = "(" +
+                    clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(op_call->getArg(0)->getSourceRange()),
+                                                src_mgr, lang_opts)
+                        .str() +
+                    ").operator->()";
+        arrow = "->";
+    }
+
     std::string ret_var{};
     std::string clean_call{};
     bool direct_init = false;
@@ -153,10 +166,10 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         // This case is called when we have functions being called on the 
         // result of the previous function
         // ie. a().b().c()
-        m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var);
+        m_rewriter.ReplaceText(call->getSourceRange(), clean_call + ret_var + arrow);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
-        m_rewriter.ReplaceText(call->getSourceRange(), ret_var);
+        m_rewriter.ReplaceText(call->getSourceRange(), ret_var + arrow);
     }
     m_last_update_loc = nearest_compound_stmt;
     m_last_call_loc = call->getSourceRange();
