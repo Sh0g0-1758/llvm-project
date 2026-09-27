@@ -44,7 +44,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     clang::SourceLocation m_last_update_loc;
     clang::SourceRange m_last_call_loc;
 
-    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call);
+    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement);
     bool isTopLevelCall(const clang::CallExpr* call);
     bool m_is_uninstantiated_template;
     size_t& m_current_index;

@@ -54,7 +54,8 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 }
 
 void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::CallExpr* call) {
-    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call);
+    const clang::Stmt* statement = nullptr;
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call, &statement);
 
     // The function is probably a nested function present as a template guard check. 
     // We should skip such functions as they will be evaluated at compile time and have
@@ -134,11 +135,12 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
 
         // a conversion operator applied implicitly, eg. by `if (obj)`, has no source text
         // of its own and may be explicit, which copy-initialization can't call. Direct
-        // initialization can, and is what a condition does.
+        // initialization can, and is what a condition does. It considers constructors
+        // as well though, so a conversion that isn't explicit copy-initializes.
         if (const auto* member_call = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
             const auto* member = llvm::dyn_cast<clang::MemberExpr>(member_call->getCallee());
-            direct_init = member && llvm::isa<clang::CXXConversionDecl>(member->getMemberDecl()) &&
-                          member->getMemberLoc().isInvalid();
+            const auto* conversion = member ? llvm::dyn_cast<clang::CXXConversionDecl>(member->getMemberDecl()) : nullptr;
+            direct_init = conversion && conversion->isExplicit() && member->getMemberLoc().isInvalid();
         }
         out << (direct_init ? "(" : " = ");
 
@@ -171,11 +173,24 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
         m_rewriter.ReplaceText(call->getSourceRange(), ret_var + arrow);
     }
+    // the temporary of a statement directly in a switch would be in scope at the case
+    // labels that follow, which can't jump past its initialization
+    auto parents = m_ctx.getParents(*statement);
+    const auto* compound = parents.empty() ? nullptr : parents[0].get<clang::CompoundStmt>();
+    if (compound && !llvm::isa<clang::DeclStmt>(statement) && !m_ctx.getParents(*compound).empty() &&
+        m_ctx.getParents(*compound)[0].get<clang::SwitchStmt>()) {
+        const clang::SourceManager& src_mgr = m_ctx.getSourceManager();
+        clang::SourceLocation end = clang::Lexer::findLocationAfterToken(statement->getEndLoc(), clang::tok::semi,
+                                                                         src_mgr, m_ctx.getLangOpts(), false);
+        if (end.isInvalid()) end = clang::Lexer::getLocForEndOfToken(statement->getEndLoc(), 0, src_mgr, m_ctx.getLangOpts());
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, "{\n");
+        m_rewriter.InsertTextAfter(end, "\n}");
+    }
     m_last_update_loc = nearest_compound_stmt;
     m_last_call_loc = call->getSourceRange();
 }
 
-clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call) {
+clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*call);
     const clang::Stmt* last_stmt = call;
 
@@ -189,8 +204,10 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
         // into the enclosing function, whose variables aren't visible there.
         if (parent.get<clang::CXXCtorInitializer>() || parent.get<clang::TagDecl>() || parent.get<clang::FunctionDecl>())
             return {};
-        if (parent.get<clang::CompoundStmt>() != nullptr)
+        if (parent.get<clang::CompoundStmt>() != nullptr) {
+            *statement = last_stmt;
             return last_stmt->getBeginLoc();
+        }
         if (const auto* stmt = parent.get<clang::Stmt>())
             last_stmt = stmt;
 
