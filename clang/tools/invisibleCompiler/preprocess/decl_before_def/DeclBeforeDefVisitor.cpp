@@ -381,6 +381,16 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
         stripRecordDeclOnlySpecifiers(deferred_decl_before_def);
     }
 
+    // clang rejects the definition of the specialization of a member of a class
+    // template whose exception specification is `noexcept(expr)` once it has been
+    // declared. It is only defined, ahead of the definitions that could use it.
+    const clang::FunctionDecl* member = func->getInstantiatedFromMemberFunction();
+    const auto* proto = member ? member->getType()->getAs<clang::FunctionProtoType>() : nullptr;
+    if (proto && clang::isComputedNoexcept(proto->getExceptionSpecType())) {
+        m_undeclared_definitions.push_back(prefix + deferred_decl + ctor_init + def);
+        return;
+    }
+
     m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
     m_deferred_declarations.push_back(prefix + deferred_decl_before_def + ";");
 }
@@ -790,9 +800,15 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     total = 1;
     for (const auto& def : m_deferred_definitions)
         total += def.size() + 1;
+    for (const auto& def : m_undeclared_definitions)
+        total += def.size() + 1;
     all_defs.reserve(total);
 
     all_defs += '\n';
+    for (auto& def : m_undeclared_definitions) {
+        all_defs += std::move(def);
+        all_defs += "\n";
+    }
     for (auto& def : m_deferred_definitions) {
         all_defs += std::move(def);
         all_defs += "\n";

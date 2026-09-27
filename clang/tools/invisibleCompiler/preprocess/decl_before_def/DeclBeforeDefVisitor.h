@@ -38,6 +38,8 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     DeclBeforeDefPrinterHelper m_custom_printer;
     std::vector<std::string> m_deferred_definitions;
     std::vector<std::string> m_deferred_declarations;
+    /// definitions whose declaration is not emitted beforehand
+    std::vector<std::string> m_undeclared_definitions;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     void stripConstructorTemplateArgs(std::string& str, clang::CXXConstructorDecl* ctor);
     void stripDestructorExceptionSpec(std::string& str);
