@@ -20,6 +20,34 @@ namespace invisible {
 
 constantFoldVisitor::constantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter) { }
 
+namespace {
+
+/// The suffix an integer literal of @p value needs to be of @p type: an
+/// unsuffixed one is of the first of int, long and long long its magnitude fits
+/// in. eg. `std::min(__diffmax, n)` with a size_t `__diffmax` folds to
+/// `std::min(2305843009213693951UL, n)`, which still deduces `size_t`.
+std::string integerSuffix(const clang::ASTContext& ctx, const clang::APValue& value, clang::QualType type) {
+    const auto* builtin = type.getCanonicalType()->getAs<clang::BuiltinType>();
+    if (!value.isInt() || !builtin) return "";
+    llvm::APSInt magnitude = value.getInt().extend(value.getInt().getBitWidth() + 1);
+    if (magnitude.isNegative()) magnitude = -magnitude;
+    unsigned bits = magnitude.getActiveBits();
+    clang::BuiltinType::Kind written = bits < ctx.getIntWidth(ctx.IntTy)    ? clang::BuiltinType::Int
+                                       : bits < ctx.getIntWidth(ctx.LongTy) ? clang::BuiltinType::Long
+                                                                            : clang::BuiltinType::LongLong;
+    if (builtin->getKind() == written) return "";
+    switch (builtin->getKind()) {
+    case clang::BuiltinType::UInt: return "U";
+    case clang::BuiltinType::Long: return "L";
+    case clang::BuiltinType::ULong: return "UL";
+    case clang::BuiltinType::LongLong: return "LL";
+    case clang::BuiltinType::ULongLong: return "ULL";
+    default: return "";
+    }
+}
+
+}  // namespace
+
 bool constantFoldVisitor::did_fold() {
     return (m_last_update_loc_begin.getRawEncoding() != 0) && (m_last_update_loc_end.getRawEncoding() != 0);
 }
@@ -192,6 +220,7 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     llvm::raw_string_ostream OS(replacement);
     value.printPretty(OS, m_ctx, expr->getType());
     OS.flush();
+    replacement += integerSuffix(m_ctx, value, expr->getType());
 
     // ── DEBUG ────────────────────────────────────────────────────────────────
     // llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
