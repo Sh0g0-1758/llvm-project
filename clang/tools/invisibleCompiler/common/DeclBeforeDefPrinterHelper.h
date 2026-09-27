@@ -19,8 +19,9 @@ namespace invisible {
 
 // ─── DeclBeforeDefPrinterHelper ───────────────────────────────────────────
 
-/// Custom PrinterHelper to print function definitions keeping 
-/// inline assembly intact
+/// Custom PrinterHelper to print function definitions around the printer's
+/// shortcomings, eg. keeping inline assembly, `if constexpr` and structured
+/// bindings intact
 class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
   public:
     DeclBeforeDefPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy);
