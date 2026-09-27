@@ -164,6 +164,26 @@ bool isInsideFunction(const clang::Decl* decl) {
     return false;
 }
 
+std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& value, clang::QualType type) {
+    const auto* builtin = type.getCanonicalType()->getAs<clang::BuiltinType>();
+    if (!builtin) return "";
+    llvm::APSInt magnitude = value.extend(value.getBitWidth() + 1);
+    if (magnitude.isNegative()) magnitude = -magnitude;
+    unsigned bits = magnitude.getActiveBits();
+    clang::BuiltinType::Kind written = bits < ctx.getIntWidth(ctx.IntTy)    ? clang::BuiltinType::Int
+                                       : bits < ctx.getIntWidth(ctx.LongTy) ? clang::BuiltinType::Long
+                                                                            : clang::BuiltinType::LongLong;
+    if (builtin->getKind() == written) return "";
+    switch (builtin->getKind()) {
+    case clang::BuiltinType::UInt: return "U";
+    case clang::BuiltinType::Long: return "L";
+    case clang::BuiltinType::ULong: return "UL";
+    case clang::BuiltinType::LongLong: return "LL";
+    case clang::BuiltinType::ULongLong: return "ULL";
+    default: return "";
+    }
+}
+
 bool isLeftForConstantEvaluation(const clang::FunctionDecl* func) {
     if (func->getDeclName().isIdentifier() && func->getName().starts_with("__invisible_clone_")) return true;
     if (const auto* kept = func->getAttr<clang::AnnotateAttr>())

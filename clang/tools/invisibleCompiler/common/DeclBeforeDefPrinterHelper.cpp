@@ -38,6 +38,14 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
         return true;
     }
 
+    // `sizeof...(Ts)` in an instantiation is printed as its value, a specialization
+    // doesn't have the pack.
+    if (auto* pack_size = llvm::dyn_cast<clang::SizeOfPackExpr>(stmt); pack_size && !pack_size->isValueDependent()) {
+        llvm::APSInt length(llvm::APInt(m_ctx.getTypeSize(pack_size->getType()), pack_size->getPackLength()), true);
+        stream << length << integerSuffix(m_ctx, length, pack_size->getType());
+        return true;
+    }
+
     return false;
 }
 

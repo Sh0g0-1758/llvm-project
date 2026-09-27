@@ -52,6 +52,12 @@ void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, c
 
 bool isInsideFunction(const clang::Decl* decl);
 
+/// The suffix an integer literal of @p value needs to be of @p type: an
+/// unsuffixed one is of the first of int, long and long long its magnitude fits
+/// in. eg. `std::min(__diffmax, n)` with a size_t `__diffmax` folds to
+/// `std::min(2305843009213693951UL, n)`, which still deduces `size_t`.
+std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& value, clang::QualType type);
+
 /// Whether @p func is left where it is written for constant expressions to
 /// evaluate: a clone made by CloneConstantEvaluatedVisitor, or an original it
 /// marked because a clone of it can't be called.
