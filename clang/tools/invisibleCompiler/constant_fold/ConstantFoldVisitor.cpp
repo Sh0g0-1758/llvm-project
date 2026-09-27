@@ -187,10 +187,30 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // precedence than &. 
     if (value.isStruct() || value.isArray() || value.isLValue())
         return true;
+    // no literal spells an integer wider than long long, nor one of __int128
+    if (value.isInt() && (value.getInt().isSigned() ? value.getInt().getSignificantBits() : value.getInt().getActiveBits()) > 64)
+        return true;
+    if (value.isInt() && m_ctx.getTypeSize(expr->getType()) > 64) return true;
 
     std::string replacement{};
     llvm::raw_string_ostream OS(replacement);
-    value.printPretty(OS, m_ctx, expr->getType());
+    if (value.isFloat()) {
+        // a finite literal of the type folded in full precision, eg. `-1.0E+0F` for a float.
+        // Others, eg. of __float128, are printed as a double.
+        const auto* builtin = expr->getType().getCanonicalType()->getAs<clang::BuiltinType>();
+        if (!builtin || !value.getFloat().isFinite()) return true;
+        const char* suffix = builtin->getKind() == clang::BuiltinType::Float        ? "F"
+                             : builtin->getKind() == clang::BuiltinType::Double     ? ""
+                             : builtin->getKind() == clang::BuiltinType::LongDouble ? "L"
+                                                                                    : nullptr;
+        if (!suffix) return true;
+        llvm::SmallString<32> digits;
+        value.getFloat().toString(digits);
+        if (digits.find_first_of(".eE") == llvm::StringRef::npos) digits += ".0";
+        OS << digits << suffix;
+    } else {
+        value.printPretty(OS, m_ctx, expr->getType());
+    }
     OS.flush();
     if (value.isInt()) replacement += integerSuffix(m_ctx, value.getInt(), expr->getType());
 
@@ -198,6 +218,11 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // llvm::errs() << "\n=== [constantFold] AST of expression being folded ===\n";
     // expr->dump();                                          // full AST subtree
     // ─────────────────────────────────────────────────────────────────────────
+
+    // what is already spelled as its value is left, or the pass wouldn't converge
+    clang::CharSourceRange written = clang::CharSourceRange::getTokenRange(expr->getSourceRange());
+    if (clang::Lexer::getSourceText(written, m_ctx.getSourceManager(), m_ctx.getLangOpts()) == replacement)
+        return true;
 
     m_last_update_loc_begin = expr->getSourceRange().getBegin();
     m_last_update_loc_end = expr->getSourceRange().getEnd();
