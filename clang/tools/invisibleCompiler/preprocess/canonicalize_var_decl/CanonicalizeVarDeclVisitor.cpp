@@ -34,6 +34,8 @@ bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     // would also be needed at the place of the template global variable usage. 
     if (decl->getDescribedVarTemplate()) return true;
     if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
+    // a structured binding declaration is unnamed, it is printed as a variable once named
+    if (llvm::isa<clang::DecompositionDecl>(decl)) return true;
 
 
     // Return the first declaration of this declaration or itself if this
