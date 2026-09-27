@@ -54,7 +54,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
          * operation as well
          */
         clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
-        if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+        if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
         else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
         std::string ir_form{};
@@ -98,7 +98,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
          * var = __short_circuit_result_#id;
          */
         clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
-        if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+        if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
         else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
         std::string ir_form{};
@@ -146,7 +146,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::Conditiona
      * .. __short_circuit_result_#id ..
      */
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(conditional_op);
-    if(nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+    if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
     else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
     std::string ir_form{};
