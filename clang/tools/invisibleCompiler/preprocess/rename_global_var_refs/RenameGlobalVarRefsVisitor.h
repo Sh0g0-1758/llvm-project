@@ -12,7 +12,8 @@ namespace invisible {
 /// text still spells their old names. Declarations other than functions are kept
 /// as written, hence every renamed global variable and every reference to it is
 /// respelled in place with its canonicalized name. Function declarations are
-/// skipped as DeclBeforeDefVisitor re-prints them from the AST. Template
+/// skipped as DeclBeforeDefVisitor re-prints them from the AST, but for the ones
+/// it keeps as written. Template
 /// instantiations are not traversed as they share the pattern's text.
 class RenameGlobalVarRefsVisitor : public clang::RecursiveASTVisitor<RenameGlobalVarRefsVisitor> {
   public:
@@ -20,6 +21,7 @@ class RenameGlobalVarRefsVisitor : public clang::RecursiveASTVisitor<RenameGloba
     bool TraverseDecl(clang::Decl* decl);
     bool VisitVarDecl(clang::VarDecl* decl);
     bool VisitDeclRefExpr(clang::DeclRefExpr* ref);
+    bool VisitUsingDecl(clang::UsingDecl* decl);
 
   private:
     void rename(clang::SourceLocation loc, clang::VarDecl* var);

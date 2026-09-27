@@ -192,9 +192,52 @@ bool isLeftForConstantEvaluation(const clang::FunctionDecl* func) {
     return tag && tag->getDeclName().isIdentifier() && tag->getName() == "__invisible_clone_tag";
 }
 
+bool isFriendLeftAsWritten(const clang::FunctionDecl* func) {
+    if (func->getFriendObjectKind() == clang::Decl::FOK_None) return false;
+    // `[[noreturn]]` is on the first declaration, which a friend declaration can't carry attributes on
+    if (func->doesThisDeclarationHaveABody() && func->hasAttr<clang::CXX11NoReturnAttr>()) return true;
+    const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
+    if (tmpl) {
+        for (const clang::NamedDecl* param : *tmpl->getTemplateParameters()) {
+            const auto* type = llvm::dyn_cast<clang::TemplateTypeParmDecl>(param);
+            const auto* value = llvm::dyn_cast<clang::NonTypeTemplateParmDecl>(param);
+            const auto* templ = llvm::dyn_cast<clang::TemplateTemplateParmDecl>(param);
+            if ((type && type->hasDefaultArgument()) || (value && value->hasDefaultArgument()) ||
+                (templ && templ->hasDefaultArgument()))
+                return true;
+        }
+    }
+    if (!func->getLexicalDeclContext()->isDependentContext()) return false;
+    if (func->getTrailingRequiresClause()) return true;
+    return tmpl && tmpl->getTemplateParameters()->hasAssociatedConstraints();
+}
+
+bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func) {
+    if (func->isDefaulted() || func->isDeleted() || isLeftForConstantEvaluation(func)) return true;
+    if (const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern()) func = pattern;
+    if (isFriendLeftAsWritten(func)) return true;
+    // a specialization for the closure type of a lambda can't be named
+    const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
+    auto names_lambda = [](const clang::TemplateArgument& arg) {
+        const clang::CXXRecordDecl* record =
+            arg.getKind() == clang::TemplateArgument::Type ? arg.getAsType().getNonReferenceType()->getAsCXXRecordDecl() : nullptr;
+        return record && record->isLambda();
+    };
+    return tmpl && llvm::any_of(tmpl->specializations(), [&](const clang::FunctionDecl* spec) {
+        return llvm::any_of(spec->getTemplateSpecializationArgs()->asArray(), [&](const clang::TemplateArgument& arg) {
+            return arg.getKind() == clang::TemplateArgument::Pack ? llvm::any_of(arg.pack_elements(), names_lambda)
+                                                                   : names_lambda(arg);
+        });
+    });
+}
+
 bool isLeftAsWritten(const clang::Decl* decl) {
     if (const auto* func = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl))
         if (isLeftForConstantEvaluation(func)) return true;
+    // eg. the definition of a static data member of a class template
+    if (const auto* var = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
+        var && (var->isTemplated() || var->getInstantiatedFromStaticDataMember()))
+        return true;
     const auto* context = llvm::dyn_cast_or_null<clang::DeclContext>(decl);
     return context && context->isDependentContext();
 }
