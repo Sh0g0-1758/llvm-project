@@ -1,4 +1,5 @@
 #include "preprocess/materialize_lambda/MaterializeLambdaVisitor.h"
+#include "common/DeclBeforeDefPrinterHelper.h"
 #include "helpers.h"
 
 #include "clang/AST/ParentMapContext.h"
@@ -15,6 +16,63 @@
 #include <stack>
 
 namespace invisible {
+
+namespace {
+
+/// The type aliases local to @p function that are used in what is traversed, and
+/// the member types of @p record, whose scope the lambda is taken out of.
+struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
+    const clang::FunctionDecl* function;
+    const clang::DeclContext* record;
+    std::vector<const clang::TypedefNameDecl*> aliases;
+    std::vector<const clang::NamedDecl*> members;
+    bool VisitTypedefTypeLoc(clang::TypedefTypeLoc loc) {
+        const clang::TypedefNameDecl* alias = loc.getDecl();
+        if (alias->getDeclContext() == function && !llvm::is_contained(aliases, alias)) {
+            aliases.push_back(alias);
+            TraverseTypeLoc(alias->getTypeSourceInfo()->getTypeLoc());
+        }
+        addMember(alias);
+        return true;
+    }
+    bool VisitTagTypeLoc(clang::TagTypeLoc loc) {
+        addMember(loc.getOriginalDecl());
+        return true;
+    }
+    void addMember(const clang::NamedDecl* decl) {
+        if (record && decl->getDeclContext() == record && decl->getIdentifier() && !llvm::is_contained(members, decl))
+            members.push_back(decl);
+    }
+};
+
+/// Prints a lambda's body in its record: its implicit member accesses are the
+/// ones of the `this` it captured.
+class LambdaBodyPrinterHelper : public DeclBeforeDefPrinterHelper {
+  public:
+    LambdaBodyPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy, std::string this_member)
+        : DeclBeforeDefPrinterHelper(ctx, policy), m_ctx(ctx), m_this_member(std::move(this_member)) {}
+
+    bool handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) override {
+        clang::SourceLocation member;
+        if (auto* dependent = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(stmt); dependent && dependent->isImplicitAccess())
+            member = dependent->getMemberLoc();
+        if (auto* unresolved = llvm::dyn_cast<clang::UnresolvedMemberExpr>(stmt); unresolved && unresolved->isImplicitAccess())
+            member = unresolved->getMemberLoc();
+        if (member.isValid() && !m_this_member.empty()) {
+            stream << "this->" << m_this_member << "->"
+                   << clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange({member, stmt->getEndLoc()}),
+                                                  m_ctx.getSourceManager(), m_ctx.getLangOpts());
+            return true;
+        }
+        return DeclBeforeDefPrinterHelper::handledStmt(stmt, stream);
+    }
+
+  private:
+    clang::ASTContext& m_ctx;
+    std::string m_this_member;
+};
+
+}  // namespace
 
 // ─── MaterializeLambdaVisitor ──────────────────────────────────────────────
 
@@ -122,39 +180,164 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     std::string name = "__invisible_lambda_" + std::to_string(s_counter++);
 
     std::vector<clang::TemplateParameterList*> param_lists;
+    // the template heads of an out-of-line member of a class template
+    for (unsigned i = 0; i < enclosing_func->getNumTemplateParameterLists(); ++i)
+        param_lists.push_back(enclosing_func->getTemplateParameterList(i));
     if (auto* tmpl = enclosing_func->getDescribedFunctionTemplate())
         param_lists.push_back(tmpl->getTemplateParameters());
 
-    std::string struct_text;
-    llvm::raw_string_ostream struct_out(struct_text);
-    if (!param_lists.empty()) {
-        struct_out << "template <";
-        bool first_param = true;
-        for (auto* params : param_lists) {
-            for (unsigned i = 0; i < params->size(); ++i) {
-                if (!first_param) struct_out << ", ";
-                first_param = false;
-                struct_out << "typename " << params->getParam(i)->getName();
+    // in a template, what `[&]` and `[=]` capture is only known to the instantiations:
+    // the variables of the enclosing function that the body uses.
+    bool dependent = call_op->isDependentContext();
+    std::vector<const clang::VarDecl*> implicit_captures;
+    if (lambda->getCaptureDefault() != clang::LCD_None && dependent) {
+        std::function<void(const clang::Stmt*)> collect = [&](const clang::Stmt* stmt) {
+            if (!stmt) return;
+            if (const auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+                const auto* var = llvm::dyn_cast<clang::VarDecl>(ref->getDecl());
+                if (var && var->hasLocalStorage() && !call_op->Encloses(var->getDeclContext()) &&
+                    !llvm::any_of(lambda->captures(),
+                                  [var](const clang::LambdaCapture& capture) {
+                                      return capture.capturesVariable() && capture.getCapturedVar() == var;
+                                  }) &&
+                    !llvm::is_contained(implicit_captures, var))
+                    implicit_captures.push_back(var);
             }
-        }
-        struct_out << "> ";
+            for (const clang::Stmt* child : stmt->children()) collect(child);
+        };
+        collect(call_op->getBody());
     }
-    struct_out << "struct " << name << " {\n";
+
+    // a captured pack can't be a member, a record has a single pack parameter and a
+    // conversion to a function pointer has no counterpart: such a lambda is left as it is.
+    if (llvm::any_of(record->decls(), [](const clang::Decl* decl) {
+            const auto* conversion = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(decl->getAsFunction());
+            return conversion && (decl->isUsed() || decl->isReferenced());
+        }))
+        return true;
+    // in a template, the conversion is only used by the instantiations
+    for (auto parents = m_ctx.getParents(*lambda); parents.size() == 1; parents = m_ctx.getParents(parents[0])) {
+        if (const auto* var = parents[0].get<clang::VarDecl>()) {
+            if (var->getType()->isFunctionPointerType()) return true;
+            break;
+        }
+        const auto* expr = parents[0].get<clang::Expr>();
+        if (!expr) break;
+        if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+            if (binary->isAssignmentOp() && binary->getLHS()->getType()->isFunctionPointerType()) return true;
+            break;
+        }
+        if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr)) {
+            if (unary->getOpcode() == clang::UO_Plus) return true;
+            break;
+        }
+        if (!llvm::isa<clang::ImplicitCastExpr, clang::ParenExpr, clang::MaterializeTemporaryExpr, clang::FullExpr,
+                       clang::CXXBindTemporaryExpr>(expr))
+            break;
+    }
+    auto is_pack = [](const clang::ValueDecl* var) { return var && var->isParameterPack(); };
+    if (llvm::any_of(lambda->captures(),
+                     [&](const clang::LambdaCapture& capture) {
+                         return capture.isPackExpansion() || (capture.capturesVariable() && is_pack(capture.getCapturedVar()));
+                     }) ||
+        llvm::any_of(implicit_captures, is_pack))
+        return true;
+    std::vector<const clang::NamedDecl*> template_params;
+    for (auto* list : param_lists) template_params.insert(template_params.end(), list->begin(), list->end());
+    std::stable_partition(template_params.begin(), template_params.end(),
+                          [](const clang::NamedDecl* param) { return !param->isParameterPack(); });
+    if (llvm::count_if(template_params, [](const clang::NamedDecl* param) { return param->isParameterPack(); }) > 1)
+        return true;
+
+    // the members holding what is captured. In a template their types depend on it
+    // and can't be spelled outside the enclosing function, they are template
+    // parameters of the record given where the lambda was.
+    struct Member {
+        std::string name;
+        std::string type;
+    };
+    std::vector<Member> members;
+    auto type_of = [this](const clang::VarDecl* var, bool by_ref) {
+        // a non-dependent `decltype(x)` isn't instantiated and keeps naming the x of the template
+        clang::QualType type = var->getType();
+        if (!type->isDependentType() && !type->isUndeducedType()) {
+            if (!var->isInitCapture())
+                type = by_ref ? (type->isReferenceType() ? type : m_ctx.getLValueReferenceType(type))
+                              : type.getNonReferenceType();
+            return type.getAsString(m_field_policy);
+        }
+        std::string init;
+        if (var->isInitCapture()) {
+            llvm::raw_string_ostream init_out(init);
+            var->getInit()->printPretty(init_out, nullptr, m_policy);
+        }
+        if (by_ref) return "decltype((" + (var->isInitCapture() ? init : var->getName().str()) + "))&";
+        return var->isInitCapture() ? "__decay(decltype((" + init + ")))"
+                                    : "__remove_reference_t(decltype(" + var->getName().str() + "))";
+    };
     auto capture_it = lambda->captures().begin();
     clang::FieldDecl* this_field = nullptr;
     for (clang::FieldDecl* field : record->fields()) {
         std::string field_name = "__parent_this__";
+        std::string type = "decltype(this)";
         if (capture_it != lambda->captures().end()) {
-            if (capture_it->capturesVariable())
+            if (capture_it->capturesVariable()) {
                 field_name = capture_it->getCapturedVar()->getName().str();
-            else if (capture_it->capturesThis()) {
+                type = type_of(llvm::cast<clang::VarDecl>(capture_it->getCapturedVar()),
+                               capture_it->getCaptureKind() == clang::LCK_ByRef);
+            } else if (capture_it->capturesThis()) {
                 this_field = field;
                 field->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(field_name)));
             }
             ++capture_it;
         }
-        field->getType().print(struct_out, m_field_policy, field_name);
-        struct_out << ";\n";
+        if (!dependent) {
+            std::string printed;
+            llvm::raw_string_ostream printed_out(printed);
+            field->getType().print(printed_out, m_field_policy, field_name);
+            type = printed;
+        }
+        members.push_back({field_name, type});
+    }
+    for (const clang::VarDecl* var : implicit_captures)
+        members.push_back({var->getName().str(), type_of(var, lambda->getCaptureDefault() == clang::LCD_ByRef)});
+
+    std::string struct_text;
+    llvm::raw_string_ostream struct_out(struct_text);
+    std::vector<std::string> params;
+    if (dependent)
+        for (size_t i = 0; i < members.size(); ++i) params.push_back("class __invisible_capture_" + std::to_string(i));
+    for (const clang::NamedDecl* param : template_params)
+        // as written, a parameter can be a pack or a non-type one
+        params.push_back(clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(param->getSourceRange()),
+                                                     m_ctx.getSourceManager(), m_ctx.getLangOpts())
+                             .str());
+    if (!params.empty()) struct_out << "template <" << llvm::join(params, ", ") << "> ";
+    struct_out << "struct " << name << " {\n";
+    // the type aliases of the enclosing function the lambda uses
+    LocalAliasCollector local_aliases;
+    local_aliases.function = enclosing_func;
+    // out of the class of an out-of-line member, its member types are named through it
+    local_aliases.record = enclosing_func->isOutOfLine() && enclosing_func->getQualifier() ? enclosing_func->getDeclContext() : nullptr;
+    local_aliases.TraverseDecl(call_op);
+    llvm::sort(local_aliases.aliases, [](const clang::TypedefNameDecl* left, const clang::TypedefNameDecl* right) {
+        return left->getBeginLoc() < right->getBeginLoc();
+    });
+    for (const clang::TypedefNameDecl* alias : local_aliases.aliases)
+        struct_out << clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(alias->getSourceRange()),
+                                                  m_ctx.getSourceManager(), m_ctx.getLangOpts())
+                   << ";\n";
+    for (const clang::NamedDecl* member : local_aliases.members)
+        struct_out << "using " << member->getName() << " = typename "
+                   << clang::Lexer::getSourceText(
+                          clang::CharSourceRange::getTokenRange(enclosing_func->getQualifierLoc().getSourceRange()),
+                          m_ctx.getSourceManager(), m_ctx.getLangOpts())
+                   << member->getName() << ";\n";
+    for (size_t i = 0; i < members.size(); ++i) {
+        if (dependent)
+            struct_out << "__invisible_capture_" << i << " " << members[i].name << ";\n";
+        else
+            struct_out << members[i].type << ";\n";
     }
 
     if (this_field) {
@@ -181,15 +364,37 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             struct_out << " requires " << text(requires_clause->getSourceRange());
         struct_out << "\n";
     }
-    call_op->print(struct_out, m_policy);
+    // the body is printed with the helper, clang drops the `constexpr` of `if constexpr`
+    clang::PrintingPolicy declaration_policy = m_policy;
+    declaration_policy.TerseOutput = true;
+    call_op->print(struct_out, declaration_policy);
+    LambdaBodyPrinterHelper helper(m_ctx, m_policy, this_field ? "__parent_this__" : "");
+    struct_out << " ";
+    std::string body;
+    llvm::raw_string_ostream body_out(body);
+    call_op->getBody()->printPretty(body_out, &helper, m_policy);
+    // a namespace alias of the enclosing function can't be a member, it opens the body
+    std::string namespace_aliases;
+    for (const clang::Decl* decl : enclosing_func->decls())
+        if (llvm::isa<clang::NamespaceAliasDecl>(decl) &&
+            m_ctx.getSourceManager().isBeforeInTranslationUnit(decl->getBeginLoc(), lambda->getBeginLoc()))
+            namespace_aliases += "\n" +
+                                 clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(decl->getSourceRange()),
+                                                             m_ctx.getSourceManager(), m_ctx.getLangOpts())
+                                     .str() +
+                                 ";";
+    body.insert(body.find('{') + 1, namespace_aliases);
+    struct_out << body;
     struct_out << "\n};\n";
     struct_out.flush();
 
     // find a valid place to insert the recordDecl. Skipping past any
     // templates and attributes. 
     auto& sm = m_ctx.getSourceManager();
-    clang::SourceLocation insert_loc = enclosing_func->getBeginLoc();
-    if (auto* tmpl = enclosing_func->getDescribedFunctionTemplate())
+    clang::SourceLocation insert_loc = enclosing_func->getOuterLocStart();
+    // before the template heads of the enclosing class of an out-of-line member too
+    if (auto* tmpl = enclosing_func->getDescribedFunctionTemplate();
+        tmpl && m_ctx.getSourceManager().isBeforeInTranslationUnit(tmpl->getBeginLoc(), insert_loc))
         insert_loc = tmpl->getBeginLoc();
     for (const clang::Attr* attr : enclosing_func->attrs()) {
         clang::SourceLocation loc = attr->getLocation();
@@ -205,18 +410,12 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     std::string ctor_text;
     llvm::raw_string_ostream ctor_out(ctor_text);
     ctor_out << name;
-    if (!param_lists.empty()) {
-        ctor_out << "<";
-        bool first_arg = true;
-        for (auto* params : param_lists) {
-            for (unsigned i = 0; i < params->size(); ++i) {
-                if (!first_arg) ctor_out << ", ";
-                first_arg = false;
-                ctor_out << params->getParam(i)->getName();
-            }
-        }
-        ctor_out << ">";
-    }
+    std::vector<std::string> args;
+    if (dependent)
+        for (const Member& member : members) args.push_back(member.type);
+    for (const clang::NamedDecl* param : template_params)
+        args.push_back(param->getName().str() + (param->isParameterPack() ? "..." : ""));
+    if (!args.empty()) ctor_out << "<" << llvm::join(args, ", ") << ">";
     ctor_out << "{";
     bool first = true;
     for (clang::Expr* init : lambda->capture_inits()) {
@@ -224,6 +423,11 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         if (!first) ctor_out << ", ";
         first = false;
         init->printPretty(ctor_out, nullptr, m_policy);
+    }
+    for (const clang::VarDecl* var : implicit_captures) {
+        if (!first) ctor_out << ", ";
+        first = false;
+        ctor_out << var->getName();
     }
     ctor_out << "}";
     ctor_out.flush();
