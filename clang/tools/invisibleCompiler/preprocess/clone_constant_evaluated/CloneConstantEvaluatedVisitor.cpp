@@ -776,8 +776,14 @@ void CloneConstantEvaluatedVisitor::run() {
         for (const clang::FunctionDecl* redecl : pattern->redecls()) {
             Range range;
             unsigned begin;
-            if (declRange(redecl, range) && offsetOf(redecl->getInnerLocStart(), begin))
-                m_edits.push_back({begin, 0, kKept, kBefore});
+            if (!declRange(redecl, range) || !offsetOf(redecl->getInnerLocStart(), begin)) continue;
+            // after the `[[...]]` attributes, which older compilers only accept first
+            while (m_text.substr(begin).starts_with("[[")) {
+                size_t close = m_text.find("]]", begin);
+                if (close == llvm::StringRef::npos) break;
+                begin = m_text.find_first_not_of(" \t\r\n", close + 2);
+            }
+            m_edits.push_back({begin, 0, kKept, kBefore});
         }
     }
     if (m_edits.empty()) return;
