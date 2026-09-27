@@ -168,6 +168,19 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         rewriteCapturedThis(call_op->getBody(), replacement);
     }
 
+    // `[]<class T>(T t)` has a call operator template, whose template parameters
+    // aren't printed with it. The invented ones of `auto` parameters are left to them.
+    if (!lambda->getExplicitTemplateParameters().empty()) {
+        const clang::TemplateParameterList* params = lambda->getTemplateParameterList();
+        auto text = [this](clang::SourceRange range) {
+            return clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(range), m_ctx.getSourceManager(),
+                                               m_ctx.getLangOpts());
+        };
+        struct_out << "template " << text({params->getLAngleLoc(), params->getRAngleLoc()});
+        if (const clang::Expr* requires_clause = params->getRequiresClause())
+            struct_out << " requires " << text(requires_clause->getSourceRange());
+        struct_out << "\n";
+    }
     call_op->print(struct_out, m_policy);
     struct_out << "\n};\n";
     struct_out.flush();
