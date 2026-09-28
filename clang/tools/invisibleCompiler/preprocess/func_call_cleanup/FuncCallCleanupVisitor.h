@@ -34,6 +34,24 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     }
     FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
 
+    // a call in an unevaluated operand is never made, it only names a type or a
+    // property of one: hoisting it would make it, and eg. turn `decltype(f())` of a
+    // prvalue into a reference type. These operands are left as written.
+    bool TraverseDecltypeTypeLoc(clang::DecltypeTypeLoc, bool) { return true; }
+    bool TraverseTypeOfExprTypeLoc(clang::TypeOfExprTypeLoc, bool) { return true; }
+    bool TraverseCXXNoexceptExpr(clang::CXXNoexceptExpr*, DataRecursionQueue* = nullptr) { return true; }
+    bool TraverseRequiresExpr(clang::RequiresExpr*, DataRecursionQueue* = nullptr) { return true; }
+    bool TraverseUnaryExprOrTypeTraitExpr(clang::UnaryExprOrTypeTraitExpr* expr, DataRecursionQueue* queue = nullptr) {
+        // the size of a variable length array is worked out at run time
+        return !expr->getTypeOfArgument()->isVariablyModifiedType() ||
+               clang::RecursiveASTVisitor<FuncCallCleanupVisitor>::TraverseUnaryExprOrTypeTraitExpr(expr, queue);
+    }
+    bool TraverseCXXTypeidExpr(clang::CXXTypeidExpr* expr, DataRecursionQueue* queue = nullptr) {
+        // the operand of typeid is evaluated only for a glvalue of a polymorphic class
+        return !expr->isPotentiallyEvaluated() ||
+               clang::RecursiveASTVisitor<FuncCallCleanupVisitor>::TraverseCXXTypeidExpr(expr, queue);
+    }
+
     bool VisitCallExpr(clang::CallExpr* call);
     bool did_cleanup();
     bool VisitFunctionDecl(clang::FunctionDecl* func);
