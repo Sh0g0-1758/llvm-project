@@ -32,7 +32,6 @@ class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<Canonicaliz
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     size_t uniqueIndx;
-    std::unordered_map<clang::VarDecl*, std::string> m_var_renames;
 };
 
 }  // namespace invisible

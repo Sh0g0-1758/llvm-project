@@ -29,23 +29,16 @@ bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     if (!decl->isLocalVarDeclOrParm() || decl->isLocalExternDecl()) return true;
     // a structured binding declaration is unnamed, it is printed as a variable once named
     if (llvm::isa<clang::DecompositionDecl>(decl)) return true;
+    // the parameter of a requires expression is only seen within its requirements
+    if (llvm::isa<clang::RequiresExprBodyDecl>(decl->getDeclContext())) return true;
 
-
-    // Return the first declaration of this declaration or itself if this
-    // is the only declaration.
-    std::string canonicalizedName;
-    clang::VarDecl* canon_decl = decl->getCanonicalDecl();
-    if (m_var_renames.find(canon_decl) == m_var_renames.end()) {
-        canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
-        m_var_renames[canon_decl] = canonicalizedName;
-    } else {
-        canonicalizedName = m_var_renames[canon_decl];
-    }
+    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
     decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
     return true;
 }
 
 bool CanonicalizeVarDeclVisitor::VisitParmVarDecl(clang::ParmVarDecl* decl) {
+    if (llvm::isa<clang::RequiresExprBodyDecl>(decl->getDeclContext())) return true;
     std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
     decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
     return true;

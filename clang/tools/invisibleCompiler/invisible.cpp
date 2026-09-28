@@ -124,7 +124,7 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
         }});
 
     // Gather function definitions and move them after all function
-    // declarations and Canonicalize all local / global variables defined
+    // declarations and Canonicalize all local variables and parameters defined
     // in a translation unit.
     passes.push_back({{"decl-before-def", "Declare every function before any definition, specializing template instantiations", false},
         [&](const std::string& source, unsigned, bool&) {
