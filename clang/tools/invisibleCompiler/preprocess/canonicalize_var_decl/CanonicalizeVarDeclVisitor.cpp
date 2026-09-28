@@ -24,16 +24,9 @@ CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, c
 bool CanonicalizeVarDeclVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
-    // classes can have static member variables which should not be renamed. 
-    // This is because this renaming does not really propagate to the site of
-    // usage. It does for normal VarDecls but not for a static data member of a class. 
-    if (decl->isStaticDataMember()) return true;
-    // we also do not rename templatized variables because their specializations
-    // would also need to be renamed then and well first we would need to somehow
-    // keep track of that and second, some cleanup relating to template specialization
-    // would also be needed at the place of the template global variable usage. 
-    if (decl->getDescribedVarTemplate()) return true;
-    if (llvm::isa<clang::VarTemplateSpecializationDecl>(decl)) return true;
+    // only locals are renamed, what they could clash with once a function is inlined
+    // into another. A block scope `extern` declares a global.
+    if (!decl->isLocalVarDeclOrParm() || decl->isLocalExternDecl()) return true;
     // a structured binding declaration is unnamed, it is printed as a variable once named
     if (llvm::isa<clang::DecompositionDecl>(decl)) return true;
 

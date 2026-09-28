@@ -19,7 +19,7 @@ namespace invisible {
 
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────
 
-/// Canonicalize all local / global variables defined in a translation unit. 
+/// Canonicalize all local variables and parameters defined in a translation unit. 
 /// The trick here is to make the changes within the AST so that the changes 
 /// propagate to the DeclRefExpr. 
 class CanonicalizeVarDeclVisitor : public clang::RecursiveASTVisitor<CanonicalizeVarDeclVisitor> {

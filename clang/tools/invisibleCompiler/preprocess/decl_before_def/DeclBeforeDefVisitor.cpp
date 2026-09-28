@@ -745,8 +745,8 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     // inside functions are re-emitted when the function defs are printed
     if (isInsideFunction(func)) return true;
     if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
-        // re-emit each function declaration so that if it uses
-        // any global variables, the renamed versions of those are printed. 
+        // re-emit each function declaration so that its renamed
+        // parameters are printed.
         // it is possible for a declaration to not have a body
         // and still have instantiations. consider : 
         // template<typename T>

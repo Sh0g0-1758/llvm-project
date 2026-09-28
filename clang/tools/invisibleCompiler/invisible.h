@@ -23,7 +23,6 @@
 #include "preprocess/materialize_lambda/MaterializeLambdaVisitor.h"
 #include "preprocess/clone_constant_evaluated/CloneConstantEvaluatedVisitor.h"
 #include "preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.h"
-#include "preprocess/rename_global_var_refs/RenameGlobalVarRefsVisitor.h"
 #include "preprocess/functional_cast_to_c_style_cast/FunctionalCastToCStyleCastVisitor.h"
 #include "preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.h"
 #include "preprocess/break_local_record_decl_stmt/BreakLocalRecordDeclStmtVisitor.h"

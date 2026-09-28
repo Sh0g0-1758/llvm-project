@@ -163,13 +163,6 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
                     visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 }
 
-                // declarations are kept as written, respell the references to
-                // the global variables renamed above.
-                {
-                    RenameGlobalVarRefsVisitor visitor(ctx, rewriter);
-                    visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-                }
-
                 {
                     DeclBeforeDefVisitor visitor(ctx, rewriter);
                     visitor.TraverseDecl(ctx.getTranslationUnitDecl());
