@@ -48,8 +48,6 @@ std::string runInMemory(const std::string& source, const std::string& filename, 
 /// doesn't compile, it is recorded with them in lastCompileFailure().
 bool isCompilable(const std::string& source, const std::string& filename, const std::vector<std::string>& compiler_flags);
 
-void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx);
-
 bool isInsideFunction(const clang::Decl* decl);
 
 /// The suffix an integer literal of @p value needs to be of @p type: an

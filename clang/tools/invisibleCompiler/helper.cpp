@@ -135,27 +135,6 @@ bool isCompilable(const std::string& source, const std::string& filename,
     return false;
 }
 
-void printQualifiedVarDecl(llvm::raw_string_ostream& out, clang::VarDecl* var, const clang::PrintingPolicy& policy, clang::ASTContext& m_ctx) {
-    std::string name;
-    {
-        llvm::raw_string_ostream name_out(name);
-        var->printNestedNameSpecifier(name_out, policy);
-        name_out << var->getName();
-        name_out.flush();
-    }
-
-    struct ScopedDeclName {
-        clang::NamedDecl* m_decl;
-        clang::DeclarationName saved;
-        ScopedDeclName(clang::NamedDecl* decl, clang::DeclarationName new_decl)
-            : m_decl(decl), saved(m_decl->getDeclName()) { m_decl->setDeclName(new_decl); }
-        ~ScopedDeclName() { m_decl->setDeclName(saved); }
-    };
-
-    ScopedDeclName guard(var, clang::DeclarationName(&m_ctx.Idents.get(name)));
-    var->print(out, policy);
-}
-
 bool isInsideFunction(const clang::Decl* decl) {
     for (const clang::DeclContext* decl_context = decl->getLexicalDeclContext(); decl_context; decl_context = decl_context->getLexicalParent()) {
         if (llvm::isa<clang::FunctionDecl>(decl_context)) return true;

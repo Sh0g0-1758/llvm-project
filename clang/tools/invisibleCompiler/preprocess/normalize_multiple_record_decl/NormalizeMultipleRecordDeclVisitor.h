@@ -29,13 +29,10 @@ class NormalizeMultipleRecordDeclVisitor : public clang::RecursiveASTVisitor<Nor
     }
     NormalizeMultipleRecordDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
-    bool VisitVarDecl(clang::VarDecl* decl);
-    bool VisitFieldDecl(clang::FieldDecl* field_decl);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
-    clang::PrintingPolicy m_deferred_policy_def;
     DeclBeforeDefPrinterHelper m_custom_printer;
 };
 
