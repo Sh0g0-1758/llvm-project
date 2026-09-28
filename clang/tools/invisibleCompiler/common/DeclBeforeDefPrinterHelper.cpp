@@ -163,6 +163,27 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
         return true;
     }
 
+    // a call of a member function with an explicit object parameter is a plain call
+    // with the object as its first argument, which clang prints as such, eg. `f(*this, 1)`
+    if (auto* call = llvm::dyn_cast<clang::CallExpr>(stmt);
+        call && call->getStmtClass() == clang::Stmt::CallExprClass && call->getNumArgs() > 0) {
+        auto* callee = llvm::dyn_cast<clang::DeclRefExpr>(call->getCallee()->IgnoreImpCasts());
+        auto* method = callee ? llvm::dyn_cast<clang::CXXMethodDecl>(callee->getDecl()) : nullptr;
+        if (method && method->isExplicitObjectMemberFunction()) {
+            stream << "(";
+            call->getArg(0)->printPretty(stream, this, m_policy);
+            stream << ").";
+            callee->printPretty(stream, this, m_policy);
+            stream << "(";
+            for (unsigned i = 1; i < call->getNumArgs() && !llvm::isa<clang::CXXDefaultArgExpr>(call->getArg(i)); ++i) {
+                if (i > 1) stream << ", ";
+                call->getArg(i)->printPretty(stream, this, m_policy);
+            }
+            stream << ")";
+            return true;
+        }
+    }
+
     // a requires expression an instantiation decided is printed as its value, a
     // requirement that failed substitution has no expression to print
     if (auto* requires_expr = llvm::dyn_cast<clang::RequiresExpr>(stmt); requires_expr && !requires_expr->isValueDependent()) {
