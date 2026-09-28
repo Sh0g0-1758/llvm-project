@@ -51,18 +51,44 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
         return true;
     }
 
+    // a class or enumeration the declaration defines, eg. `struct S {...} a, b;`, is
+    // printed once: by itself if it is named, with the first variable otherwise, which
+    // the others are declared by the type of. Other declarations, eg. typedefs, are left.
+    const clang::TagDecl* tag = nullptr;
     llvm::SmallVector<const clang::VarDecl*, 8> vars;
     for (const clang::Decl* decl : decl_stmt->decls()) {
         if (const auto* var_decl = llvm::dyn_cast<clang::VarDecl>(decl)) {
             vars.push_back(var_decl);
+        } else if (const auto* defined = llvm::dyn_cast<clang::TagDecl>(decl); defined && !tag && vars.empty()) {
+            tag = defined;
+        } else {
+            return true;
         }
     }
+    bool anonymous = tag && !tag->getIdentifier();
+    if (vars.empty() || (anonymous && llvm::any_of(vars, [&](const clang::VarDecl* var) {
+            return var->getType() != vars.front()->getType() || var->getInitStyle() == clang::VarDecl::CallInit;
+        })))
+        return true;
 
     std::string replacement{};
     llvm::raw_string_ostream out(replacement);
-
+    clang::PrintingPolicy policy = m_policy;
+    if (tag && !anonymous) {
+        tag->print(out, policy);
+        out << ";\n";
+        policy.IncludeTagDefinition = false;
+    }
     for (const clang::VarDecl* var_decl : vars) {
-        var_decl->print(out, m_policy);
+        if (anonymous && var_decl != vars.front()) {
+            out << "__typeof__(" << vars.front()->getName() << ") " << var_decl->getName();
+            if (const clang::Expr* init = var_decl->getInit()) {
+                if (var_decl->getInitStyle() == clang::VarDecl::CInit) out << " = ";
+                init->printPretty(out, nullptr, policy);
+            }
+        } else {
+            var_decl->print(out, policy);
+        }
         out << ";\n";
     }
     out.flush();
