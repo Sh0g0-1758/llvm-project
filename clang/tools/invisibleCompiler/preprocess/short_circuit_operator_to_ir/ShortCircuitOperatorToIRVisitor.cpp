@@ -16,6 +16,16 @@
 
 namespace invisible {
 
+namespace {
+
+/// Whether @p expr is a constant expression, which is left as written: it may have to
+/// be one, eg. initializing a constexpr variable, and has the same value either way.
+bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
+    return !expr->isValueDependent() && !expr->isTypeDependent() && expr->isCXX11ConstantExpr(ctx);
+}
+
+}  // namespace
+
 // ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────────────
 
 ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
@@ -32,6 +42,7 @@ bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
 bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
     if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LAnd) {
         if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
+        if (isConstant(binary_op, m_ctx)) return true;
         /**
          * `var = expr1 && expr2;`
          * is transformed to
@@ -86,6 +97,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
         }
     } else if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LOr) {
         if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
+        if (isConstant(binary_op, m_ctx)) return true;
         /**
          * `var = expr1 || expr2`
          * is transformed to
@@ -134,6 +146,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
 
 bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
     if(!exprHasFuncCall(conditional_op->getLHS()) && !exprHasFuncCall(conditional_op->getRHS())) return true;
+    if (isConstant(conditional_op, m_ctx)) return true;
     /**
      * .. `cond ? expr1 : expr2` ..
      * is transformed to
