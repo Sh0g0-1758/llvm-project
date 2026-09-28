@@ -82,6 +82,46 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
             return true;
         }
     }
+    // and a declaration of several variables of a deduced type as `auto a = x, auto b = y`,
+    // also where it initializes a for loop
+    auto print_deduced = [this](const clang::Stmt* init, llvm::raw_ostream& out) {
+        const auto* decl_stmt = llvm::dyn_cast_or_null<clang::DeclStmt>(init);
+        if (!decl_stmt || decl_stmt->isSingleDecl()) return false;
+        const auto* first = llvm::dyn_cast<clang::VarDecl>(*decl_stmt->decl_begin());
+        if (!first || !first->getTypeSourceInfo() || !first->getTypeSourceInfo()->getType()->getContainedAutoType() ||
+            !llvm::all_of(decl_stmt->decls(), [first](const clang::Decl* decl) {
+                const auto* var = llvm::dyn_cast<clang::VarDecl>(decl);
+                return var && var->getType() == first->getType() && var->getInitStyle() == clang::VarDecl::CInit;
+            }))
+            return false;
+        first->print(out, m_policy);
+        for (const clang::Decl* decl : llvm::drop_begin(decl_stmt->decls())) {
+            const auto* var = llvm::cast<clang::VarDecl>(decl);
+            out << ", " << var->getName();
+            if (const clang::Expr* value = var->getInit()) {
+                out << " = ";
+                value->printPretty(out, this, m_policy);
+            }
+        }
+        return true;
+    };
+    if (llvm::isa<clang::DeclStmt>(stmt) && print_deduced(stmt, stream)) {
+        stream << ";";
+        return true;
+    }
+    if (auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(stmt); for_stmt && !for_stmt->getConditionVariable()) {
+        std::string init;
+        llvm::raw_string_ostream init_out(init);
+        if (print_deduced(for_stmt->getInit(), init_out)) {
+            stream << "for (" << init << "; ";
+            if (clang::Expr* cond = for_stmt->getCond()) cond->printPretty(stream, this, m_policy);
+            stream << "; ";
+            if (clang::Expr* inc = for_stmt->getInc()) inc->printPretty(stream, this, m_policy);
+            stream << ") ";
+            for_stmt->getBody()->printPretty(stream, this, m_policy);
+            return true;
+        }
+    }
     if (auto* range_for = llvm::dyn_cast<clang::CXXForRangeStmt>(stmt); range_for && !range_for->getInit()) {
         if (auto* decomposition = llvm::dyn_cast<clang::DecompositionDecl>(range_for->getLoopVariable())) {
             stream << "for (";
