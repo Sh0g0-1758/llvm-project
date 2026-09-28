@@ -135,8 +135,7 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
     }
 
     // `T(x)` of a type named by more than one word, eg. `long double`, is a C-style
-    // cast. FunctionalCastToCStyleCast doesn't see a materialized default argument
-    // or a member initializer.
+    // cast. FunctionalCastToCStyleCast doesn't see a member initializer.
     if (auto* cast = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(stmt);
         cast && !cast->isListInitialization() && !cast->getType()->isDependentType()) {
         if (cast->getType().getCanonicalType().getAsString(m_policy).find(' ') != std::string::npos) {
@@ -145,22 +144,6 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
             stream << ")";
             return true;
         }
-    }
-
-    // an implicit conversion by a constructor is printed as its arguments, which
-    // are more than the one converted once its default arguments are materialized
-    if (auto* construct = llvm::dyn_cast<clang::CXXConstructExpr>(stmt);
-        construct && !llvm::isa<clang::CXXTemporaryObjectExpr>(construct) &&
-        construct->getParenOrBraceRange().isInvalid() && !construct->isListInitialization() &&
-        construct->getNumArgs() > 1 && !llvm::isa<clang::CXXDefaultArgExpr>(construct->getArg(1))) {
-        construct->getType().getUnqualifiedType().print(stream, m_policy);
-        stream << "(";
-        for (unsigned i = 0; i < construct->getNumArgs() && !llvm::isa<clang::CXXDefaultArgExpr>(construct->getArg(i)); ++i) {
-            if (i) stream << ", ";
-            construct->getArg(i)->printPretty(stream, this, m_policy);
-        }
-        stream << ")";
-        return true;
     }
 
     // a call of a member function with an explicit object parameter is a plain call

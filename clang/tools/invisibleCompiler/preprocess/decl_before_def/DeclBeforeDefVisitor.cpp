@@ -137,8 +137,8 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_deferred_policy_decl.PrintAsCanonical = true;
     m_deferred_policy_decl.FullyQualifiedName = true;
     m_deferred_policy_decl.TerseOutput = true;
-    // default arguments are not printed for any function declaration.
-    // instead, the default arguments are materialized at the callSite itself. 
+    // a specialization or redeclaration can't repeat the default arguments, it
+    // takes them from the declaration they were written on, which is kept.
     m_deferred_policy_decl.SuppressInitializers = true;
 
 
@@ -287,24 +287,6 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
     }
 }
 
-// recurse into the callExpr, visit all its children and reason
-// if any of them is a default argument. If so, fully qualify the
-// identifiers used by this expression. 
-void DeclBeforeDefVisitor::materializeDefaultArgs(clang::Stmt* node) {
-    if (!node) return;
-
-    for (clang::Stmt*& child : node->children()) {
-        if (!child) continue;
-
-        if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(child)) {
-            child = default_arg->getExpr();
-            qualifyNonLocalNames(child, m_ctx);
-        }
-
-        materializeDefaultArgs(child);
-    }
-}
-
 std::string DeclBeforeDefVisitor::printCtorInitializers(clang::CXXConstructorDecl* ctor) {
     std::string result;
     llvm::raw_string_ostream out(result);
@@ -419,7 +401,6 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     // in fact, fully qualifying this can lead to errors, for 
     // instance re-declaration of functions in block scope. 
     llvm::raw_string_ostream def_out(def);
-    materializeDefaultArgs(func->getBody());
     func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
     def_out.flush();
 

@@ -44,7 +44,6 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void stripDestructorExceptionSpec(std::string& str);
     unsigned countEnclosingTemplateLevels(const clang::FunctionDecl* func_decl);
     void stripRecordDeclOnlySpecifiers(std::string& s);
-    void materializeDefaultArgs(clang::Stmt* node);
     std::string printCtorInitializers(clang::CXXConstructorDecl* ctor);
     std::vector<size_t> deferredDefinitionOrder() const;
     void record_function_definition(clang::FunctionDecl* func_decl, std::string& deferred_decl, std::string& deferred_decl_before_def);
