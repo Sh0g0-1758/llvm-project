@@ -163,6 +163,13 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
         return true;
     }
 
+    // a requires expression an instantiation decided is printed as its value, a
+    // requirement that failed substitution has no expression to print
+    if (auto* requires_expr = llvm::dyn_cast<clang::RequiresExpr>(stmt); requires_expr && !requires_expr->isValueDependent()) {
+        stream << (requires_expr->isSatisfied() ? "true" : "false");
+        return true;
+    }
+
     // clang prints `if constexpr` as a plain `if`, whose discarded branches don't compile
     if (auto* if_stmt = llvm::dyn_cast<clang::IfStmt>(stmt); if_stmt && if_stmt->isConstexpr()) {
         stream << "if constexpr (";
