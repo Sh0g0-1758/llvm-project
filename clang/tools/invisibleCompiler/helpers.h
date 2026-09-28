@@ -67,12 +67,6 @@ bool isLeftForConstantEvaluation(const clang::FunctionDecl* func);
 /// are written.
 bool isFriendLeftAsWritten(const clang::FunctionDecl* func);
 
-/// Whether DeclBeforeDef leaves @p func where it is written, with its
-/// instantiations: a defaulted or deleted function, one left for constant
-/// evaluation, a friend that has to be a definition, and a template specialized
-/// for the closure type of a lambda.
-bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func);
-
 /// The passes after DeclBeforeDef leave templates and what constant expressions
 /// evaluate as written.
 bool isLeftAsWritten(const clang::Decl* decl);

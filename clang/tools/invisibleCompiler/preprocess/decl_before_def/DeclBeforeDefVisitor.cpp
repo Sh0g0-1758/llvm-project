@@ -48,6 +48,29 @@ void hoistTrailingAttributes(std::string& decl) {
     if (decl.compare(at, 8, "requires") != 0) decl.insert(at, attributes + " ");
 }
 
+/// Whether DeclBeforeDef leaves @p func where it is written, with its
+/// instantiations: a defaulted or deleted function, one left for constant
+/// evaluation, a friend that has to be a definition, and a template specialized
+/// for the closure type of a lambda.
+bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func) {
+    if (func->isDefaulted() || func->isDeleted() || isLeftForConstantEvaluation(func)) return true;
+    if (const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern()) func = pattern;
+    if (isFriendLeftAsWritten(func)) return true;
+    // a specialization for the closure type of a lambda can't be named
+    const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
+    auto names_lambda = [](const clang::TemplateArgument& arg) {
+        const clang::CXXRecordDecl* record =
+            arg.getKind() == clang::TemplateArgument::Type ? arg.getAsType().getNonReferenceType()->getAsCXXRecordDecl() : nullptr;
+        return record && record->isLambda();
+    };
+    return tmpl && llvm::any_of(tmpl->specializations(), [&](const clang::FunctionDecl* spec) {
+        return llvm::any_of(spec->getTemplateSpecializationArgs()->asArray(), [&](const clang::TemplateArgument& arg) {
+            return arg.getKind() == clang::TemplateArgument::Pack ? llvm::any_of(arg.pack_elements(), names_lambda)
+                                                                   : names_lambda(arg);
+        });
+    });
+}
+
 }  // namespace
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
