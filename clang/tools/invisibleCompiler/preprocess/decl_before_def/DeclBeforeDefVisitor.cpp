@@ -710,6 +710,26 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         return true;
     }
 
+    // clang renames the parameters of a specialization to those of its template when a
+    // call uses one of its default arguments (Sema::addInstantiatedParametersToScope):
+    //     template <class S> int spin(S s_in_template = S{});
+    //     template <> int spin<int>(int s_in_spec) { return s_in_spec; }
+    //     int use() { return spin<int>(); }
+    // leaves `spin<int>` with a parameter named `s_in_template`, referred to as such in
+    // its body. Each pass parses the output of the previous one, so a later pass
+    // printing part of the body, eg. a loop condition, would name a parameter its
+    // untouched parameter list doesn't declare. Hence a specialization is named like
+    // its template from the start. The definition of the template is deferred, so
+    // clang takes the names of its first declaration. A parameter pack of the
+    // template names several parameters, which are left be.
+    const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern(false);
+    if (pattern) pattern = pattern->getFirstDecl();
+    if (pattern && pattern != func && !func->isDependentContext() && pattern->getNumParams() == func->getNumParams() &&
+        llvm::none_of(pattern->parameters(), [](const clang::ParmVarDecl* param) { return param->isParameterPack(); })) {
+        for (unsigned i = 0; i < func->getNumParams(); ++i)
+            func->getParamDecl(i)->setDeclName(pattern->getParamDecl(i)->getDeclName());
+    }
+
     std::string decl;
     std::string deferred_decl;
     // declaration to be emitted not as part of the definition
