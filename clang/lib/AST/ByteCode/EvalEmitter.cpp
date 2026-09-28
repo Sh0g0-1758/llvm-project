@@ -110,10 +110,10 @@ Scope::Local EvalEmitter::createLocal(Descriptor *D) {
   B->invokeCtor();
 
   // Initialize local variable inline descriptor.
-  InlineDescriptor &Desc = *reinterpret_cast<InlineDescriptor *>(B->rawData());
+  auto &Desc = B->getBlockDesc<InlineDescriptor>();
   Desc.Desc = D;
   Desc.Offset = sizeof(InlineDescriptor);
-  Desc.IsActive = true;
+  Desc.IsActive = false;
   Desc.IsBase = false;
   Desc.IsFieldMutable = false;
   Desc.IsConst = false;
@@ -155,6 +155,8 @@ bool EvalEmitter::fallthrough(const LabelTy &Label) {
 }
 
 bool EvalEmitter::speculate(const CallExpr *E, const LabelTy &EndLabel) {
+  if (!isActive())
+    return true;
   size_t StackSizeBefore = S.Stk.size();
   const Expr *Arg = E->getArg(0);
   if (!this->visit(Arg)) {
@@ -177,7 +179,7 @@ bool EvalEmitter::speculate(const CallExpr *E, const LabelTy &EndLabel) {
   return this->emitBool(true, E);
 }
 
-template <PrimType OpType> bool EvalEmitter::emitRet(const SourceInfo &Info) {
+template <PrimType OpType> bool EvalEmitter::emitRet(SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -186,7 +188,7 @@ template <PrimType OpType> bool EvalEmitter::emitRet(const SourceInfo &Info) {
   return true;
 }
 
-template <> bool EvalEmitter::emitRet<PT_Ptr>(const SourceInfo &Info) {
+template <> bool EvalEmitter::emitRet<PT_Ptr>(SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -247,12 +249,12 @@ template <> bool EvalEmitter::emitRet<PT_Ptr>(const SourceInfo &Info) {
   return true;
 }
 
-bool EvalEmitter::emitRetVoid(const SourceInfo &Info) {
+bool EvalEmitter::emitRetVoid(SourceInfo Info) {
   EvalResult.setValid();
   return true;
 }
 
-bool EvalEmitter::emitRetValue(const SourceInfo &Info) {
+bool EvalEmitter::emitRetValue(SourceInfo Info) {
   const auto &Ptr = S.Stk.pop<Pointer>();
 
   if (!EvalResult.checkReturnValue(S, Ctx, Ptr, Info))
@@ -270,7 +272,7 @@ bool EvalEmitter::emitRetValue(const SourceInfo &Info) {
   return false;
 }
 
-bool EvalEmitter::emitGetPtrLocal(uint32_t I, const SourceInfo &Info) {
+bool EvalEmitter::emitGetPtrLocal(uint32_t I, SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -280,7 +282,7 @@ bool EvalEmitter::emitGetPtrLocal(uint32_t I, const SourceInfo &Info) {
 }
 
 template <PrimType OpType>
-bool EvalEmitter::emitGetLocal(uint32_t I, const SourceInfo &Info) {
+bool EvalEmitter::emitGetLocal(uint32_t I, SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -296,7 +298,7 @@ bool EvalEmitter::emitGetLocal(uint32_t I, const SourceInfo &Info) {
 }
 
 template <PrimType OpType>
-bool EvalEmitter::emitSetLocal(uint32_t I, const SourceInfo &Info) {
+bool EvalEmitter::emitSetLocal(uint32_t I, SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -304,13 +306,13 @@ bool EvalEmitter::emitSetLocal(uint32_t I, const SourceInfo &Info) {
 
   Block *B = getLocal(I);
   *reinterpret_cast<T *>(B->data()) = S.Stk.pop<T>();
-  InlineDescriptor &Desc = *reinterpret_cast<InlineDescriptor *>(B->rawData());
+  auto &Desc = B->getBlockDesc<InlineDescriptor>();
   Desc.IsInitialized = true;
 
   return true;
 }
 
-bool EvalEmitter::emitDestroy(uint32_t I, const SourceInfo &Info) {
+bool EvalEmitter::emitDestroy(uint32_t I, SourceInfo Info) {
   if (!isActive())
     return true;
 
@@ -319,6 +321,32 @@ bool EvalEmitter::emitDestroy(uint32_t I, const SourceInfo &Info) {
     S.deallocate(B);
   }
 
+  return true;
+}
+
+bool EvalEmitter::emitGetLocalEnabled(uint32_t I, SourceInfo Info) {
+  if (!isActive())
+    return true;
+
+  Block *B = getLocal(I);
+  const auto &Desc = B->getBlockDesc<InlineDescriptor>();
+
+  S.Stk.push<bool>(Desc.IsActive);
+  return true;
+}
+
+bool EvalEmitter::emitEnableLocal(uint32_t I, SourceInfo Info) {
+  if (!isActive())
+    return true;
+
+  // FIXME: This is a little dirty, but to avoid adding a flag to
+  // InlineDescriptor that's only ever useful on the toplevel of local
+  // variables, we reuse the IsActive flag for the enabled state. We should
+  // probably use a different struct than InlineDescriptor for the block-level
+  // inline descriptor of local varaibles.
+  Block *B = getLocal(I);
+  auto &Desc = B->getBlockDesc<InlineDescriptor>();
+  Desc.IsActive = true;
   return true;
 }
 
