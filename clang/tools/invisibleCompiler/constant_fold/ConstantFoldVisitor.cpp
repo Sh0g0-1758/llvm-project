@@ -36,6 +36,15 @@ bool constantFoldVisitor::TraverseParmVarDecl(clang::ParmVarDecl* param) {
     return true;
 }
 
+// the exception specification of a function is left as written. The one of the
+// specialization of a member of a class template names the member to have clang
+// work out the exception specification of the member, see DeclBeforeDef.
+bool constantFoldVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    clang::SourceRange spec = func->getExceptionSpecSourceRange();
+    if (spec.isValid()) m_exception_specs.push_back(spec);
+    return true;
+}
+
 bool constantFoldVisitor::skip_if_bad_parent(clang::Expr* expr) {
     if (!expr) return false;
 
@@ -69,6 +78,10 @@ bool constantFoldVisitor::is_constant_literal(clang::Expr* inner) {
 bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (expr->getSourceRange().isInvalid()) return true;
     if ((expr->getSourceRange().getBegin() >= m_last_update_loc_begin) && (expr->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
+    if (llvm::any_of(m_exception_specs, [&](clang::SourceRange spec) {
+            return expr->getBeginLoc() >= spec.getBegin() && expr->getEndLoc() <= spec.getEnd();
+        }))
+        return true;
 
     // ── DEBUG ────────────────────────────────────────────────────────────────
     // llvm::errs() << "\n=== [constantFold] Checking AST of expression to fold ===\n";

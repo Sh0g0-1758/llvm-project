@@ -70,6 +70,47 @@ bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func) {
     });
 }
 
+/// An expression naming @p func, the specialization of a member of a class template,
+/// eg. `&S<int>::f` or `(S<int>(static_cast<int (*)()>(nullptr)()))`. It makes clang
+/// work out the exception specification of the member before matching a specialization
+/// declaring it to it. Unworked out, it doesn't match a computed `noexcept`: the
+/// declaration isn't taken as a specialization of the member, or rejected with `requires`.
+std::string printMemberProbe(clang::ASTContext& ctx, const clang::FunctionDecl* func, const clang::PrintingPolicy& policy) {
+    const auto* method = llvm::cast<clang::CXXMethodDecl>(func);
+    const clang::CXXRecordDecl* record = method->getParent();
+    std::string cls;
+    llvm::raw_string_ostream cls_out(cls);
+    record->getNameForDiagnostic(cls_out, policy, true);
+    // a value of the exact type of each parameter, without constructing any
+    if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(method)) {
+        std::string probe = "(" + cls + "(";
+        for (unsigned i = 0; i < ctor->getNumParams(); ++i) {
+            if (i > 0) probe += ", ";
+            std::string maker;
+            llvm::raw_string_ostream maker_out(maker);
+            ctx.getFunctionType(ctor->getParamDecl(i)->getType(), {}, {}).print(maker_out, policy, "*");
+            probe += "static_cast<" + maker + ">(nullptr)()";
+        }
+        return probe + "))";
+    }
+    if (llvm::isa<clang::CXXDestructorDecl>(method))
+        return "(static_cast<" + cls + "*>(nullptr)->~" + record->getNameAsString() + "(), 0)";
+    std::string name;
+    llvm::raw_string_ostream name_out(name);
+    method->getDeclName().print(name_out, policy);
+    std::string address = "&" + cls + "::" + name;
+    if (record->lookup(method->getDeclName()).isSingleResult()) return address;
+    // one of the overloads, by its type without the exception specification
+    const auto* proto = method->getType()->castAs<clang::FunctionProtoType>();
+    clang::FunctionProtoType::ExtProtoInfo info = proto->getExtProtoInfo();
+    info.ExceptionSpec = {};
+    clang::QualType type = ctx.getFunctionType(proto->getReturnType(), proto->getParamTypes(), info);
+    std::string pointer;
+    llvm::raw_string_ostream pointer_out(pointer);
+    type.print(pointer_out, policy, method->isImplicitObjectMemberFunction() ? cls + "::*" : "*");
+    return "static_cast<" + pointer + ">(" + address + ")";
+}
+
 }  // namespace
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
@@ -424,16 +465,6 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
         stripRecordDeclOnlySpecifiers(deferred_decl_before_def);
     }
 
-    // clang rejects the definition of the specialization of a member of a class
-    // template whose exception specification is `noexcept(expr)` once it has been
-    // declared. It is only defined, ahead of the definitions that could use it.
-    const clang::FunctionDecl* member = func->getInstantiatedFromMemberFunction();
-    const auto* proto = member ? member->getType()->getAs<clang::FunctionProtoType>() : nullptr;
-    if (proto && clang::isComputedNoexcept(proto->getExceptionSpecType())) {
-        m_undeclared_definitions.push_back(prefix + deferred_decl + ctor_init + def);
-        return;
-    }
-
     m_deferred_definitions.push_back(prefix + deferred_decl + ctor_init + def);
     m_deferred_functions.push_back(func);
     m_deferred_declarations.push_back(prefix + deferred_decl_before_def + ";");
@@ -742,17 +773,24 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             const auto* proto = func->getType()->getAs<clang::FunctionProtoType>();
             if (func->isTemplateInstantiation() && proto && clang::isComputedNoexcept(proto->getExceptionSpecType()) &&
                 proto->getNoexceptExpr()) {
-                auto spell_noexcept = [&](std::string& printed, const clang::PrintingPolicy& policy) {
+                auto spell_noexcept = [&](std::string& printed, const clang::PrintingPolicy& policy, bool probe) {
                     std::string spec = " noexcept(";
                     llvm::raw_string_ostream spec_out(spec);
                     proto->getNoexceptExpr()->printPretty(spec_out, nullptr, policy, 0, "\n", &m_ctx);
                     spec_out << ")";
+                    std::string value = proto->isNothrow() ? " noexcept" : " noexcept(false)";
+                    // clang only matches the declaration of the specialization of a member of a class template
+                    // to the member once it worked out its exception specification, see printMemberProbe
+                    if (probe) {
+                        value = std::string(" noexcept(") + (proto->isNothrow() ? "true" : "false") + " && sizeof(" +
+                                printMemberProbe(m_ctx, func, policy) + "))";
+                    }
                     size_t pos = printed.rfind(spec);
-                    if (pos != std::string::npos)
-                        printed.replace(pos, spec.size(), proto->isNothrow() ? " noexcept" : " noexcept(false)");
+                    if (pos != std::string::npos) printed.replace(pos, spec.size(), value);
                 };
-                spell_noexcept(deferred_decl, m_deferred_policy_decl);
-                spell_noexcept(deferred_decl_before_def, m_deferred_policy_decl_before_def);
+                spell_noexcept(deferred_decl, m_deferred_policy_decl, false);
+                spell_noexcept(deferred_decl_before_def, m_deferred_policy_decl_before_def,
+                               func->getInstantiatedFromMemberFunction() != nullptr);
             }
 
             // the printer prints a deduced return type (eg. `auto`, `decltype(auto)` or
@@ -923,15 +961,9 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     total = 1;
     for (const auto& def : m_deferred_definitions)
         total += def.size() + 1;
-    for (const auto& def : m_undeclared_definitions)
-        total += def.size() + 1;
     all_defs.reserve(total);
 
     all_defs += '\n';
-    for (auto& def : m_undeclared_definitions) {
-        all_defs += std::move(def);
-        all_defs += "\n";
-    }
     for (size_t i : deferredDefinitionOrder()) {
         auto& def = m_deferred_definitions[i];
         all_defs += std::move(def);

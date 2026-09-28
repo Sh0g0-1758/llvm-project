@@ -39,8 +39,6 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     std::vector<std::string> m_deferred_definitions;
     std::vector<const clang::FunctionDecl*> m_deferred_functions;
     std::vector<std::string> m_deferred_declarations;
-    /// definitions whose declaration is not emitted beforehand
-    std::vector<std::string> m_undeclared_definitions;
     void fixParameterPack(std::string& str, clang::FunctionDecl* func);
     void stripConstructorTemplateArgs(std::string& str, clang::CXXConstructorDecl* ctor);
     void stripDestructorExceptionSpec(std::string& str);

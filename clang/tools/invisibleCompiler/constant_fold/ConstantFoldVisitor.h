@@ -26,6 +26,8 @@ private:
     clang::Rewriter& m_rewriter;
     clang::SourceLocation m_last_update_loc_begin;
     clang::SourceLocation m_last_update_loc_end;
+    /// the `noexcept(...)` of the functions visited so far
+    std::vector<clang::SourceRange> m_exception_specs;
     bool skip_if_bad_parent(clang::Expr* expr);
     bool is_constant_literal(clang::Expr* inner);
 
@@ -35,6 +37,7 @@ public:
     }
     constantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     virtual bool VisitExpr(clang::Expr* expr);
+    bool VisitFunctionDecl(clang::FunctionDecl* func);
     bool TraverseParmVarDecl(clang::ParmVarDecl* param);
     bool did_fold();
 };
