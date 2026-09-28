@@ -169,7 +169,7 @@ bool CloneConstantEvaluatedVisitor::VisitDecl(clang::Decl* decl) {
         }
         const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
         unsigned begin, end;
-        if (function->doesThisDeclarationHaveABody() && !m_instantiating && !isFriendLeftAsWritten(function) &&
+        if (function->doesThisDeclarationHaveABody() && !m_instantiating && function->getFriendObjectKind() == clang::Decl::FOK_None &&
             !(method && method->getParent()->isLambda()) && offsetOf(function->getBody()->getBeginLoc(), begin) &&
             offsetOf(function->getBody()->getEndLoc(), end)) {
             if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(function))

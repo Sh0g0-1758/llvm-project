@@ -50,12 +50,11 @@ void hoistTrailingAttributes(std::string& decl) {
 
 /// Whether DeclBeforeDef leaves @p func where it is written, with its
 /// instantiations: a defaulted or deleted function, one left for constant
-/// evaluation, a friend that has to be a definition, and a template specialized
-/// for the closure type of a lambda.
+/// evaluation, a friend, and a template specialized for the closure type of a lambda.
 bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func) {
     if (func->isDefaulted() || func->isDeleted() || isLeftForConstantEvaluation(func)) return true;
     if (const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern()) func = pattern;
-    if (isFriendLeftAsWritten(func)) return true;
+    if (func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
     // a specialization for the closure type of a lambda can't be named
     const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
     auto names_lambda = [](const clang::TemplateArgument& arg) {
@@ -109,7 +108,6 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewrit
     m_inplace_policy = m_policy;
     m_inplace_policy.TerseOutput = true;
     m_inplace_policy.SuppressTemplateArgsInCXXConstructors = true;
-    m_inplace_policy.SuppressInitializers = true;
 }
 
 void DeclBeforeDefVisitor::fixParameterPack(std::string& str, clang::FunctionDecl* func) {
@@ -210,7 +208,7 @@ unsigned DeclBeforeDefVisitor::countEnclosingTemplateLevels(const clang::Functio
 void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
     auto isWordChar = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
 
-    for (llvm::StringRef kw : {"static ", "virtual ", "friend "}) {
+    for (llvm::StringRef kw : {"static ", "virtual "}) {
         size_t pos = 0;
         while ((pos = s.find(kw.str(), pos)) != std::string::npos) {
             if (pos > 0 && isWordChar(s[pos - 1])) {
@@ -369,7 +367,7 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
      * list present in constructors, its not printed as part of the declaration because
      * we pass the TerseOutput flag to be true. Its also not part of the function body
      * either. Thus we manually insert it when we encounter a constructor that needs one. 
-     * There are also some Specifiers [static, virtual, friend, explicit, override, final]
+     * There are also some Specifiers [static, virtual, explicit, override, final]
      * that are only valid inside Record Declarations. The act of deferring them means that
      * we will have to manually strip the declarations of these keywords as Libtooling does not
      * support any flag for this. 
@@ -381,19 +379,7 @@ void DeclBeforeDefVisitor::record_function_definition(clang::FunctionDecl* func,
     // instance re-declaration of functions in block scope. 
     llvm::raw_string_ostream def_out(def);
     materializeDefaultArgs(func->getBody());
-    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-        // a friend is not a member: its deferred decl is not qualified by the class,
-        // so its body is not in the class scope either. Print the types canonically
-        // and qualify the names so that the class's typedefs, enumerators and static
-        // members still resolve.
-        clang::PrintingPolicy body_policy = m_policy;
-        body_policy.PrintAsCanonical = true;
-        clang::Stmt* body = func->getBody();
-        qualifyNonLocalNames(body, m_ctx);
-        body->printPretty(def_out, &m_custom_printer, body_policy);
-    } else {
-        func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
-    }
+    func->getBody()->printPretty(def_out, &m_custom_printer, m_policy);
     def_out.flush();
 
     std::string prefix{};
@@ -477,46 +463,6 @@ void DeclBeforeDefVisitor::get_kr_function_declarations(clang::FunctionDecl* fun
     deferred_decl_out.flush();
 }
 
-clang::FriendDecl* DeclBeforeDefVisitor::get_friend_declaration(clang::FunctionDecl* func) {
-    if (func->getFriendObjectKind() == clang::Decl::FOK_None) {
-        return nullptr;
-    }
-    
-    for (const clang::Decl* child = func;;) {
-        auto parents = m_ctx.getParents(*child);
-        if (parents.empty()) {
-            return nullptr;
-        }
-        const auto* parent = parents[0].get<clang::Decl>();
-        if(llvm::isa<clang::FriendDecl>(parent)) {
-            return const_cast<clang::FriendDecl*>(llvm::dyn_cast<clang::FriendDecl>(parent));
-        }
-        child = parent;
-    }
-}
-
-void DeclBeforeDefVisitor::fix_friend_declaration(std::string& decl, const clang::FunctionTemplateDecl* tmpl,
-                                                  const clang::PrintingPolicy& policy) {
-    size_t lt = decl.find('<');
-    int depth = 0;
-    size_t i = lt;
-    for (; i < decl.size(); ++i) {
-        if (decl[i] == '<') ++depth;
-        else if (decl[i] == '>' && --depth == 0) break;
-    }
-    // along with the requires clause of the template head
-    if (const clang::Expr* constraint = tmpl->getTemplateParameters()->getRequiresClause()) {
-        std::string clause = " requires ";
-        llvm::raw_string_ostream clause_out(clause);
-        constraint->printPretty(clause_out, nullptr, policy, 0, "\n", &m_ctx);
-        if (decl.compare(i + 1, clause.size(), clause) == 0) i += clause.size();
-    }
-
-    std::string header = decl.substr(strlen("friend "), i - strlen("friend ") + 1);
-    std::string rest = decl.substr(i + 1);
-    decl = header + " friend " + rest;
-}
-
 // Clang copies a default argument onto every redeclaration that inherits it and
 // the printer would print it on all of them. Hides the inherited ones while the
 // declaration is printed, so that each default only appears where it was written.
@@ -591,13 +537,8 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
     llvm::raw_string_ostream decl_out(decl);
     // default arguments are kept on the declaration they were written on as they
     // are still needed in unevaluated contexts that stay generic in the TU (eg.
-    // SFINAE checks like `decltype(a.allocate(n))`). A friend declaration with
-    // default arguments must be the only declaration and a definition, which no
-    // longer holds once its definition is deferred. The same holds for attributes
-    // on a friend declaration. Both are kept on the deferred definition.
+    // SFINAE checks like `decltype(a.allocate(n))`).
     clang::PrintingPolicy inplace_policy = m_inplace_policy;
-    inplace_policy.SuppressInitializers = func->getFriendObjectKind() != clang::Decl::FOK_None;
-    inplace_policy.PolishForDeclaration = func->getFriendObjectKind() != clang::Decl::FOK_None;
     // out-of-line members of class templates carry their `template <...>` header
     // as an outer template parameter list, which the printer emits after the
     // attributes, resulting in `__attribute__((x)) template <...> ...`. The
@@ -608,26 +549,7 @@ void DeclBeforeDefVisitor::get_function_declaration(clang::FunctionDecl* func, s
     }
     InheritedDefaultArgsHider hider(func);
     ConversionNameSpeller speller(func, inplace_policy);
-    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-        clang::FriendDecl* friend_decl = get_friend_declaration(func);
-        friend_decl->print(decl_out, inplace_policy);
-        decl_out.flush();
-
-        // clang printer prints the friend keyword before the 
-        // template<> syntax which results in an unparsable TU. 
-        // Hence if the friend function is templated, move the friend
-        // keyword after the template syntax
-        if (func->getDescribedFunctionTemplate()) {
-            fix_friend_declaration(decl, func->getDescribedFunctionTemplate(), inplace_policy);
-        }
-        // a friend naming a specialization, eg. `friend void h<>(S);`, is printed
-        // as `friend template<> void h<>(S)`, but a friend declaration can't carry
-        // a template header.
-        if (func->isFunctionTemplateSpecialization()) {
-            size_t pos = decl.find("friend template<> ");
-            if (pos != std::string::npos) decl.erase(pos + strlen("friend "), strlen("template<> "));
-        }
-    } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
+    if (auto *function_template = func->getDescribedFunctionTemplate()) {
         function_template->print(decl_out, inplace_policy);
     } else {
         func->print(decl_out, inplace_policy);
@@ -698,13 +620,7 @@ clang::SourceLocation DeclBeforeDefVisitor::expand_range_to_terminating_semi(cla
 void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* func, std::string& decl) {
     respellDecayedVaList(decl);
     hoistTrailingAttributes(decl);
-    if (func->getFriendObjectKind() != clang::Decl::FOK_None) {
-        clang::FriendDecl* friend_decl = get_friend_declaration(func);
-        clang::SourceRange range = friend_decl->getSourceRange();
-        if (!func->doesThisDeclarationHaveABody())
-            range.setEnd(expand_range_to_terminating_semi(range.getEnd()));
-        m_rewriter.ReplaceText(range, decl + ";");
-    } else if (auto *function_template = func->getDescribedFunctionTemplate()) {
+    if (auto *function_template = func->getDescribedFunctionTemplate()) {
         /**
          * A function can be declared using a nested template level. This happens
          * when along with the function, the class which its a part of is templated
@@ -725,9 +641,7 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
                         T a;
                         U b;
          *          }
-         * Note that friendDecls can be templated as well but will never have 
-         * this kind of nested template chain. Out of Line declarations will always
-         * have only 1 level of template specifier. 
+         * Out of Line declarations will always have only 1 level of template specifier. 
          */
         clang::SourceRange corrected_source_range;
         corrected_source_range.setEnd(function_template->getSourceRange().getEnd());

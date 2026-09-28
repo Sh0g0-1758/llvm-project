@@ -171,29 +171,9 @@ bool isLeftForConstantEvaluation(const clang::FunctionDecl* func) {
     return tag && tag->getDeclName().isIdentifier() && tag->getName() == "__invisible_clone_tag";
 }
 
-bool isFriendLeftAsWritten(const clang::FunctionDecl* func) {
-    if (func->getFriendObjectKind() == clang::Decl::FOK_None) return false;
-    // `[[noreturn]]` is on the first declaration, which a friend declaration can't carry attributes on
-    if (func->doesThisDeclarationHaveABody() && func->hasAttr<clang::CXX11NoReturnAttr>()) return true;
-    const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
-    if (tmpl) {
-        for (const clang::NamedDecl* param : *tmpl->getTemplateParameters()) {
-            const auto* type = llvm::dyn_cast<clang::TemplateTypeParmDecl>(param);
-            const auto* value = llvm::dyn_cast<clang::NonTypeTemplateParmDecl>(param);
-            const auto* templ = llvm::dyn_cast<clang::TemplateTemplateParmDecl>(param);
-            if ((type && type->hasDefaultArgument()) || (value && value->hasDefaultArgument()) ||
-                (templ && templ->hasDefaultArgument()))
-                return true;
-        }
-    }
-    if (!func->getLexicalDeclContext()->isDependentContext()) return false;
-    if (func->getTrailingRequiresClause()) return true;
-    return tmpl && tmpl->getTemplateParameters()->hasAssociatedConstraints();
-}
-
 bool isLeftAsWritten(const clang::Decl* decl) {
     if (const auto* func = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl))
-        if (isLeftForConstantEvaluation(func)) return true;
+        if (isLeftForConstantEvaluation(func) || func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
     // eg. the definition of a static data member of a class template
     if (const auto* var = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
         var && (var->isTemplated() || var->getInstantiatedFromStaticDataMember()))

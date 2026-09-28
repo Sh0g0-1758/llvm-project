@@ -61,14 +61,8 @@ std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& valu
 /// marked because a clone of it can't be called.
 bool isLeftForConstantEvaluation(const clang::FunctionDecl* func);
 
-/// A friend template with default template arguments, a friend of a class
-/// template constrained by its template parameters, and a `[[noreturn]]` friend
-/// that is defined, have to be definitions. DeclBeforeDef leaves them where they
-/// are written.
-bool isFriendLeftAsWritten(const clang::FunctionDecl* func);
-
-/// The passes after DeclBeforeDef leave templates and what constant expressions
-/// evaluate as written.
+/// The passes after DeclBeforeDef leave templates, friends and what constant
+/// expressions evaluate as written.
 bool isLeftAsWritten(const clang::Decl* decl);
 
 /**
