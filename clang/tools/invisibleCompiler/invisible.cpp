@@ -68,16 +68,6 @@ std::string insertBraces(const std::string& source) {
     return formatted ? std::move(*formatted) : source;
 }
 
-// Remove redefinitions of any record that might have been
-// introduced because of separating Multiple Declarators
-// onto separate statements.
-std::string normalizeMultipleRecordDecls(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
-    return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
-        NormalizeMultipleRecordDeclVisitor visitor(ctx, rewriter);
-        visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-    });
-}
-
 struct Pass {
     PassInfo info;
     /// Runs one iteration on @p source and returns its output. A repeating pass
@@ -138,7 +128,7 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
     // in a translation unit.
     passes.push_back({{"decl-before-def", "Declare every function before any definition, specializing template instantiations", false},
         [&](const std::string& source, unsigned, bool&) {
-            std::string result = rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter) {
+            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter) {
                 // The trick here is to make the changes within the AST
                 {
                     FunctionalCastToCStyleCastVisitor visitor(ctx, sema);
@@ -172,7 +162,6 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
                     rewriter.InsertTextAfter(endOfFile, visitor.getDeferredDefinitions());
                 }
             });
-            return normalizeMultipleRecordDecls(result, filename, args);
         }});
 
     // Marks the beginning of every case statement with a semi-colon so
@@ -229,11 +218,10 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
     // Splits comma-separated variable declarations into individual statements
     passes.push_back({{"comma-init", "Split comma separated declarations into one declaration each", false},
         [&](const std::string& source, unsigned, bool&) {
-            std::string result = rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
+            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
                 CommaInitVisitor visitor(ctx, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             });
-            return normalizeMultipleRecordDecls(result, filename, args);
         }});
 
     /// rewrite short-circuit operations into their IR form at the source code level

@@ -19,7 +19,6 @@
 #include "preprocess/information_collector/InformationCollectorVisitor.h"
 #include "common/DeclBeforeDefPrinterHelper.h"
 #include "preprocess/decl_before_def/DeclBeforeDefVisitor.h"
-#include "preprocess/normalize_multiple_record_decl/NormalizeMultipleRecordDeclVisitor.h"
 #include "preprocess/materialize_lambda/MaterializeLambdaVisitor.h"
 #include "preprocess/clone_constant_evaluated/CloneConstantEvaluatedVisitor.h"
 #include "preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.h"
