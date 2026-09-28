@@ -36,7 +36,7 @@ struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
         return true;
     }
     bool VisitTagTypeLoc(clang::TagTypeLoc loc) {
-        addMember(loc.getOriginalDecl());
+        addMember(loc.getDecl());
         return true;
     }
     void addMember(const clang::NamedDecl* decl) {
