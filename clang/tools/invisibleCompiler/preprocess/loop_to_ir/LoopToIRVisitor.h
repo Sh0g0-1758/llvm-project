@@ -30,8 +30,12 @@ class LoopToIRVisitor : public clang::RecursiveASTVisitor<LoopToIRVisitor> {
     bool VisitForStmt(clang::ForStmt* for_stmt);
     bool VisitWhileStmt(clang::WhileStmt* while_stmt);
     bool VisitDoStmt(clang::DoStmt* do_stmt);
+    bool VisitIfStmt(clang::IfStmt* if_stmt);
+    bool VisitSwitchStmt(clang::SwitchStmt* switch_stmt);
     bool exprHasFuncCall(clang::Expr* expr);
   private:
+    void moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init, clang::DeclStmt* cond_decl, clang::Expr* cond,
+                               clang::SourceLocation lparen, clang::SourceLocation rparen);
     void collectContinues(clang::Stmt* stmt, std::vector<clang::ContinueStmt*>& continues);
     std::string jumpContinuesToLabel(clang::Stmt* body);
     clang::ASTContext& m_ctx;

@@ -130,6 +130,66 @@ bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
     return true;
 }
 
+bool LoopToIRVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
+    moveConditionDeclsOut(if_stmt, if_stmt->getInit(), if_stmt->getConditionVariableDeclStmt(), if_stmt->getCond(),
+                          if_stmt->getLParenLoc(), if_stmt->getRParenLoc());
+    return true;
+}
+
+bool LoopToIRVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
+    moveConditionDeclsOut(switch_stmt, switch_stmt->getInit(), switch_stmt->getConditionVariableDeclStmt(),
+                          switch_stmt->getCond(), switch_stmt->getLParenLoc(), switch_stmt->getRParenLoc());
+    return true;
+}
+
+void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init, clang::DeclStmt* cond_decl,
+                                            clang::Expr* cond, clang::SourceLocation lparen, clang::SourceLocation rparen) {
+    /**
+     * {if the init statement, the condition variable or the condition has a function call}
+     * `if (init; T v = e) then else other`
+     * is transformed into
+     *   {
+     *     init;
+     *     T v = e;
+     *     if (v) then else other
+     *   }
+     * and likewise for a switch. The calls can then be hoisted before the statement,
+     * which the variables they use are no longer declared in.
+     */
+    if (!init && !cond_decl) return;
+    if (lparen.isInvalid() || rparen.isInvalid()) return;
+    const clang::VarDecl* var = cond_decl ? llvm::dyn_cast<clang::VarDecl>(cond_decl->getSingleDecl()) : nullptr;
+    if (cond_decl && (!var || llvm::isa<clang::DecompositionDecl>(var))) return;
+    auto has_call = [&](clang::Stmt* part) {
+        if (auto* expr = llvm::dyn_cast_or_null<clang::Expr>(part)) return exprHasFuncCall(expr);
+        if (auto* decl_stmt = llvm::dyn_cast_or_null<clang::DeclStmt>(part))
+            return llvm::any_of(decl_stmt->decls(), [&](clang::Decl* decl) {
+                auto* declared = llvm::dyn_cast<clang::VarDecl>(decl);
+                return declared && declared->getInit() && exprHasFuncCall(declared->getInit());
+            });
+        return false;
+    };
+    if (!has_call(init) && !has_call(cond_decl) && !has_call(cond)) return;
+
+    const clang::SourceManager& sm = m_ctx.getSourceManager();
+    // the init statement with its `;`, as it is written between the parentheses
+    clang::SourceLocation cond_begin = cond_decl ? cond_decl->getBeginLoc() : cond->getBeginLoc();
+    std::string head = m_rewriter.getRewrittenText(clang::CharSourceRange::getCharRange(lparen.getLocWithOffset(1), cond_begin));
+    std::string test;
+    if (cond_decl) {
+        head += m_rewriter.getRewrittenText(clang::CharSourceRange::getTokenRange(cond_decl->getSourceRange())) + ";";
+        test = var->getNameAsString();
+    } else {
+        test = m_rewriter.getRewrittenText(clang::CharSourceRange::getTokenRange(cond->getSourceRange()));
+    }
+    clang::SourceLocation end = clang::Lexer::getLocForEndOfToken(stmt->getEndLoc(), 0, sm, m_ctx.getLangOpts());
+    if (head.empty() || test.empty() || end.isInvalid()) return;
+
+    m_rewriter.ReplaceText(clang::CharSourceRange::getCharRange(lparen.getLocWithOffset(1), rparen), test);
+    m_rewriter.InsertTextBefore(stmt->getBeginLoc(), "{\n" + head + "\n");
+    m_rewriter.InsertTextAfter(end, "\n}");
+}
+
 bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     /**
      * `do body while (cond);`
