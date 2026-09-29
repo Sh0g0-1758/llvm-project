@@ -36,6 +36,16 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
      *   expr
      * }
      *
+     * {if cond declares a variable}
+     * `for (init; T v = e; inc) body`
+     * is transformed into
+     * for (init;;) {
+     *   T v = e;
+     *   if (!(v)) { break; }
+     *   { body }
+     *   expr
+     * }
+     *
      * {if body has a continue}
      * `for (init, cond, inc) body`
      * is transformed into
@@ -47,13 +57,22 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
      */
     bool hasCond = for_stmt->getCond() != nullptr;
     bool hasInc  = for_stmt->getInc() != nullptr;
-    if(!(hasCond && exprHasFuncCall(for_stmt->getCond())) &&
+    // `for (init; T v = e; inc)` declares `v` on each iteration, like a while
+    clang::DeclStmt* cond_decl = for_stmt->getConditionVariableDeclStmt();
+    clang::Expr* trigger = cond_decl ? for_stmt->getConditionVariable()->getInit() : for_stmt->getCond();
+    if(!(hasCond && trigger && exprHasFuncCall(trigger)) &&
        !(hasInc && exprHasFuncCall(for_stmt->getInc()))) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
     if(hasCond) for_stmt->getCond()->printPretty(cond_out, nullptr, m_policy);
     cond_out.flush();
+
+    std::string cond_var{};
+    if (cond_decl) {
+        llvm::raw_string_ostream cond_var_out(cond_var);
+        cond_decl->printPretty(cond_var_out, nullptr, m_policy);
+    }
 
     std::string inc;
     llvm::raw_string_ostream inc_out(inc);
@@ -65,12 +84,13 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
 
     std::string label = hasInc ? jumpContinuesToLabel(for_stmt->getBody()) : "";
 
-    if (hasCond) m_rewriter.ReplaceText(for_stmt->getCond()->getSourceRange(), "");
+    if (cond_decl) m_rewriter.ReplaceText(cond_decl->getSourceRange(), "");
+    else if (hasCond) m_rewriter.ReplaceText(for_stmt->getCond()->getSourceRange(), "");
     if (hasInc) m_rewriter.ReplaceText(for_stmt->getInc()->getSourceRange(), "");
 
     std::string cond_wrapped_in_if;
     llvm::raw_string_ostream cond_wrapped_out(cond_wrapped_in_if);
-    if(hasCond) cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
+    if(hasCond) cond_wrapped_out << cond_var << "if (!(" << cond << ")) {\nbreak;\n}\n";
     cond_wrapped_out << "{\n";
     cond_wrapped_out.flush();
     // calls hoisted out of expr stay inside the block, the goto can't jump over them
