@@ -251,38 +251,6 @@ clang::DynTypedNode FuncCallCleanupVisitor::getSemanticParent(const clang::Stmt*
 }
 
 bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
-    // Guard: do not hoist calls that execute repeatedly —
-    // i.e. calls in a loop condition or for-increment.
-    // Handles: while(foo()), while(a = foo()),
-    //          for(; foo(); ), for(; bar(), foo(); ), for(;; foo())
-    {
-        const clang::Stmt* child = call;
-        while (true) {
-            auto parents = m_ctx.getParents(*child);
-            if (parents.empty()) break;
-            const auto* parent = parents[0].get<clang::Stmt>();
-            if (!parent) break;
-            if (llvm::isa<clang::CompoundStmt>(parent)) break;
-
-            if (const auto* fs = llvm::dyn_cast<clang::ForStmt>(parent)) {
-                if (fs->getCond() == child || fs->getInc() == child)
-                    return true;
-                break;
-            }
-            if (const auto* ws = llvm::dyn_cast<clang::WhileStmt>(parent)) {
-                if (ws->getCond() == child)
-                    return true;
-                break;
-            }
-            if (const auto* ds = llvm::dyn_cast<clang::DoStmt>(parent)) {
-                if (ds->getCond() == child)
-                    return true;
-                break;
-            }
-            child = parent;
-        }
-    }
-
     bool isExplicitCoversionOperator = false;
     if (auto* member_call_expr = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
         const auto* conversion_decl = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(member_call_expr->getMethodDecl());
