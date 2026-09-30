@@ -6,6 +6,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 
+#include <cstdint>
 #include <algorithm>
 
 namespace invisible {
@@ -19,8 +20,8 @@ constexpr const char* kKept = "__attribute__((annotate(\"invisible_constant_eval
 
 // the order of the edits at one offset: the insertions after an expression, inner
 // ones first, then the insertions before one, outer ones first, then the replacements.
-constexpr long kBefore = 1L << 40;
-constexpr long kReplace = 1L << 41;
+constexpr std::int64_t kBefore = std::int64_t{1} << 40;
+constexpr std::int64_t kReplace = std::int64_t{1} << 41;
 
 const char* operatorName(clang::OverloadedOperatorKind kind) {
     switch (kind) {

@@ -4,6 +4,7 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
@@ -79,7 +80,7 @@ class CloneConstantEvaluatedVisitor : public clang::RecursiveASTVisitor<CloneCon
         unsigned offset;
         unsigned length;
         std::string text;
-        long order;
+        std::int64_t order;
     };
 
     /// The edits spelling the uses at one place. Those in a function that is cloned
