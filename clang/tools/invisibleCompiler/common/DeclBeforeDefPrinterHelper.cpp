@@ -135,13 +135,26 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
     }
 
     // `T(x)` of a type named by more than one word, eg. `long double`, is a C-style
-    // cast. FunctionalCastToCStyleCast doesn't see a member initializer.
+    // cast. FunctionalCastToCStyleCast doesn't see a member initializer. A space within
+    // template arguments doesn't count, `cd(x)` of `typedef std::pair<int, int> cd` is
+    // kept. The type may be printed as written or canonically, eg. in a constructor
+    // initializer. The cast is parenthesized as a whole, `((T)(x)).m` isn't `(T)((x).m)`.
     if (auto* cast = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(stmt);
         cast && !cast->isListInitialization() && !cast->getType()->isDependentType()) {
-        if (cast->getType().getCanonicalType().getAsString(m_policy).find(' ') != std::string::npos) {
-            stream << "(" << cast->getType().getAsString(m_policy) << ")(";
+        auto several_words = [](const std::string& name) {
+            int depth = 0;
+            for (char c : name) {
+                if (c == '<' || c == '(') ++depth;
+                else if (c == '>' || c == ')') --depth;
+                else if (c == ' ' && depth == 0) return true;
+            }
+            return false;
+        };
+        if (several_words(cast->getType().getAsString(m_policy)) ||
+            several_words(cast->getType().getCanonicalType().getAsString(m_policy))) {
+            stream << "((" << cast->getType().getAsString(m_policy) << ")(";
             cast->getSubExprAsWritten()->printPretty(stream, this, m_policy);
-            stream << ")";
+            stream << "))";
             return true;
         }
     }
