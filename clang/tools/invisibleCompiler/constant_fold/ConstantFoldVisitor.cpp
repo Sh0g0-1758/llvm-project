@@ -200,9 +200,9 @@ bool constantFoldVisitor::VisitExpr(clang::Expr* expr) {
     // precedence than &. 
     if (value.isStruct() || value.isArray() || value.isLValue())
         return true;
-    // no literal spells an integer wider than long long, nor one of __int128
-    if (value.isInt() && (value.getInt().isSigned() ? value.getInt().getSignificantBits() : value.getInt().getActiveBits()) > 64)
-        return true;
+    // no literal has a type wider than 64 bits, eg. `(__int128)5` would be printed as the
+    // int 5 and change the arithmetic it is part of. A value only needs more than 64 bits
+    // in such a type.
     if (value.isInt() && m_ctx.getTypeSize(expr->getType()) > 64) return true;
 
     std::string replacement{};
