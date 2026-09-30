@@ -32,7 +32,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     bool TraverseDecl(clang::Decl* decl) {
         return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<FuncCallCleanupVisitor>::TraverseDecl(decl);
     }
-    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index);
+    FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter, size_t& current_index);
 
     // a call in an unevaluated operand is never made, it only names a type or a
     // property of one: hoisting it would make it, and eg. turn `decltype(f())` of a
@@ -58,6 +58,7 @@ class FuncCallCleanupVisitor : public clang::RecursiveASTVisitor<FuncCallCleanup
     void hoist_call_at_nearest_compound_statement(clang::CallExpr* call);
   private:
     clang::ASTContext& m_ctx;
+    clang::Sema& m_sema;
     clang::Rewriter& m_rewriter;
     clang::SourceLocation m_last_update_loc;
     clang::SourceRange m_last_call_loc;

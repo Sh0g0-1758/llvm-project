@@ -111,7 +111,41 @@ std::string printMemberProbe(clang::ASTContext& ctx, const clang::FunctionDecl* 
     return "static_cast<" + pointer + ">(" + address + ")";
 }
 
+/// The class types of the results used by value, see instantiateConstructorsOfValues.
+class ValueTypeCollector : public clang::RecursiveASTVisitor<ValueTypeCollector> {
+  public:
+    explicit ValueTypeCollector(clang::ASTContext& ctx) : m_ctx(ctx) {}
+    bool shouldVisitTemplateInstantiations() const { return true; }
+    bool VisitCallExpr(clang::CallExpr* call) {
+        clang::QualType type = call->getType();
+        if (!call->isPRValue() || type->isDependentType() || !type->getAsCXXRecordDecl()) return true;
+        if (isUsedByValue(m_ctx, call)) m_values.push_back({call->getBeginLoc(), type});
+        return true;
+    }
+    std::vector<std::pair<clang::SourceLocation, clang::QualType>> m_values;
+
+  private:
+    clang::ASTContext& m_ctx;
+};
+
 }  // namespace
+
+void instantiateConstructorsOfValues(clang::ASTContext& ctx, clang::Sema& sema) {
+    if (!ctx.getLangOpts().CPlusPlus) return;
+    // looking the constructors up declares the implicit ones, which isn't done while
+    // traversing the classes they are declared in
+    ValueTypeCollector collector(ctx);
+    collector.TraverseDecl(ctx.getTranslationUnitDecl());
+    for (const auto& [loc, type] : collector.m_values) {
+        auto* record = type->getAsCXXRecordDecl();
+        if (!record->hasDefinition()) continue;
+        unsigned quals = type.getCVRQualifiers();
+        clang::CXXConstructorDecl* ctor = sema.LookupMovingConstructor(record, quals);
+        if (!ctor || ctor->isDeleted()) ctor = sema.LookupCopyingConstructor(record, quals);
+        if (ctor && !ctor->isDeleted() && !ctor->isTrivial()) sema.MarkFunctionReferenced(loc, ctor);
+    }
+    sema.PerformPendingInstantiations();
+}
 
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 

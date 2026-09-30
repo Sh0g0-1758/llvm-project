@@ -3,6 +3,8 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
+#include "clang/AST/ParentMapContext.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
@@ -256,6 +258,18 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
 
     for (clang::Stmt*& child : node->children())
         qualifyNonLocalNames(child, ctx);
+}
+
+bool isUsedByValue(clang::ASTContext& ctx, const clang::Expr* expr) {
+    for (const clang::Stmt* child = expr;;) {
+        auto parents = ctx.getParents(*child);
+        const auto* parent = parents.empty() ? nullptr : parents[0].get<clang::Stmt>();
+        if (!parent) return true;
+        if (llvm::isa<clang::MaterializeTemporaryExpr>(parent)) return false;
+        if (!llvm::isa<clang::ParenExpr, clang::ImplicitCastExpr, clang::CXXBindTemporaryExpr, clang::ExprWithCleanups>(parent))
+            return true;
+        child = parent;
+    }
 }
 
 }  // namespace invisible

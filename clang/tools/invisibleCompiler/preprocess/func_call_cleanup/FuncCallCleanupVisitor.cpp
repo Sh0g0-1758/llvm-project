@@ -16,10 +16,31 @@
 
 namespace invisible {
 
+namespace {
+
+/// How a use by value of a hoisted temporary of class type, eg. passing it to a parameter
+/// taken by value or returning it, makes its own object out of it: the unnamed result the
+/// temporary replaces needed neither.
+enum class ByValue { Move, ExplicitMove, Copy, ExplicitCopy, Impossible };
+
+ByValue byValue(clang::Sema& sema, clang::QualType type) {
+    auto* record = type->getAsCXXRecordDecl();
+    if (!record || record->isDependentType()) return ByValue::Move;
+    unsigned quals = type.getCVRQualifiers();
+    if (clang::CXXConstructorDecl* move = sema.LookupMovingConstructor(record, quals); move && !move->isDeleted())
+        return move->isExplicit() ? ByValue::ExplicitMove : ByValue::Move;
+    if (clang::CXXConstructorDecl* copy = sema.LookupCopyingConstructor(record, quals); copy && !copy->isDeleted())
+        return copy->isExplicit() ? ByValue::ExplicitCopy : ByValue::Copy;
+    return ByValue::Impossible;
+}
+
+}  // namespace
+
 // ─── FuncCallCleanupVisitor ────────────────────────────────────────
 
-FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
-    : m_ctx(ctx), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index), m_policy(m_ctx.getLangOpts()) {
+FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter,
+                                               size_t& current_index)
+    : m_ctx(ctx), m_sema(sema), m_rewriter(rewriter), m_is_uninstantiated_template(false), m_current_index(current_index), m_policy(m_ctx.getLangOpts()) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -84,6 +105,14 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
     auto& src_mgr = m_ctx.getSourceManager();
     const auto& lang_opts = m_ctx.getLangOpts();
 
+    ByValue by_value = ByValue::Move;
+    if (lang_opts.CPlusPlus && call->isPRValue() && call->getType()->isRecordType() && isUsedByValue(m_ctx, call)) {
+        by_value = byValue(m_sema, call->getType());
+        // a value that can be neither moved nor copied, eg. holding a mutex, is only
+        // initialized from an unnamed result, `take(make())` is left as written.
+        if (by_value == ByValue::Impossible) return;
+    }
+
     auto call_text =
         clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(call->getSourceRange()), src_mgr, lang_opts)
             .str();
@@ -131,6 +160,7 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
             }
         }
 
+        std::string name = ret_var;
         decl_ty.print(out, m_policy, ret_var);
 
         // a conversion operator applied implicitly, eg. by `if (obj)`, has no source text
@@ -156,7 +186,17 @@ void FuncCallCleanupVisitor::hoist_call_at_nearest_compound_statement(clang::Cal
             llvm::raw_string_ostream ty_os(ty_str);
             decl_ty.print(ty_os, m_policy);
             ty_os.flush();
-            ret_var = "static_cast<" + ty_str + ">(" + ret_var + ")";
+            std::string value_ty = ret_ty.getUnqualifiedType().getAsString(m_policy);
+            std::string lvalue_ty = ret_ty.getAsString(m_policy) + " &";
+            // an `explicit` constructor is only called by direct initialization, and a
+            // temporary that can't be moved is copied, `return tmp;` would still move it
+            switch (by_value) {
+            case ByValue::Move: ret_var = "static_cast<" + ty_str + ">(" + name + ")"; break;
+            case ByValue::ExplicitMove: ret_var = value_ty + "(static_cast<" + ty_str + ">(" + name + "))"; break;
+            case ByValue::Copy: ret_var = "static_cast<" + lvalue_ty + ">(" + name + ")"; break;
+            case ByValue::ExplicitCopy: ret_var = value_ty + "(static_cast<" + lvalue_ty + ">(" + name + "))"; break;
+            case ByValue::Impossible: break;
+            }
         }
     } else {
         ret_var = "(void)0";

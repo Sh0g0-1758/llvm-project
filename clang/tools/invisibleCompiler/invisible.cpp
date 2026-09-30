@@ -129,6 +129,9 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
     passes.push_back({{"decl-before-def", "Declare every function before any definition, specializing template instantiations", false},
         [&](const std::string& source, unsigned, bool&) {
             return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter) {
+                // the constructors moving and copying hoisted temporaries will call
+                instantiateConstructorsOfValues(ctx, sema);
+
                 // The trick here is to make the changes within the AST
                 {
                     FunctionalCastToCStyleCastVisitor visitor(ctx, sema);
@@ -249,8 +252,8 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
     passes.push_back({{"hoist-calls", "Hoist nested function calls into temporaries", true},
         [&](const std::string& source, unsigned iteration, bool& changed) {
             if (iteration == 0) current_index = 0;
-            return rewrite(source, filename, args, [&](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
-                FuncCallCleanupVisitor visitor(ctx, rewriter, current_index);
+            return rewrite(source, filename, args, [&](clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter) {
+                FuncCallCleanupVisitor visitor(ctx, sema, rewriter, current_index);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 changed = visitor.did_cleanup();
             });

@@ -85,4 +85,9 @@ clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clan
 
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
 
+/// Whether the prvalue @p expr initializes an object, eg. a parameter taken by value or the
+/// returned value, rather than being bound to a reference or having a member accessed,
+/// which materializes it as a temporary.
+bool isUsedByValue(clang::ASTContext& ctx, const clang::Expr* expr);
+
 }  // namespace invisible

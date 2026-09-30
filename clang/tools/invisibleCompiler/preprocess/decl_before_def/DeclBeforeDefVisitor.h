@@ -54,4 +54,10 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     clang::SourceLocation expand_range_to_terminating_semi(clang::SourceLocation end);
 };
 
+/// Has @p sema instantiate the constructors that moving or copying the results of class
+/// type used by value will call once hoist-calls names them. The results are built in place
+/// in the input, which can leave those constructors unused, eg. of a member of a class
+/// template, and without a definition once DeclBeforeDef deferred the ones used.
+void instantiateConstructorsOfValues(clang::ASTContext& ctx, clang::Sema& sema);
+
 }  // namespace invisible
