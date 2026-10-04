@@ -20,7 +20,7 @@
 #include "common/DeclBeforeDefPrinterHelper.h"
 #include "preprocess/decl_before_def/DeclBeforeDefVisitor.h"
 #include "preprocess/materialize_lambda/MaterializeLambdaVisitor.h"
-#include "preprocess/clone_constant_evaluated/CloneConstantEvaluatedVisitor.h"
+#include "preprocess/decl_before_def/KeepInPlaceVisitor.h"
 #include "preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.h"
 #include "preprocess/functional_cast_to_c_style_cast/FunctionalCastToCStyleCastVisitor.h"
 #include "preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.h"

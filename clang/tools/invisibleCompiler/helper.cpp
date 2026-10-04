@@ -165,17 +165,9 @@ std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& valu
     }
 }
 
-bool isLeftForConstantEvaluation(const clang::FunctionDecl* func) {
-    if (func->getDeclName().isIdentifier() && func->getName().starts_with("__invisible_clone_")) return true;
-    if (const auto* kept = func->getAttr<clang::AnnotateAttr>())
-        if (kept->getAnnotation() == "invisible_constant_evaluated") return true;
-    const auto* tag = func->getNumParams() ? func->getParamDecl(0)->getType()->getAsRecordDecl() : nullptr;
-    return tag && tag->getDeclName().isIdentifier() && tag->getName() == "__invisible_clone_tag";
-}
-
 bool isLeftAsWritten(const clang::Decl* decl) {
     if (const auto* func = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl))
-        if (isLeftForConstantEvaluation(func) || func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
+        if (func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
     // eg. the definition of a static data member of a class template
     if (const auto* var = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
         var && (var->isTemplated() || var->getInstantiatedFromStaticDataMember()))

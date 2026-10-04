@@ -49,12 +49,12 @@ void hoistTrailingAttributes(std::string& decl) {
 }
 
 /// Whether DeclBeforeDef leaves @p func where it is written, with its
-/// instantiations: a defaulted or deleted function, one left for constant
-/// evaluation, a friend, and a template specialized for the closure type of a lambda.
-bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func) {
-    if (func->isDefaulted() || func->isDeleted() || isLeftForConstantEvaluation(func)) return true;
+/// instantiations: a defaulted or deleted function, one used by what stays in
+/// place, a friend, and a template specialized for the closure type of a lambda.
+bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func, const std::set<const clang::FunctionDecl*>& kept_in_place) {
+    if (func->isDefaulted() || func->isDeleted()) return true;
     if (const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern()) func = pattern;
-    if (func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
+    if (kept_in_place.count(func->getCanonicalDecl()) || func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
     // a specialization for the closure type of a lambda can't be named
     const clang::FunctionTemplateDecl* tmpl = func->getDescribedFunctionTemplate();
     auto names_lambda = [](const clang::TemplateArgument& arg) {
@@ -151,8 +151,9 @@ void instantiateConstructorsOfValues(clang::ASTContext& ctx, clang::Sema& sema) 
 
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
-DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_ctor(m_ctx.getLangOpts()), m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
+DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter,
+                                           const std::set<const clang::FunctionDecl*>& kept_in_place)
+    : m_ctx(ctx), m_rewriter(rewriter), m_kept_in_place(kept_in_place), m_policy(m_ctx.getLangOpts()), m_deferred_policy_decl(m_ctx.getLangOpts()), m_deferred_policy_ctor(m_ctx.getLangOpts()), m_deferred_policy_decl_before_def(m_ctx.getLangOpts()), m_inplace_policy(m_ctx.getLangOpts()), m_custom_printer(ctx, m_policy) {
     if (m_ctx.getLangOpts().CPlusPlus) {
         m_policy.adjustForCPlusPlus();
     }
@@ -723,7 +724,7 @@ void DeclBeforeDefVisitor::replace_function_declaration(clang::FunctionDecl* fun
  * and the latter's definition is stored and emitted at the end of the TU.
  */
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    if (isKeptByDeclBeforeDef(func)) return true;
+    if (isKeptByDeclBeforeDef(func, m_kept_in_place)) return true;
     // only re-emit declarations at the global level. Declarations
     // inside functions are re-emitted when the function defs are printed
     if (isInsideFunction(func)) return true;

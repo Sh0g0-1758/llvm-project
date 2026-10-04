@@ -56,13 +56,7 @@ bool isInsideFunction(const clang::Decl* decl);
 /// `std::min(2305843009213693951UL, n)`, which still deduces `size_t`.
 std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& value, clang::QualType type);
 
-/// Whether @p func is left where it is written for constant expressions to
-/// evaluate: a clone made by CloneConstantEvaluatedVisitor, or an original it
-/// marked because a clone of it can't be called.
-bool isLeftForConstantEvaluation(const clang::FunctionDecl* func);
-
-/// The passes after DeclBeforeDef leave templates, friends and what constant
-/// expressions evaluate as written.
+/// The passes after DeclBeforeDef leave templates and friends as written.
 bool isLeftAsWritten(const clang::Decl* decl);
 
 /**

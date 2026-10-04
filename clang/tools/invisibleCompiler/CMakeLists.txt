@@ -10,7 +10,7 @@ add_clang_tool(invisible
   common/DeclBeforeDefPrinterHelper.cpp
   preprocess/decl_before_def/DeclBeforeDefVisitor.cpp
   preprocess/materialize_lambda/MaterializeLambdaVisitor.cpp
-  preprocess/clone_constant_evaluated/CloneConstantEvaluatedVisitor.cpp
+  preprocess/decl_before_def/KeepInPlaceVisitor.cpp
   preprocess/canonicalize_var_decl/CanonicalizeVarDeclVisitor.cpp
   preprocess/functional_cast_to_c_style_cast/FunctionalCastToCStyleCastVisitor.cpp
   preprocess/mark_local_record_decl_methods_explicit/MarkLocalRecordDeclMethodsExplicitVisitor.cpp

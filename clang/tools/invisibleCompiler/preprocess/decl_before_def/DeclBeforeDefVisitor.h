@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <deque>
 #include <string>
+#include <set>
 #include <vector>
 #include <cassert>
 #include "common/DeclBeforeDefPrinterHelper.h"
@@ -23,13 +24,16 @@ namespace invisible {
 /// Puts all function declarations before all function definitions
 class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisitor> {
   public:
-    DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    /// @p kept_in_place is left as written, see KeepInPlaceVisitor
+    DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter,
+                         const std::set<const clang::FunctionDecl*>& kept_in_place);
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     std::string getDeferredDefinitions();
     bool shouldVisitTemplateInstantiations() const;
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
+    const std::set<const clang::FunctionDecl*>& m_kept_in_place;
     clang::PrintingPolicy m_policy;
     clang::PrintingPolicy m_deferred_policy_ctor;
     clang::PrintingPolicy m_deferred_policy_decl;
