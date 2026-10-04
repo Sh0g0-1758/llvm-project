@@ -539,9 +539,10 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
             stream.flush();
         }
 
-        // if we are inlining a function that takes in variable number of arguments, we let it pass by reference
-        // in most real world scenarios, we are mostly just going to read values from it. 
-        if (param_decl->getOriginalType().getAsString() == "va_list") {
+        // a va_list that is an array is passed as a pointer, which va_arg doesn't
+        // take, so the argument itself is used
+        clang::QualType va_list_type = m_ctx.getBuiltinVaListType();
+        if (va_list_type->isArrayType() && m_ctx.hasSameType(param_decl->getOriginalType(), va_list_type)) {
             caller_params[i] = arg_text;
         } else {
             caller_params[i] = "__inline_param__" + std::to_string(m_current_index) + "_" + std::to_string(i);
