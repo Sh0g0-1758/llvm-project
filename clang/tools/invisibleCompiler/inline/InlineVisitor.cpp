@@ -541,7 +541,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
         // if we are inlining a function that takes in variable number of arguments, we let it pass by reference
         // in most real world scenarios, we are mostly just going to read values from it. 
-        if (param_decl->getType()->isLValueReferenceType() || param_decl->getOriginalType().getAsString() == "va_list") {
+        if (param_decl->getOriginalType().getAsString() == "va_list") {
             caller_params[i] = arg_text;
         } else {
             caller_params[i] = "__inline_param__" + std::to_string(m_current_index) + "_" + std::to_string(i);
