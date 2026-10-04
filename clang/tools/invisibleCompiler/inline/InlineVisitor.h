@@ -1,6 +1,7 @@
 #pragma once
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/Sema.h"
@@ -21,7 +22,6 @@ struct InlineEntry {
     std::string caller;
     std::string callee;
     size_t line;
-    std::string file;
 };
 
 // ─── FunctionParamRenamer ───────────────────────────────────────────
@@ -93,6 +93,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     size_t& m_current_index;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    clang::ASTNameGenerator m_names;
     std::string m_current_func;
     bool m_matched = false;
     size_t m_net_lines = 0;
@@ -113,6 +114,7 @@ class FunctionDeclMapVisitor : public clang::RecursiveASTVisitor<FunctionDeclMap
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    clang::ASTNameGenerator m_names;
     std::map<std::string, clang::FunctionDecl*> m_function_decl_map;
 };
 

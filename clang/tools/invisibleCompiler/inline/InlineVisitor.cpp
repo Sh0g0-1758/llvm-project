@@ -327,14 +327,16 @@ InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, 
       m_current_index(current_index),
       m_rewriter(rewriter),
       m_policy(m_ctx.getLangOpts()),
+      m_names(ctx),
       m_function_decl_map(decl_map) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
 }
 
+// functions are named by their mangled names, which the oracle gives
 bool InlineVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    m_current_func = func->getNameInfo().getName().getAsString();
+    m_current_func = m_names.getName(func);
     return true;
 }
 
@@ -350,8 +352,7 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     if (!ctor)
         return true;
 
-    std::string callee_name = ctor->getParent()->getNameAsString();
-    if (m_callee != callee_name)
+    if (!llvm::is_contained(m_names.getAllManglings(ctor), m_callee))
         return true;
 
 
@@ -394,52 +395,12 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if (!callee)
         callee = m_function_decl_map[m_callee];
 
-    if(!callee->hasBody())
+    if (!callee || !callee->hasBody())
         return true;
-
-    std::string callee_name;
-    if (callee) {
-        callee_name = callee->getNameAsString();
-    } else {
-        auto* callee_expr = call->getCallee()->IgnoreParenImpCasts();
-        if (auto* member = llvm::dyn_cast<clang::MemberExpr>(callee_expr))
-            // obj.foo() or obj->foo() — resolved member call
-            callee_name = member->getMemberNameInfo().getAsString();
-
-        else if (auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(callee_expr))
-            // foo() — resolved free function
-            callee_name = dre->getNameInfo().getAsString();
-
-        else if (auto* unresolved = llvm::dyn_cast<clang::UnresolvedLookupExpr>(callee_expr))
-            // foo<N>() — unresolved free function in uninstantiated template
-            callee_name = unresolved->getName().getAsString();
-
-        else if (auto* unresolved_member = llvm::dyn_cast<clang::UnresolvedMemberExpr>(callee_expr))
-            // obj.foo<N>() — unresolved member call in uninstantiated template
-            callee_name = unresolved_member->getMemberName().getAsString();
-
-        else if (auto* dep_member = llvm::dyn_cast<clang::CXXDependentScopeMemberExpr>(callee_expr))
-            // obj->foo() where obj's type is dependent
-            callee_name = dep_member->getMember().getAsString();
-
-        else if (auto* dep_ref = llvm::dyn_cast<clang::DependentScopeDeclRefExpr>(callee_expr))
-            // T::foo() where T is a dependent type
-            callee_name = dep_ref->getDeclName().getAsString();
-        else if(auto* c_cast_ref = llvm::dyn_cast<clang::CStyleCastExpr>(callee_expr))
-            // typedef T(*ptr)(U, V)
-            // ((ptr)func1->ptr)(a, b)
-            callee_name = "";
-        else if (auto* ha_ref = llvm::dyn_cast<clang::ArraySubscriptExpr>(callee_expr))
-            callee_name = "";
-        else {
-            llvm::errs() << "Unhandled callee type: " << callee_expr->getStmtClassName() << " at: " << m_call_sites[m_current_index] << " Caller = " << m_caller << " Callee = " << m_callee << "\n";
-            callee_name = "";
-        }
-    }
 
     // This check is required in case the function hoisting pass failed. Because then we can
     // have foo(bar()) and we can match with foo instead.
-    if (m_callee != callee_name)
+    if (m_callee != m_names.getName(callee))
         return true;
 
     // This check safeguards against a segfault further down the line. Once the preprocessing
@@ -598,7 +559,7 @@ size_t InlineVisitor::get_net_change() { return m_net_lines; }
 // ─── FunctionDeclMapVisitor ──────────────────────────────────────────────
 
 FunctionDeclMapVisitor::FunctionDeclMapVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_names(ctx) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
@@ -608,7 +569,7 @@ bool FunctionDeclMapVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody()) return true;
     if (!func->isThisDeclarationADefinition()) return true;
 
-    m_function_decl_map[func->getNameAsString()] = func;
+    m_function_decl_map[m_names.getName(func)] = func;
     return true;
 }
 

@@ -546,7 +546,7 @@ class Driver {
         auto oracle_text = readFile(m_cl.oracle);
         if (!oracle_text) return UsageError;
 
-        // one entry per line: <caller> <callee> <line> <file>
+        // one entry per line: <caller> <callee> <line>
         std::vector<invisible::InlineEntry> entries;
         llvm::SmallVector<llvm::StringRef> lines;
         llvm::StringRef(*oracle_text).split(lines, '\n');
@@ -555,13 +555,12 @@ class Driver {
             lines[i].split(fields, ' ', -1, /*KeepEmpty=*/false);
             if (fields.empty()) continue;
             invisible::InlineEntry entry;
-            if (fields.size() != 4 || fields[2].getAsInteger(10, entry.line)) {
-                error() << m_cl.oracle << ":" << i + 1 << ": expected '<caller> <callee> <line> <file>'\n";
+            if (fields.size() != 3 || fields[2].getAsInteger(10, entry.line)) {
+                error() << m_cl.oracle << ":" << i + 1 << ": expected '<caller> <callee> <line>'\n";
                 return UsageError;
             }
             entry.caller = fields[0].str();
             entry.callee = fields[1].str();
-            entry.file = fields[3].str();
             entries.push_back(std::move(entry));
         }
 
