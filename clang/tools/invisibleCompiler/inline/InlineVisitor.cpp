@@ -152,12 +152,19 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
         return true;
     }
 
+    // a return leaves the inlined body, through the label after it
     if (auto* return_stmt = llvm::dyn_cast<clang::ReturnStmt>(stmt)) {
+        std::string exit = "goto __inline_exit_" + std::to_string(m_current_index) + ";";
+        clang::Expr* ret_val = return_stmt->getRetValue();
+        if (!ret_val) {
+            stream << exit << "\n";
+            return true;
+        }
+        stream << "{ ";
         if (!m_target_var.empty())
             stream << m_target_var << " = ";
-        if (clang::Expr* ret_val = return_stmt->getRetValue())
-            ret_val->printPretty(stream, this, m_policy);
-        stream << ";\n";
+        ret_val->printPretty(stream, this, m_policy);
+        stream << "; " << exit << " }\n";
         return true;
     }
 
@@ -554,20 +561,14 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     callee->getBody()->printPretty(stream, &helper, m_policy);
     stream.flush();
 
-    // Strip outer braces.
-    size_t first_brace = raw_body.find('{');
-    size_t last_brace = raw_body.rfind('}');
-    if (first_brace != std::string::npos && last_brace != std::string::npos && first_brace < last_brace)
-        raw_body = raw_body.substr(first_brace + 1, last_brace - first_brace - 1);
-
     // Trim leading/trailing blank lines.
     size_t first_content = raw_body.find_first_not_of(" \n\r\t");
     size_t last_content = raw_body.find_last_not_of(" \n\r\t");
     if (first_content != std::string::npos && last_content != std::string::npos)
         raw_body = raw_body.substr(first_content, last_content - first_content + 1);
 
-    added_lines += std::count(raw_body.begin(), raw_body.end(), '\n');
-    OS << raw_body;
+    OS << raw_body << "\n__inline_exit_" << m_current_index << ": ;";
+    added_lines += std::count(raw_body.begin(), raw_body.end(), '\n') + 1;
 
     // ReplaceText swaps the original statement for inlined_code.
     // added_lines counts newlines in the replacement text, but the
