@@ -519,8 +519,16 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     LabelMaker visitor(m_ctx, m_current_index);
     visitor.TraverseStmt(callee->getBody());
 
-    InlinePrinterHelper helper(m_ctx, target_var, caller_params, m_policy, m_current_index);
-    callee->getBody()->printPretty(stream, &helper, m_policy);
+    // the body is looked up where it is inlined, so its names are qualified, and
+    // its types printed canonically, with their scopes
+    clang::PrintingPolicy policy = m_policy;
+    if (m_ctx.getLangOpts().CPlusPlus) {
+        clang::Stmt* body = callee->getBody();
+        qualifyNonLocalNames(body, m_ctx);
+        policy.PrintAsCanonical = true;
+    }
+    InlinePrinterHelper helper(m_ctx, target_var, caller_params, policy, m_current_index);
+    callee->getBody()->printPretty(stream, &helper, policy);
     stream.flush();
 
     // Trim leading/trailing blank lines.

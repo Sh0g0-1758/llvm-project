@@ -217,39 +217,38 @@ void respellDecayedVaList(std::string& text) {
 }
 
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc) {
-    if (!dc || dc->isTranslationUnit()) return clang::NestedNameSpecifier(std::nullopt);
-
+    dc = dc->getRedeclContext();
+    if (dc->isTranslationUnit()) return clang::NestedNameSpecifier::getGlobal();
+    clang::NestedNameSpecifier prefix = buildQualifierForContext(ctx, dc->getParent());
     if (auto* ns = llvm::dyn_cast<clang::NamespaceDecl>(dc))
-        return clang::NestedNameSpecifier(ctx, ns, buildQualifierForContext(ctx, dc->getParent()));
-
-    if (auto* rec = llvm::dyn_cast<clang::CXXRecordDecl>(dc))
+        return ns->isAnonymousNamespace() || ns->isInline() ? prefix : clang::NestedNameSpecifier(ctx, ns, prefix);
+    if (auto* tag = llvm::dyn_cast<clang::TagDecl>(dc))
         return clang::NestedNameSpecifier(
-            ctx.getTypeDeclType(clang::ElaboratedTypeKeyword::None, std::nullopt, rec).getTypePtr());
-
-    return clang::NestedNameSpecifier(std::nullopt);
+            ctx.getTagType(clang::ElaboratedTypeKeyword::None, prefix, tag, false).getTypePtr());
+    return prefix;
 }
 
-// Fully qualifies all the declarations present in a given Stmt AST node in-place. 
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
     if (!node) return;
-
-    if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node)) {
-        clang::DeclContext* context = ref->getDecl()->getDeclContext()->getRedeclContext();
-        if (!ref->hasQualifier() && !context->isFunctionOrMethod()) {
-            clang::NestedNameSpecifier qualifier = buildQualifierForContext(ctx, context);
-            if (qualifier) {
-                clang::NestedNameSpecifierLocBuilder builder;
-                builder.MakeTrivial(ctx, qualifier, ref->getSourceRange());
-                node = clang::DeclRefExpr::Create(
-                    ctx, builder.getWithLocInContext(ctx), clang::SourceLocation(),
-                    ref->getDecl(), false, ref->getLocation(), ref->getType(), ref->getValueKind());
-            }
-        }
+    for (clang::Stmt*& child : node->children()) qualifyNonLocalNames(child, ctx);
+ 
+    auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node);
+    clang::ValueDecl* decl = ref ? ref->getDecl() : nullptr;
+    // a hidden friend is only found by its arguments, which it still is
+    if (!llvm::isa_and_nonnull<clang::FunctionDecl, clang::VarDecl, clang::EnumConstantDecl>(decl) ||
+        !decl->isDefinedOutsideFunctionOrMethod() ||
+        llvm::all_of(decl->redecls(), [](const clang::Decl* redecl) {
+            return redecl->getFriendObjectKind() != clang::Decl::FOK_None;
+        }))
         return;
-    }
-
-    for (clang::Stmt*& child : node->children())
-        qualifyNonLocalNames(child, ctx);
+    clang::NestedNameSpecifierLocBuilder qualifier;
+    qualifier.MakeTrivial(ctx, buildQualifierForContext(ctx, decl->getDeclContext()), ref->getSourceRange());
+    clang::TemplateArgumentListInfo args;
+    ref->copyTemplateArgumentsInto(args);
+    node = clang::DeclRefExpr::Create(ctx, qualifier.getWithLocInContext(ctx), ref->getTemplateKeywordLoc(), decl,
+                                      ref->refersToEnclosingVariableOrCapture(), ref->getNameInfo(), ref->getType(),
+                                      ref->getValueKind(), ref->getFoundDecl(),
+                                      ref->hasExplicitTemplateArgs() ? &args : nullptr, ref->isNonOdrUse());
 }
 
 bool isUsedByValue(clang::ASTContext& ctx, const clang::Expr* expr) {

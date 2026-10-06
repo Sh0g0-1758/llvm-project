@@ -75,8 +75,12 @@ bool isInstantiatedCopy(const clang::FunctionDecl* func);
 /// respell it as `__builtin_va_list`, which decays back to the same parameter type.
 void respellDecayedVaList(std::string& text);
 
+/// The scope of @p dc from the global namespace, without the unnamed and inline
+/// namespaces and the transparent contexts, eg. an unscoped enum.
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc);
 
+/// Names the functions, variables and enumerators in @p node that aren't local to
+/// a function from the global namespace, so that @p node can be printed elsewhere.
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
 
 /// Whether the prvalue @p expr initializes an object, eg. a parameter taken by value or the
