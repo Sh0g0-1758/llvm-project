@@ -101,43 +101,6 @@ bool MaterializeLambdaVisitor::containsNestedLambda(clang::Stmt* node) {
     return visitor.found;
 }
 
-class ReplaceThisVisitor : public clang::RecursiveASTVisitor<ReplaceThisVisitor> {
-  public:
-    ReplaceThisVisitor(clang::Expr* replacement) : m_replacement(replacement) {}
-
-    // skip traversing records as their methods will have CXXThisExpr
-    // which we do not intend to modify. We only want to mutate top-level
-    // presence of the `this` keyword.
-    bool TraverseCXXRecordDecl(clang::CXXRecordDecl*) { return true; }
-
-    bool TraverseStmt(clang::Stmt* stmt) {
-        if (!stmt) return true;
-        if (!clang::RecursiveASTVisitor<ReplaceThisVisitor>::TraverseStmt(stmt)) return false;
-        replaceThisInChildren(stmt);
-        // parents point at the semantic form of an InitListExpr, but RAV traverses
-        // (and StmtPrinter prints) its syntactic form, which has its own array.
-        if (auto* ile = llvm::dyn_cast<clang::InitListExpr>(stmt))
-            replaceThisInChildren(ile->getSyntacticForm());
-        return true;
-    }
-
-  private:
-    void replaceThisInChildren(clang::Stmt* stmt) {
-        if (!stmt) return;
-        for (clang::Stmt*& child : stmt->children()) {
-            if (llvm::isa_and_nonnull<clang::CXXThisExpr>(child))
-                child = m_replacement;
-        }
-    }
-
-    clang::Expr* m_replacement;
-};
-
-void MaterializeLambdaVisitor::rewriteCapturedThis(clang::Stmt* node, clang::Expr* replacement) {
-    ReplaceThisVisitor visitor(replacement);
-    visitor.TraverseStmt(node);
-}
-
 bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     /**
      * Lamda expressions are un-named record declarations. This becomes a problem
@@ -348,7 +311,7 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             this_field, clang::DeclAccessPair::make(this_field, this_field->getAccess()),
             clang::DeclarationNameInfo(this_field->getDeclName(), clang::SourceLocation()), nullptr,
             this_field->getType(), clang::VK_LValue, clang::OK_Ordinary, clang::NOUR_None);
-        rewriteCapturedThis(call_op->getBody(), replacement);
+        replaceThis(call_op->getBody(), replacement);
     }
 
     // `[]<class T>(T t)` has a call operator template, whose template parameters

@@ -83,6 +83,9 @@ clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clan
 /// a function from the global namespace, so that @p node can be printed elsewhere.
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
 
+/// Replaces the `this` of @p node, but not of the records in it, with @p replacement.
+void replaceThis(clang::Stmt* node, clang::Expr* replacement);
+
 /// Whether the prvalue @p expr initializes an object, eg. a parameter taken by value or the
 /// returned value, rather than being bound to a reference or having a member accessed,
 /// which materializes it as a temporary.

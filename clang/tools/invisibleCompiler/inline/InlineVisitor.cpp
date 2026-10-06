@@ -362,13 +362,18 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     if (ploc.getLine() != m_call_sites[m_current_index])
         return true;
 
-    m_matched = m_skipped = true;
+    m_matched = true;
+    m_skipped = "constructors and destructors aren't inlined";
     return true;
 }
 
+// a destructor is called where a scope ends, which no expression marks, so it is
+// told by its mangled name alone
 bool InlineVisitor::VisitCXXDestructorDecl(clang::CXXDestructorDecl* dtor) {
-    if (llvm::is_contained(m_names.getAllManglings(dtor), m_callee))
-        m_matched = m_skipped = true;
+    if (llvm::is_contained(m_names.getAllManglings(dtor), m_callee)) {
+        m_matched = true;
+        m_skipped = "constructors and destructors aren't inlined";
+    }
     return true;
 }
 
@@ -412,12 +417,21 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     if(call->getNumArgs() != callee->getNumParams())
         return true;
 
-    // TODO: Handle class methods — they may use private members
-    // that need special treatment.
-    if (llvm::isa<clang::CXXMethodDecl>(callee))
+    // a member function is called on the object a member expression names, which a
+    // call through a pointer to member doesn't have. A destructor isn't inlined.
+    auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(callee);
+    auto* member = llvm::dyn_cast<clang::MemberExpr>(call->getCallee()->IgnoreParens());
+    if (llvm::isa<clang::CXXDestructorDecl>(callee) || (method && method->isInstance() && !member))
         return true;
-    
+
     m_matched = true;
+    // a class result is assigned to a variable declared before the inlined body, which
+    // only means the same as initializing it from the result for a trivial class
+    if (const auto* record = callee->getReturnType()->getAsCXXRecordDecl();
+        record && !(record->hasTrivialDefaultConstructor() && record->isTriviallyCopyable())) {
+        m_skipped = "a call returning a class that isn't trivially default constructible and copyable isn't inlined";
+        return true;
+    }
 
     std::string target_var{};
     auto parents = m_ctx.getParents(*call);
@@ -487,6 +501,21 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
     }
 
     OS << "{";
+
+    // the object is bound once, before the arguments, and `this` in the body names it
+    if (method && method->isInstance()) {
+        std::string object;
+        llvm::raw_string_ostream object_out(object);
+        member->getBase()->printPretty(object_out, nullptr, m_policy);
+        std::string this_name = "__inline_this__" + std::to_string(m_current_index);
+        method->getThisType().withConst().print(OS, m_policy, this_name);
+        OS << " = " << (member->isArrow() ? object : "__builtin_addressof(" + object + ")") << ";\n";
+        added_lines++;
+        auto* this_var = clang::VarDecl::Create(m_ctx, method, {}, {}, &m_ctx.Idents.get(this_name),
+                                                method->getThisType(), nullptr, clang::SC_None);
+        replaceThis(callee->getBody(), clang::DeclRefExpr::Create(m_ctx, {}, {}, this_var, false, clang::SourceLocation(),
+                                                                  this_var->getType(), clang::VK_LValue));
+    }
 
     std::map<int, std::string> caller_params;
     for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -566,7 +595,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
 bool InlineVisitor::matched() const { return m_matched; }
 
-bool InlineVisitor::skipped() const { return m_skipped; }
+const std::string& InlineVisitor::skipped() const { return m_skipped; }
 
 size_t InlineVisitor::get_net_change() { return m_net_lines; }
 
@@ -619,7 +648,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
     for (size_t i = 0; i < oracle.size(); i++) {
         clang::Rewriter rewriter;
         size_t net_lines;
-        bool skipped = false;
+        std::string skipped;
         std::string tmp_result = runInMemory(
             result, filename, args,
             [&rewriter, &oracle, &call_sites, &succeeded, &i, &net_lines, &skipped](clang::ASTContext& ctx, clang::Sema&) {
@@ -630,16 +659,16 @@ InlineResult inline_functions(const std::string& source, const std::string& file
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter, _visitor.get_function_decl_map());
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
                 skipped = visitor.skipped();
-                if (skipped)
+                if (!skipped.empty())
                     llvm::errs() << "invisible: skipped '" << oracle[i].second << "' in '" << oracle[i].first << "' at line " << call_sites[i]
-                                 << ": constructors and destructors aren't inlined\n";
+                                 << ": " << skipped << "\n";
                 else if(!visitor.matched())
                     llvm::errs() << "invisible: warning: no call from '" << oracle[i].first << "' to '" << oracle[i].second << "' at line " << call_sites[i] << "\n";
-                succeeded[i] = visitor.matched() && !skipped;
+                succeeded[i] = visitor.matched() && skipped.empty();
                 net_lines = visitor.get_net_change();
             },
             rewriter);
-        if (skipped)
+        if (!skipped.empty())
             continue;
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);

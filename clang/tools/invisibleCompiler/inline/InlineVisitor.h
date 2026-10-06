@@ -83,8 +83,8 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
 
     /// Whether this visitor found the call site.
     bool matched() const;
-    /// Whether the call site is of a constructor or a destructor, which aren't inlined.
-    bool skipped() const;
+    /// Why the call site found isn't inlined, empty if it is.
+    const std::string& skipped() const;
     bool callInLoop(const clang::CallExpr* call);
     size_t get_net_change();
 
@@ -99,7 +99,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     clang::ASTNameGenerator m_names;
     std::string m_current_func;
     bool m_matched = false;
-    bool m_skipped = false;
+    std::string m_skipped;
     size_t m_net_lines = 0;
     std::map<std::string, clang::FunctionDecl*>& m_function_decl_map;
 };

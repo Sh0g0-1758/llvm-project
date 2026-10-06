@@ -5,6 +5,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ParentMapContext.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
@@ -255,6 +256,47 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
                                       ref->refersToEnclosingVariableOrCapture(), ref->getNameInfo(), ref->getType(),
                                       ref->getValueKind(), ref->getFoundDecl(),
                                       ref->hasExplicitTemplateArgs() ? &args : nullptr, ref->isNonOdrUse());
+}
+
+namespace {
+
+class ReplaceThisVisitor : public clang::RecursiveASTVisitor<ReplaceThisVisitor> {
+  public:
+    ReplaceThisVisitor(clang::Expr* replacement) : m_replacement(replacement) {}
+
+    // skip traversing records as their methods will have CXXThisExpr
+    // which we do not intend to modify. We only want to mutate top-level
+    // presence of the `this` keyword.
+    bool TraverseCXXRecordDecl(clang::CXXRecordDecl*) { return true; }
+
+    bool TraverseStmt(clang::Stmt* stmt) {
+        if (!stmt) return true;
+        if (!clang::RecursiveASTVisitor<ReplaceThisVisitor>::TraverseStmt(stmt)) return false;
+        replaceThisInChildren(stmt);
+        // parents point at the semantic form of an InitListExpr, but RAV traverses
+        // (and StmtPrinter prints) its syntactic form, which has its own array.
+        if (auto* ile = llvm::dyn_cast<clang::InitListExpr>(stmt))
+            replaceThisInChildren(ile->getSyntacticForm());
+        return true;
+    }
+
+  private:
+    void replaceThisInChildren(clang::Stmt* stmt) {
+        if (!stmt) return;
+        for (clang::Stmt*& child : stmt->children()) {
+            if (llvm::isa_and_nonnull<clang::CXXThisExpr>(child))
+                child = m_replacement;
+        }
+    }
+
+    clang::Expr* m_replacement;
+};
+
+}  // namespace
+
+void replaceThis(clang::Stmt* node, clang::Expr* replacement) {
+    ReplaceThisVisitor visitor(replacement);
+    visitor.TraverseStmt(node);
 }
 
 bool isUsedByValue(clang::ASTContext& ctx, const clang::Expr* expr) {

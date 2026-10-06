@@ -37,7 +37,6 @@ class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLa
     bool m_changed = false;
     static size_t s_counter;
     bool containsNestedLambda(clang::Stmt* node);
-    void rewriteCapturedThis(clang::Stmt* node, clang::Expr* replacement);
 };
 
 }  // namespace invisible
