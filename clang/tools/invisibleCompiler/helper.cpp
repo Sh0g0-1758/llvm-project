@@ -100,11 +100,17 @@ std::string runInMemory(const std::string& source, const std::string& filename, 
                         clang::Rewriter& rewriter) {
     std::string diagnostics;
     llvm::raw_string_ostream diagnostics_out(diagnostics);
-    auto action = std::make_unique<InvisibleAction>(std::move(callback), diagnostics_out);
+    // the rewrites are read in the run, the rewriter's SourceManager is freed with it
+    std::string rewritten = source;
+    auto capture = [&](clang::ASTContext& ctx, clang::Sema& sema) {
+        callback(ctx, sema);
+        rewritten = getRewrittenSource(rewriter, source);
+    };
+    auto action = std::make_unique<InvisibleAction>(capture, diagnostics_out);
     if (!clang::tooling::runToolOnCodeWithArgs(std::move(action), source, args, filename))
         verbose() << "clang failed to parse " << filename << " while running a pass\n";
     verbose() << diagnostics;
-    return getRewrittenSource(rewriter, source);
+    return rewritten;
 }
 
 bool isCompilable(const std::string& source, const std::string& filename,
