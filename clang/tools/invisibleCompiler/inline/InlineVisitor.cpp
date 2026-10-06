@@ -362,9 +362,13 @@ bool InlineVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr* expr) {
     if (ploc.getLine() != m_call_sites[m_current_index])
         return true;
 
-    // Mark matched so the caller knows this site was found,
-    // but skip inlining for all special member functions.
-    m_matched = true;
+    m_matched = m_skipped = true;
+    return true;
+}
+
+bool InlineVisitor::VisitCXXDestructorDecl(clang::CXXDestructorDecl* dtor) {
+    if (llvm::is_contained(m_names.getAllManglings(dtor), m_callee))
+        m_matched = m_skipped = true;
     return true;
 }
 
@@ -562,6 +566,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call) {
 
 bool InlineVisitor::matched() const { return m_matched; }
 
+bool InlineVisitor::skipped() const { return m_skipped; }
+
 size_t InlineVisitor::get_net_change() { return m_net_lines; }
 
 // ─── FunctionDeclMapVisitor ──────────────────────────────────────────────
@@ -611,30 +617,30 @@ InlineResult inline_functions(const std::string& source, const std::string& file
     std::vector<bool> succeeded(oracle.size(), false);
 
     for (size_t i = 0; i < oracle.size(); i++) {
-        // opt records does contain information to inline destructors. 
-        // They however do not show up in the ast and thus can't be matched 
-        // using libtooling. Thus we instead manually identify a destructor
-        if((oracle[i].second)[0] == '~') {
-            succeeded[i] = true;
-            continue;
-        }
         clang::Rewriter rewriter;
         size_t net_lines;
+        bool skipped = false;
         std::string tmp_result = runInMemory(
             result, filename, args,
-            [&rewriter, &oracle, &call_sites, &succeeded, &i, &net_lines](clang::ASTContext& ctx, clang::Sema&) {
+            [&rewriter, &oracle, &call_sites, &succeeded, &i, &net_lines, &skipped](clang::ASTContext& ctx, clang::Sema&) {
                 rewriter.setSourceMgr(ctx.getSourceManager(), ctx.getLangOpts());
                 FunctionDeclMapVisitor _visitor(ctx, rewriter);
                 _visitor.TraverseDecl(ctx.getTranslationUnitDecl());
 
                 InlineVisitor visitor(ctx, oracle[i].first, oracle[i].second, call_sites, i, rewriter, _visitor.get_function_decl_map());
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-                if(!visitor.matched())
+                skipped = visitor.skipped();
+                if (skipped)
+                    llvm::errs() << "invisible: skipped '" << oracle[i].second << "' in '" << oracle[i].first << "' at line " << call_sites[i]
+                                 << ": constructors and destructors aren't inlined\n";
+                else if(!visitor.matched())
                     llvm::errs() << "invisible: warning: no call from '" << oracle[i].first << "' to '" << oracle[i].second << "' at line " << call_sites[i] << "\n";
-                succeeded[i] = visitor.matched();
+                succeeded[i] = visitor.matched() && !skipped;
                 net_lines = visitor.get_net_change();
             },
             rewriter);
+        if (skipped)
+            continue;
         if(isCompilable(tmp_result, filename, args)) {
             result = std::move(tmp_result);
             // Adjust line numbers for subsequent call sites in the same file

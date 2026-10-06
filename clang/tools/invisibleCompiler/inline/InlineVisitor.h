@@ -76,12 +76,15 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     bool VisitCallExpr(clang::CallExpr* call);
     bool isTopLevelCall(const clang::CallExpr* call);
     bool VisitCXXConstructExpr(clang::CXXConstructExpr* expr);
+    bool VisitCXXDestructorDecl(clang::CXXDestructorDecl* dtor);
     bool shouldVisitImplicitCode() const;
     bool isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator);
     clang::DynTypedNode getSemanticParent(const clang::Stmt* node, bool isExplicitCoversionOperator);
 
-    /// Whether this visitor successfully inlined a call site.
+    /// Whether this visitor found the call site.
     bool matched() const;
+    /// Whether the call site is of a constructor or a destructor, which aren't inlined.
+    bool skipped() const;
     bool callInLoop(const clang::CallExpr* call);
     size_t get_net_change();
 
@@ -96,6 +99,7 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     clang::ASTNameGenerator m_names;
     std::string m_current_func;
     bool m_matched = false;
+    bool m_skipped = false;
     size_t m_net_lines = 0;
     std::map<std::string, clang::FunctionDecl*>& m_function_decl_map;
 };
