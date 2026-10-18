@@ -25,9 +25,20 @@ bool BreakLocalRecordDeclStmtVisitor::shouldVisitTemplateInstantiations() const 
     return true;
 }
 
-// This assumes that the parent of a LocalRecordDecl whose DeclStmt has multiple decls
-// is a compoundStmt. Because only then can it break the declStmt into two and append
-// it back. 
+// decl-before-def writes the body of an instantiation, eg. `f<int>`, with clang's printer. When a
+// local class is declared together with variables,
+//
+//     template <class T> void f() { struct P { T x; } a, b; }
+//
+// the printer writes the variables of `f<int>` but not the class's definition, so the printed body
+// uses `P` without defining it. The fix is to move the class into a declaration of its own, which
+// the printer writes in full, just before the variables:
+//
+//     struct P { int x; };
+//     P a, b;
+//
+// This is only done when the declaration is a statement of a block, eg. not in a for's init. The
+// block is rebuilt with the new statement added, and put where the old one was.
 bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_decl) {
     clang::FunctionDecl* enclosing_func = record_decl->isLocalClass();
     if (!enclosing_func) {
@@ -37,6 +48,7 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
         return true;
     }
 
+    // the DeclStmt that declares the class, with the variables
     const clang::DeclStmt* found_decl_stmt = nullptr;
     for (const auto& parent : m_ctx.getParents(*record_decl)) {
         if (const auto* ds = parent.get<clang::DeclStmt>()) {
@@ -50,6 +62,7 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
 
     clang::DeclStmt* decl_stmt = const_cast<clang::DeclStmt*>(found_decl_stmt);
 
+    // the block it is directly in
     const clang::CompoundStmt* found_compound = nullptr;
     for (const auto& parent : m_ctx.getParents(*decl_stmt)) {
         if (const auto* cs = parent.get<clang::CompoundStmt>()) {
@@ -62,6 +75,19 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
     }
     clang::CompoundStmt* compound = const_cast<clang::CompoundStmt*>(found_compound);
 
+    // what holds the block, unless it is the function's body: a statement, eg. an if or another block
+    clang::Stmt* holder = nullptr;
+    if (enclosing_func->getBody() != compound) {
+        auto parents = m_ctx.getParents(*compound);
+        holder = parents.empty() ? nullptr : const_cast<clang::Stmt*>(parents[0].get<clang::Stmt>());
+        // the parents are those of the AST before any block was rebuilt: one rebuilt already for
+        // another class is no longer in its holder, and is left
+        if (!holder || !llvm::is_contained(holder->children(), compound)) {
+            return true;
+        }
+    }
+
+    // the variables stay in the DeclStmt, the class gets one of its own before it
     llvm::SmallVector<clang::Decl*, 4> remaining_decls;
     for (clang::Decl* d : decl_stmt->getDeclGroup()) {
         if (d != record_decl) {
@@ -82,6 +108,7 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
         new_stmts.push_back(s);
     }
 
+    // the floating point options of the block, eg. of `#pragma STDC FENV_ACCESS`, carry over
     clang::FPOptionsOverride fp_features = compound->hasStoredFPFeatures()
         ? compound->getStoredFPFeatures()
         : clang::FPOptionsOverride();
@@ -90,7 +117,16 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
         m_ctx, new_stmts, fp_features,
         compound->getLBracLoc(), compound->getRBracLoc());
 
-    enclosing_func->setBody(new_compound);
+    // the new block takes the old one's place
+    if (holder) {
+        for (clang::Stmt*& child : holder->children()) {
+            if (child == compound) {
+                child = new_compound;
+            }
+        }
+    } else {
+        enclosing_func->setBody(new_compound);
+    }
     return true;
 }
 
