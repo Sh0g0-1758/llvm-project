@@ -19,13 +19,16 @@ namespace invisible {
 // ─── CommaInitVisitor ──────────────────────────────────────────────
 
 CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)) {
     
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
 }
 
+// Where the split declarations go: before the statement of the nearest block that holds the
+// declaration, eg. the for statement of `for (int i = 0, n = f(); i < n; ++i)`, or the
+// declaration itself when it is a statement of the block.
 clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*decl_stmt);
     const clang::Stmt* last_stmt = decl_stmt;
@@ -46,6 +49,18 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
     }
 }
 
+// Splits a declaration of several variables into one declaration each, eg.
+//
+//     int a = 1, b = f(a);                 =>   int a = 1;
+//                                               int b = f(a);
+//     for (int i = 0, n = f(); i < n; ++i) =>   int i = 0;
+//                                               int n = f();
+//                                               for (; i < n; ++i)
+//
+// hoist-calls puts a call's temporary before the statement holding it; with `b = f(a)` declared
+// together with `a`, the temporary would be computed before `a` is initialized. A declaration
+// that isn't a statement of a block, eg. a for statement's init, moves before the statement,
+// which compound-stmt-wrapper wrapped in a block of its own, and leaves `;` in its place.
 bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     if (decl_stmt->isSingleDecl()) {
         return true;
@@ -65,6 +80,8 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
             return true;
         }
     }
+    // the variables of an unnamed class, `struct {...} a = {1}, b;`, are declared by the type of
+    // the first, `__typeof__(a) b;`, which needs them all of one type and none written `T x(...)`
     bool anonymous = tag && !tag->getIdentifier();
     if (vars.empty() || (anonymous && llvm::any_of(vars, [&](const clang::VarDecl* var) {
             return var->getType() != vars.front()->getType() || var->getInitStyle() == clang::VarDecl::CallInit;

@@ -20,16 +20,15 @@ namespace invisible {
 
 // ─── CommaInitVisitor ──────────────────────────────────────────────
 
-/// Splits comma-separated variable declarations into individual
-/// statements (e.g. `int a, b = 1;` → `int a;\nint b = 1;\n`).
-class CommaInitVisitor : public clang::RecursiveASTVisitor<CommaInitVisitor> {
+/// comma-init: splits a declaration of several variables into one declaration each, eg.
+/// `int a, b = f();` into `int a;` and `int b = f();`, see docs/DESIGN.md section 5.11.
+class CommaInitVisitor : public LaterPassVisitor<CommaInitVisitor> {
   public:
-    bool TraverseDecl(clang::Decl* decl) {
-        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<CommaInitVisitor>::TraverseDecl(decl);
-    }
     CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
 
+    /// `int a, b = f();` => `int a;` and `int b = f();`
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
+    /// the start of the statement of the nearest block that holds @p decl_stmt
     clang::SourceLocation findInsertionLoc(clang::DeclStmt* decl_stmt);
 
   private:
