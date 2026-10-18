@@ -19,27 +19,25 @@ namespace invisible {
 // ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────────────
 
 CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), uniqueIndx(0) { }
+    : m_ctx(ctx), m_rewriter(rewriter), m_next_index(0) { }
 
 bool CanonicalizeVarDeclVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
+// Renames a local variable or a parameter to `___var__N`, a name unique in the TU, eg. `int y = x * x;`
+// gives `int ___var__N = ...;`. The inliner pastes a callee's body into its caller, where a local of the
+// callee could clash with or hide one of the caller. The name is changed in the AST, so that every
+// use of the variable prints the new name too.
 bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
-    // only locals are renamed, what they could clash with once a function is inlined
-    // into another. A block scope `extern` declares a global.
+    // a global keeps its name, also one declared inside a function, eg. `extern int count;` in
+    // `void f() { extern int count; ++count; }`, which refers to the global `count`
     if (!decl->isLocalVarDeclOrParm() || decl->isLocalExternDecl()) return true;
-    // a structured binding declaration is unnamed, it is printed as a variable once named
+    // a structured binding, `auto [a, b] = p;`, is a declaration without a name. Given one, it
+    // would be printed as an ordinary variable, `auto ___var__N = p;`, and `a` and `b` would be lost
     if (llvm::isa<clang::DecompositionDecl>(decl)) return true;
-    // the parameter of a requires expression is only seen within its requirements
+    // a parameter of a requires expression, `t` of `requires (T t) { t.size(); }`, is only used inside it
     if (llvm::isa<clang::RequiresExprBodyDecl>(decl->getDeclContext())) return true;
 
-    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
-    decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
-    return true;
-}
-
-bool CanonicalizeVarDeclVisitor::VisitParmVarDecl(clang::ParmVarDecl* decl) {
-    if (llvm::isa<clang::RequiresExprBodyDecl>(decl->getDeclContext())) return true;
-    std::string canonicalizedName = "___var__" + std::to_string(uniqueIndx++);
+    std::string canonicalizedName = "___var__" + std::to_string(m_next_index++);
     decl->setDeclName(clang::DeclarationName(&m_ctx.Idents.get(canonicalizedName)));
     return true;
 }
