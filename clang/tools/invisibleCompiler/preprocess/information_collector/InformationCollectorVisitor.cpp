@@ -23,6 +23,8 @@ InformationCollectorVisitor::InformationCollectorVisitor(clang::ASTContext& ctx,
 
 bool InformationCollectorVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
+// eg. for `template <class T> T id(T)` called with an int, the stats of `id` and of `id<int>`,
+// which tell why decl-before-def treats a function as it does
 bool InformationCollectorVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::string function_name = func->getNameAsString();
     llvm::outs() << "=====\nStats for function : [" << function_name << "]\n";
