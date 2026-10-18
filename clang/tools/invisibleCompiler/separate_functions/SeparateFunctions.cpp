@@ -22,6 +22,8 @@ FilterVisitor::FilterVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter) 
     
 }
 
+// a definition printed with clang's default policy for the language, eg. `int square(int x) {...}`;
+// a declaration without a body isn't collected
 bool FilterVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (!func->hasBody())
         return true;
@@ -40,6 +42,7 @@ bool FilterVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
+// the functions sorted by name, as std::map keeps them, so the output is the same for the same TU
 std::string FilterVisitor::toJSON() {
     llvm::json::Object root;
     for (const auto& [name, body] : m_functions)
