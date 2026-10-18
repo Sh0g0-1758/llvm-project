@@ -20,21 +20,15 @@ namespace invisible {
 
 // ─── MarkSwitchCaseVisitor ──────────────────────────────────────
 
-/// Marks the beginning of every case statement with a semi-colon so
-/// that any function call present at the start of the set of statements
-/// for case is hoisted as part of the case and not above it. 
-class MarkSwitchCaseVisitor : public clang::RecursiveASTVisitor<MarkSwitchCaseVisitor> {
+/// mark-switch-case: puts an empty statement after every case label, so that hoist-calls puts a
+/// call's temporary under the label rather than above it, see docs/DESIGN.md section 5.7.
+class MarkSwitchCaseVisitor : public LaterPassVisitor<MarkSwitchCaseVisitor> {
   public:
-    bool TraverseDecl(clang::Decl* decl) {
-        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<MarkSwitchCaseVisitor>::TraverseDecl(decl);
-    }
     MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
-    bool VisitCaseStmt(clang::CaseStmt* case_stmt);
-    bool VisitDefaultStmt(clang::DefaultStmt* default_stmt);
+    /// `case 1: g(f());` => `case 1: ;` and `g(f());` on the next line
+    bool VisitSwitchCase(clang::SwitchCase* label);
   private:
-    clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    clang::PrintingPolicy m_policy;
 };
 
 }  // namespace invisible

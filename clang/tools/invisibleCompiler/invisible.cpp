@@ -161,17 +161,6 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
             });
         }});
 
-    // Marks the beginning of every case statement with a semi-colon so
-    // that any function call present at the start of the set of statements
-    // for case is hoisted as part of the case and not above it.
-    passes.push_back({{"mark-switch-case", "Start the statements of every case label with an empty statement", false},
-        [&](const std::string& source, unsigned, bool&) {
-            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
-                MarkSwitchCaseVisitor visitor(ctx, rewriter);
-                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
-            });
-        }});
-
     // Wraps statements which may have a declStmt (for/if/switch) with a compound stmt
     // This helps provide a valid space to hoist a comma separated declarator list
     // and also valid space for any loop rewrite. 
@@ -179,6 +168,17 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
         [&](const std::string& source, unsigned, bool&) {
             return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
                 CompoundStmtWrapperVisitor visitor(ctx, rewriter);
+                visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+            });
+        }});
+
+    // Marks the beginning of every case statement with a semi-colon so
+    // that any function call present at the start of the set of statements
+    // for case is hoisted as part of the case and not above it.
+    passes.push_back({{"mark-switch-case", "Start the statements of every case label with an empty statement", false},
+        [&](const std::string& source, unsigned, bool&) {
+            return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
+                MarkSwitchCaseVisitor visitor(ctx, rewriter);
                 visitor.TraverseDecl(ctx.getTranslationUnitDecl());
             });
         }});

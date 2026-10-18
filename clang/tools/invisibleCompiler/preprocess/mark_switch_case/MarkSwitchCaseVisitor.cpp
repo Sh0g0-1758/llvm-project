@@ -18,21 +18,22 @@ namespace invisible {
 
 // ─── MarkSwitchCaseVisitor ──────────────────────────────────────────────
 
-MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    
-    if (m_ctx.getLangOpts().CPlusPlus)
-        m_policy.adjustForCPlusPlus();
-    m_policy.IncludeTagDefinition = true;
-}
+MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext&, clang::Rewriter& rewriter)
+    : m_rewriter(rewriter) {}
 
-bool MarkSwitchCaseVisitor::VisitCaseStmt(clang::CaseStmt* case_stmt) {
-    m_rewriter.InsertTextBefore(case_stmt->getSubStmt()->getSourceRange().getBegin(), ";\n");
-    return true;
-}
-
-bool MarkSwitchCaseVisitor::VisitDefaultStmt(clang::DefaultStmt* default_stmt) {
-    m_rewriter.InsertTextBefore(default_stmt->getSubStmt()->getSourceRange().getBegin(), ";\n");
+// Puts an empty statement after a case label, eg.
+//
+//     case 1: g(f());          =>     case 1: ;
+//                                     g(f());
+//
+// hoist-calls inserts a call's temporary before the statement holding the call. Without the empty
+// statement that statement is the label's, and `int __func_hoist_ret__0 = f();` would land above
+// `case 1:`, where the jump to the label skips it. After `;` it is the next statement of the block.
+// compound-stmt-wrapper has put the body of every switch in a block, where the statement can be
+// added. Nested labels, `case 0: case 1: f();`, are marked once, at the innermost label's statement.
+bool MarkSwitchCaseVisitor::VisitSwitchCase(clang::SwitchCase* label) {
+    if (!llvm::isa<clang::SwitchCase>(label->getSubStmt()))
+        m_rewriter.InsertTextBefore(label->getSubStmt()->getBeginLoc(), ";\n");
     return true;
 }
 
