@@ -19,12 +19,12 @@ namespace invisible {
 // ─── ParenExprWrapperVisitor ──────────────────────────────────────────────
 
 ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
-    if (m_ctx.getLangOpts().CPlusPlus)
-        m_policy.adjustForCPlusPlus();
-    m_policy.IncludeTagDefinition = true;
-}
+    : m_ctx(ctx), m_rewriter(rewriter) {}
 
+// Parenthesizes a comma operator that isn't already, eg. `x = a(), b();` => `x = (a(), b());`.
+// The printer and the passes after this one rewrite an operand as text: replacing `b()` with a
+// temporary, or putting text before or after an operand, mustn't let the comma regroup with what
+// is around it, eg. in a for statement's increment or a macro-expanded argument list.
 bool ParenExprWrapperVisitor::VisitBinaryOperator(clang::BinaryOperator* bin_op) {
     if(bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma) {
         if (isWrappedWithParenExpr(bin_op)) return true;
@@ -35,6 +35,8 @@ bool ParenExprWrapperVisitor::VisitBinaryOperator(clang::BinaryOperator* bin_op)
     return true;
 }
 
+// whether the comma operator is directly in parentheses already, eg. `(a, b)`, so that the pass
+// doesn't add a pair on every run
 bool ParenExprWrapperVisitor::isWrappedWithParenExpr(const clang::BinaryOperator* binary_op) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*binary_op);
     const auto& parent = m_ctx.getParents(current)[0];

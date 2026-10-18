@@ -20,19 +20,18 @@ namespace invisible {
 
 // ─── ParenExprWrapperVisitor ──────────────────────────────────────
 
-/// Wraps binary operator (,) with a paranthesis
-class ParenExprWrapperVisitor : public clang::RecursiveASTVisitor<ParenExprWrapperVisitor> {
+/// paren-expr-wrapper: parenthesizes every comma operator, so that what a later pass moves out of
+/// an operand doesn't change how it groups, see docs/DESIGN.md section 5.8.
+class ParenExprWrapperVisitor : public LaterPassVisitor<ParenExprWrapperVisitor> {
   public:
-    bool TraverseDecl(clang::Decl* decl) {
-        return isLeftAsWritten(decl) || clang::RecursiveASTVisitor<ParenExprWrapperVisitor>::TraverseDecl(decl);
-    }
     ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    /// `a(), b()` => `(a(), b())`
     bool VisitBinaryOperator(clang::BinaryOperator* bin_op);
+    /// whether @p binary_op is directly in parentheses already
     bool isWrappedWithParenExpr(const clang::BinaryOperator* binary_op);
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    clang::PrintingPolicy m_policy;
 };
 
 }  // namespace invisible
