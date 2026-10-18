@@ -154,8 +154,12 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
         clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(call->getSourceRange()), src_mgr, lang_opts)
             .str();
 
-    // `obj->m` calls `obj.operator->()` and applies `->` to what it returns, the
-    // text of the call being `obj->`.
+    // `obj->m` with an overloaded `operator->` is a call whose text is only `obj->`, the
+    // member access being applied to the pointer it returns. The call is written out,
+    // `(obj).operator->()`, and the `->` it covers is put back after the temporary:
+    //
+    //     return obj->m;   =>   P *__func_hoist_ret__0 = (obj).operator->();
+    //                           return __func_hoist_ret__0->m;
     std::string arrow;
     if (const auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(call);
         op_call && op_call->getOperator() == clang::OO_Arrow) {
