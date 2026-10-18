@@ -21,7 +21,9 @@ namespace {
 /// Whether @p expr is a constant expression, which is left as written: it may have to
 /// be one, eg. initializing a constexpr variable, and has the same value either way.
 bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
-    return !expr->isValueDependent() && !expr->isTypeDependent() && expr->isCXX11ConstantExpr(ctx);
+    if (expr->isValueDependent() || expr->isTypeDependent()) return false;
+    // C has integer constant expressions only
+    return ctx.getLangOpts().CPlusPlus ? expr->isCXX11ConstantExpr(ctx) : expr->isIntegerConstantExpr(ctx);
 }
 
 }  // namespace
@@ -29,10 +31,12 @@ bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
 // ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────────────
 
 ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_current_index(current_index), m_last_update_loc(0) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)), m_current_index(current_index), m_last_update_loc(0) {
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
+    m_policy.PrintAsCanonical = true;
+    m_policy.SuppressUnwrittenScope = true;
 }
 
 bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
@@ -40,236 +44,135 @@ bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
 }
 
 bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
-    if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LAnd) {
-        if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
-        if (isConstant(binary_op, m_ctx)) return true;
-        /**
-         * `var = expr1 && expr2;`
-         * is transformed to
-         * int __short_circuit_result_#id = 0;
-         * if (expr1) {
-         *     if (expr2) {
-         *         __short_circuit_result_#id = 1;
-         *     }
-         * }
-         * var = __short_circuit_result_#id;
-         * 
-         * Its okay to store the result as an int because any arith ops
-         * would anyways convert the bool to an int
-         * 
-         * Another transformation would be to store the individual
-         * results of expr1 and expr2 as variables and then emit
-         * the short-circuiting in its IR form as well as it is. 
-         * The current design introduced the least amount of variables
-         * in another scope and does not introduce another short-circuit
-         * operation as well
-         */
-        clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
-        if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
-        else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
+    if (!binary_op->isLogicalOp()) return true;
+    if (!containsCall(binary_op->getLHS()) && !containsCall(binary_op->getRHS())) return true;
+    if (isConstant(binary_op, m_ctx)) return true;
+    /**
+     * `.. expr1 && expr2 ..`                        `.. expr1 || expr2 ..`
+     * is transformed to                             is transformed to
+     * bool __short_circuit_result_#id = false;      bool __short_circuit_result_#id = true;
+     * if (expr1) {                                  if (!(expr1)) {
+     *     if (expr2) {                                  if (!(expr2)) {
+     *         __short_circuit_result_#id = true;            __short_circuit_result_#id = false;
+     *     }                                             }
+     * }                                             }
+     * .. __short_circuit_result_#id ..              .. __short_circuit_result_#id ..
+     * The result has the type of the expression: bool in C++, so that `show(a && b)` picks the
+     * same overload, and int, 1 or 0, in C.
+     */
+    // one operator per statement and iteration, see m_last_update_loc
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
+    if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
+    else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
-        std::string ir_form{};
-        llvm::raw_string_ostream out(ir_form);
+    bool is_and = binary_op->getOpcode() == clang::BO_LAnd;
+    bool is_bool = binary_op->getType()->isBooleanType();
+    std::string truth = is_bool ? "true" : "1", falsehood = is_bool ? "false" : "0";
+    auto test = [&](const clang::Expr* operand) {
+        std::string text;
+        llvm::raw_string_ostream text_out(text);
+        operand->printPretty(text_out, nullptr, m_policy);
+        return is_and ? text : "!(" + text + ")";
+    };
 
-        std::string lexpr;
-        llvm::raw_string_ostream lexpr_out(lexpr);
-        binary_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
-        lexpr_out.flush();
+    std::string result = "__short_circuit_result_" + std::to_string(m_current_index++);
+    std::string ir_form{};
+    llvm::raw_string_ostream out(ir_form);
+    out << binary_op->getType().getAsString(m_policy) << " " << result << " = " << (is_and ? falsehood : truth) << ";\n"
+        << "if (" << test(binary_op->getLHS()) << ") {\n"
+        << "    if (" << test(binary_op->getRHS()) << ") {\n"
+        << "        " << result << " = " << (is_and ? truth : falsehood) << ";\n}\n}\n";
 
-        std::string rexpr;
-        llvm::raw_string_ostream rexpr_out(rexpr);
-        binary_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
-        rexpr_out.flush();
-
-
-        std::string short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
-
-        out << "int " << short_circuit_result << " = 0" << ";\n";
-        out << "if (" << lexpr << ") " << "{\n";
-        out << "    if (" << rexpr << ") {\n" << "        " << short_circuit_result << " = 1;\n}\n}\n";
-        out.flush();
-
-        if (nearest_compound_stmt == binary_op->getSourceRange().getBegin()) {
-            m_rewriter.ReplaceText(binary_op->getSourceRange(), ir_form + short_circuit_result);
-        } else {
-            m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
-            m_rewriter.ReplaceText(binary_op->getSourceRange(), short_circuit_result);
-        }
-    } else if(binary_op->getOpcode() == clang::BinaryOperator::Opcode::BO_LOr) {
-        if(!exprHasFuncCall(binary_op->getLHS()) && !exprHasFuncCall(binary_op->getRHS())) return true;
-        if (isConstant(binary_op, m_ctx)) return true;
-        /**
-         * `var = expr1 || expr2`
-         * is transformed to
-         * int __short_circuit_result_#id = 1;
-         * if (!(expr1)) {
-         *     if (!(expr2)) {
-         *         __short_circuit_result_#id = 0;
-         *     }
-         * }
-         * var = __short_circuit_result_#id;
-         */
-        clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
-        if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
-        else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
-
-        std::string ir_form{};
-        llvm::raw_string_ostream out(ir_form);
-
-        std::string lexpr;
-        llvm::raw_string_ostream lexpr_out(lexpr);
-        binary_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
-        lexpr_out.flush();
-
-        std::string rexpr;
-        llvm::raw_string_ostream rexpr_out(rexpr);
-        binary_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
-        rexpr_out.flush();
-
-
-        std::string short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
-
-        out << "int " << short_circuit_result << " = 1" << ";\n";
-        out << "if (!(" << lexpr << ")) " << "{\n";
-        out << "    if (!(" << rexpr << ")) {\n" << "        " << short_circuit_result << " = 0;\n}\n}\n";
-        out.flush();
-
-        if (nearest_compound_stmt == binary_op->getSourceRange().getBegin()) {
-            m_rewriter.ReplaceText(binary_op->getSourceRange(), ir_form + short_circuit_result);
-        } else {
-            m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
-            m_rewriter.ReplaceText(binary_op->getSourceRange(), short_circuit_result);
-        }
+    // an operator that starts its statement, `a() && b();`, is replaced by the if and the result,
+    // two edits at one location being one; otherwise the if goes before the statement
+    if (nearest_compound_stmt == binary_op->getSourceRange().getBegin()) {
+        replaceExpr(m_rewriter, binary_op->getSourceRange(), ir_form + result);
+    } else {
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
+        replaceExpr(m_rewriter, binary_op->getSourceRange(), result);
     }
     return true;
 }
 
 bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
-    if(!exprHasFuncCall(conditional_op->getLHS()) && !exprHasFuncCall(conditional_op->getRHS())) return true;
+    if (!containsCall(conditional_op->getLHS()) && !containsCall(conditional_op->getRHS())) return true;
     if (isConstant(conditional_op, m_ctx)) return true;
     /**
      * .. `cond ? expr1 : expr2` ..
      * is transformed to
-     * T __short_circuit_result_#id = 1;
+     * T __short_circuit_result_#id;
      * if (cond) {
      *     __short_circuit_result_#id = expr1;
      * } else {
      *     __short_circuit_result_#id = expr2;
      * }
      * .. __short_circuit_result_#id ..
+     * T is the type of the whole expression, eg. double for `c ? f() : 2.5`. When the expression
+     * names an object rather than a value, eg. `(c ? a : b) = 5`, the result holds its address
+     * instead, `T *__short_circuit_result_#id = __builtin_addressof(expr1);`, and is used as
+     * `(*__short_circuit_result_#id)`, so that the assignment still writes to `a` or `b`.
      */
+    clang::QualType type = conditional_op->getType();
+    bool by_address = conditional_op->isGLValue() && m_ctx.getLangOpts().CPlusPlus;
+    // a bit-field has no address
+    if (by_address && conditional_op->refersToBitField()) return true;
+
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(conditional_op);
     if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
     else m_last_update_loc = nearest_compound_stmt.getRawEncoding();
 
+    auto print = [this](const clang::Expr* expr) {
+        std::string text;
+        llvm::raw_string_ostream text_out(text);
+        expr->printPretty(text_out, nullptr, m_policy);
+        return text;
+    };
+    std::string cond = print(conditional_op->getCond());
+    std::string lexpr = print(conditional_op->getLHS());
+    std::string rexpr = print(conditional_op->getRHS());
+
     std::string ir_form{};
     llvm::raw_string_ostream out(ir_form);
-
-    std::string lexpr;
-    llvm::raw_string_ostream lexpr_out(lexpr);
-    conditional_op->getLHS()->printPretty(lexpr_out, nullptr, m_policy);
-    lexpr_out.flush();
-
-    std::string rexpr;
-    llvm::raw_string_ostream rexpr_out(rexpr);
-    conditional_op->getRHS()->printPretty(rexpr_out, nullptr, m_policy);
-    rexpr_out.flush();
-
-    std::string cond;
-    llvm::raw_string_ostream cond_out(cond);
-    conditional_op->getCond()->printPretty(cond_out, nullptr, m_policy);
-    cond_out.flush();
-
-    bool isVoidType = conditional_op->getLHS()->getType()->isVoidType();
-    std::string short_circuit_result{};
-    if (!isVoidType) {
-        short_circuit_result = "__short_circuit_result_" + std::to_string(m_current_index++);
-        clang::QualType resType = conditional_op->getLHS()->getType();
-        resType.print(out, m_policy, short_circuit_result);
-        out << ";\n";
-    } else {
+    std::string short_circuit_result;
+    if (type->isVoidType()) {
+        out << "if (" << cond << ") {\n" << lexpr << ";\n} else {\n" << rexpr << ";\n}\n";
         short_circuit_result = "(void)0";
+    } else {
+        std::string result = "__short_circuit_result_" + std::to_string(m_current_index++);
+        auto value = [by_address](const std::string& operand) {
+            return by_address ? "__builtin_addressof(" + operand + ")" : operand;
+        };
+        (by_address ? m_ctx.getPointerType(type) : type.getUnqualifiedType()).print(out, m_policy, result);
+        out << ";\nif (" << cond << ") {\n" << result << " = " << value(lexpr) << ";\n} else {\n"
+            << result << " = " << value(rexpr) << ";\n}\n";
+        std::string type_name = type.getAsString(m_policy);
+        if (conditional_op->isXValue()) short_circuit_result = "static_cast<" + type_name + " &&>(*" + result + ")";
+        else if (by_address) short_circuit_result = "(*" + result + ")";
+        // the temporary the expression was is moved from, as hoist-calls does
+        else if (m_ctx.getLangOpts().CPlusPlus) short_circuit_result = "static_cast<" + type_name + " &&>(" + result + ")";
+        else short_circuit_result = result;
     }
 
-    out << "if (" << cond << ") {\n";
-    if (!isVoidType) out << short_circuit_result << " = ";
-    out << lexpr << ";\n";
-    out << "} else {\n";
-    if (!isVoidType) out << short_circuit_result << " = ";
-    out << rexpr << ";\n";
-    out << "}\n";
-    out.flush();
-
     if (nearest_compound_stmt == conditional_op->getSourceRange().getBegin()) {
-        m_rewriter.ReplaceText(conditional_op->getSourceRange(), ir_form + short_circuit_result);
+        replaceExpr(m_rewriter, conditional_op->getSourceRange(), ir_form + short_circuit_result);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, ir_form);
-        m_rewriter.ReplaceText(conditional_op->getSourceRange(), short_circuit_result);
+        replaceExpr(m_rewriter, conditional_op->getSourceRange(), short_circuit_result);
     }
 
     return true;
 }
 
-clang::SourceLocation ShortCircuitOperatorToIRVisitor::findInsertionLoc(const clang::ConditionalOperator* conditional_op) {
-    clang::DynTypedNode current = clang::DynTypedNode::create(*conditional_op);
-    const clang::Stmt* last_stmt = conditional_op;
-
-    while (true) {
-        auto parents = m_ctx.getParents(current);
-        if (parents.empty())
-            return {};
-        const auto& parent = parents[0];
-        if (parent.get<clang::CompoundStmt>() != nullptr)
-            return last_stmt->getBeginLoc();
-        if (const auto* stmt = parent.get<clang::Stmt>())
-            last_stmt = stmt;
-
-        current = parent;
+// The start of the statement of the nearest block holding @p expr, eg. the return of
+// `return c ? f() : g();`, before which the if is inserted. Invalid outside a block, eg. in a
+// member initializer, where the expression is then left.
+clang::SourceLocation ShortCircuitOperatorToIRVisitor::findInsertionLoc(const clang::Expr* expr) {
+    const clang::Stmt* statement = expr;
+    for (auto parents = m_ctx.getParents(*expr); !parents.empty(); parents = m_ctx.getParents(parents[0])) {
+        if (parents[0].get<clang::CompoundStmt>()) return statement->getBeginLoc();
+        if (const auto* stmt = parents[0].get<clang::Stmt>()) statement = stmt;
     }
-}
-
-clang::SourceLocation ShortCircuitOperatorToIRVisitor::findInsertionLoc(const clang::BinaryOperator* binary_op) {
-    clang::DynTypedNode current = clang::DynTypedNode::create(*binary_op);
-    const clang::Stmt* last_stmt = binary_op;
-
-    while (true) {
-        auto parents = m_ctx.getParents(current);
-        if (parents.empty())
-            return {};
-        const auto& parent = parents[0];
-        if (parent.get<clang::CompoundStmt>() != nullptr)
-            return last_stmt->getBeginLoc();
-        if (const auto* stmt = parent.get<clang::Stmt>())
-            last_stmt = stmt;
-
-        current = parent;
-    }
-}
-
-bool ShortCircuitOperatorToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
-    expr = expr->IgnoreParenImpCasts();
-    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
-    clang::Stmt* stmt = expr;
-    std::queue<clang::Stmt*> children;
-    for (const clang::Stmt* child : stmt->children()) {
-        if (child == nullptr) continue;
-        children.push(const_cast<clang::Stmt*>(child));
-    }
-    bool stmtIsFuncCall = false;
-    while(!children.empty()) {
-        clang::Stmt* child = children.front();
-        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
-            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
-                stmtIsFuncCall = true;
-        if(!stmtIsFuncCall) {
-            for (const clang::Stmt* grandChild : child->children()) {
-                if (grandChild == nullptr) continue;
-                children.push(const_cast<clang::Stmt*>(grandChild));
-            }
-        } else break;
-        children.pop();
-    }
-    return stmtIsFuncCall;
+    return {};
 }
 
 }  // namespace invisible
