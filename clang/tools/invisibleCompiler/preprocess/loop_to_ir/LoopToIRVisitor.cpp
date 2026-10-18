@@ -19,7 +19,7 @@ namespace invisible {
 // ─── LoopToIRVisitor ──────────────────────────────────────────────
 
 LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
-    : m_ctx(ctx), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()) {
+    : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)) {
     
     if (m_ctx.getLangOpts().CPlusPlus)
         m_policy.adjustForCPlusPlus();
@@ -60,8 +60,8 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     // `for (init; T v = e; inc)` declares `v` on each iteration, like a while
     clang::DeclStmt* cond_decl = for_stmt->getConditionVariableDeclStmt();
     clang::Expr* trigger = cond_decl ? for_stmt->getConditionVariable()->getInit() : for_stmt->getCond();
-    if(!(hasCond && trigger && exprHasFuncCall(trigger)) &&
-       !(hasInc && exprHasFuncCall(for_stmt->getInc()))) return true;
+    if(!(hasCond && trigger && containsCall(trigger)) &&
+       !(hasInc && containsCall(for_stmt->getInc()))) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
@@ -84,6 +84,7 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
 
     std::string label = hasInc ? jumpContinuesToLabel(for_stmt->getBody()) : "";
 
+    // the header keeps only its init statement, `for (init;;)`
     if (cond_decl) m_rewriter.ReplaceText(cond_decl->getSourceRange(), "");
     else if (hasCond) m_rewriter.ReplaceText(for_stmt->getCond()->getSourceRange(), "");
     if (hasInc) m_rewriter.ReplaceText(for_stmt->getInc()->getSourceRange(), "");
@@ -124,7 +125,7 @@ bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
      */
     auto cond_var = while_stmt->getConditionVariable();
     clang::Expr* trigger = cond_var ? cond_var->getInit() : while_stmt->getCond();
-    if (!trigger || !exprHasFuncCall(trigger)) return true;
+    if (!trigger || !containsCall(trigger)) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
@@ -150,12 +151,14 @@ bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
     return true;
 }
 
+// `if (auto p = find(); p && p->ok())`: the declarations of an if move before it, see moveConditionDeclsOut
 bool LoopToIRVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
     moveConditionDeclsOut(if_stmt, if_stmt->getInit(), if_stmt->getConditionVariableDeclStmt(), if_stmt->getCond(),
                           if_stmt->getLParenLoc(), if_stmt->getRParenLoc());
     return true;
 }
 
+// `switch (int c = next())`: as for an if
 bool LoopToIRVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
     moveConditionDeclsOut(switch_stmt, switch_stmt->getInit(), switch_stmt->getConditionVariableDeclStmt(),
                           switch_stmt->getCond(), switch_stmt->getLParenLoc(), switch_stmt->getRParenLoc());
@@ -181,11 +184,11 @@ void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init
     const clang::VarDecl* var = cond_decl ? llvm::dyn_cast<clang::VarDecl>(cond_decl->getSingleDecl()) : nullptr;
     if (cond_decl && (!var || llvm::isa<clang::DecompositionDecl>(var))) return;
     auto has_call = [&](clang::Stmt* part) {
-        if (auto* expr = llvm::dyn_cast_or_null<clang::Expr>(part)) return exprHasFuncCall(expr);
+        if (auto* expr = llvm::dyn_cast_or_null<clang::Expr>(part)) return containsCall(expr);
         if (auto* decl_stmt = llvm::dyn_cast_or_null<clang::DeclStmt>(part))
             return llvm::any_of(decl_stmt->decls(), [&](clang::Decl* decl) {
                 auto* declared = llvm::dyn_cast<clang::VarDecl>(decl);
-                return declared && declared->getInit() && exprHasFuncCall(declared->getInit());
+                return declared && declared->getInit() && containsCall(declared->getInit());
             });
         return false;
     };
@@ -227,7 +230,7 @@ bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
      *   __loop_continue_#id: { if (!(cond)) { break; } }
      * } while(1);
      */
-    if (!exprHasFuncCall(do_stmt->getCond())) return true;
+    if (!containsCall(do_stmt->getCond())) return true;
 
     std::string cond;
     llvm::raw_string_ostream cond_out(cond);
@@ -262,7 +265,9 @@ void LoopToIRVisitor::collectContinues(clang::Stmt* stmt, std::vector<clang::Con
         collectContinues(child, continues);
 }
 
-// turns the continues of the loop into gotos to a new label, empty if there are none
+// turns the continues of the loop into gotos to a new label, empty if there are none: once the
+// increment or condition is a statement at the end of the body, `continue` would skip it, eg.
+// `for (; i < n; ++i) { if (skip(i)) continue; f(i); }` would loop forever on a skipped `i`
 std::string LoopToIRVisitor::jumpContinuesToLabel(clang::Stmt* body) {
     std::vector<clang::ContinueStmt*> continues;
     collectContinues(body, continues);
@@ -272,32 +277,6 @@ std::string LoopToIRVisitor::jumpContinuesToLabel(clang::Stmt* body) {
     for (clang::ContinueStmt* cont : continues)
         m_rewriter.ReplaceText(cont->getSourceRange(), "goto " + label);
     return label;
-}
-
-bool LoopToIRVisitor::exprHasFuncCall(clang::Expr* expr) {
-    expr = expr->IgnoreParenImpCasts();
-    if(llvm::dyn_cast<clang::CallExpr>(expr)) return true;
-    clang::Stmt* stmt = expr;
-    std::queue<clang::Stmt*> children;
-    for (const clang::Stmt* child : stmt->children()) {
-        if (child == nullptr) continue;
-        children.push(const_cast<clang::Stmt*>(child));
-    }
-    bool stmtIsFuncCall = false;
-    while(!children.empty()) {
-        clang::Stmt* child = children.front();
-        if(clang::Expr* expr = llvm::dyn_cast<clang::Expr>(child))
-            if(llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
-                stmtIsFuncCall = true;
-        if(!stmtIsFuncCall) {
-            for (const clang::Stmt* grandChild : child->children()) {
-                if (grandChild == nullptr) continue;
-                children.push(const_cast<clang::Stmt*>(grandChild));
-            }
-        } else break;
-        children.pop();
-    }
-    return stmtIsFuncCall;
 }
 
 }  // namespace invisible
