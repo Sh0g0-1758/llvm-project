@@ -19,24 +19,34 @@ namespace invisible {
 
 // ─── MaterializeLambdaVisitor ──────────────────────────────────────
 
-/// Materialize Lamda Expressions as individual RecordDecls. Captured variables
-/// are represented as field members and captured `this` keyword is renamed to a 
-/// custom field member. The function represented by the lamda is emitted as an
-/// operator() call and the lamdaExpression itself is replaced by an object of 
-/// the corresponding recordDecl. 
+/// materialize-lambda: turns a lambda into a named struct, its captures into members and its body
+/// into the call operator, so that its type can be named, eg. by the specialization of a
+/// template it is passed to, see docs/DESIGN.md section 5.4. A captured `this` becomes a member
+/// of its own. Lambdas are turned innermost first, and the pass repeats.
 class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLambdaVisitor> {
   public:
     MaterializeLambdaVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
+    /// `[&n](int x) { return x + n; }` → `__invisible_lambda_0{n}`, the struct put before the function
     bool VisitLambdaExpr(clang::LambdaExpr* lambda);
+    /// whether a lambda was turned, so that the pass runs again for the lambdas around it
     bool changed() const { return m_changed; }
   private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    /// the types of the members, printed canonically: the struct is outside the function their aliases are in
     clang::PrintingPolicy m_field_policy;
     bool m_changed = false;
+    /// the N of the next `__invisible_lambda_N`, unique across the iterations of the pass
     static size_t s_counter;
+    /// whether @p node has a lambda in it, which is turned first, innermost first
     bool containsNestedLambda(clang::Stmt* node);
+    /// the function the struct is put before
+    clang::FunctionDecl* enclosingFunction(const clang::LambdaExpr* lambda);
+    /// whether the lambda is used as a function pointer, which the struct can't be
+    bool convertsToFunctionPointer(const clang::LambdaExpr* lambda);
+    /// where the struct is inserted: before the function, its template heads and attributes
+    clang::SourceLocation structLoc(const clang::FunctionDecl* enclosing_func);
 };
 
 }  // namespace invisible
