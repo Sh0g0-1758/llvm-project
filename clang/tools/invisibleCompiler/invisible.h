@@ -1,5 +1,9 @@
 #pragma once
 
+// The library interface of invisible: the preprocess pipeline, which turns a translation unit into
+// code where every call is a statement of its own and every function a definition at the end, ready
+// for the inliner (see docs/DESIGN.md section 1), and the optimizations. main.cpp is its driver.
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -52,7 +56,8 @@ struct PassInfo {
     bool repeats = false;     ///< whether the pass runs again until it makes no change
 };
 
-/// What happened while a pass ran.
+/// What happened while a pass ran, printed by `--time-passes`, eg.
+/// `[14/14] hoist-calls              ok      37 iterations    12.40s  +11664 lines`.
 struct PassStats {
     std::string name;
     unsigned iterations = 0;
@@ -67,8 +72,11 @@ struct PipelineOptions {
     std::string stop_after;
     /// Give up on a repeating pass after this many iterations, 0 for no limit.
     unsigned max_iterations = 0;
+    /// Before a pass, the @p index -th of @p count, runs; main.cpp prints its progress line.
     std::function<void(const PassInfo& pass, size_t index, size_t count)> on_pass_start;
+    /// After an iteration of a pass that compiles.
     std::function<void(const PassInfo& pass, unsigned iteration)> on_iteration;
+    /// After a pass, with its output; `--save-temps` writes it to `NN-<pass>.<input extension>`.
     std::function<void(const PassStats& stats, const std::string& source)> on_pass_end;
 };
 
@@ -94,20 +102,32 @@ struct OptimizeResult {
 
 // ─── Free functions ────────────────────────────────────────────────
 
-/// The passes preprocess() runs, in order.
+/// The passes preprocess() runs, in order, for `--list-passes` and `--stop-after`.
 std::vector<PassInfo> preprocessPasses();
 
-/// Split comma-separated declarations into individual statements and
-/// hoist nested function calls into temporaries. Every pass is checked to
-/// produce compilable code, and the pipeline stops at the first that doesn't.
+/// Runs the preprocess passes over @p source, see docs/DESIGN.md sections 2 and 4, eg.
+///
+///     int total(Vec<int> &v) { return square(v.at(0)) + 1; }
+///
+/// ends with every function declared first, every definition at the end of the TU, and every
+/// nested call a statement of its own:
+///
+///     int &__func_hoist_ret__2 = v.at(0);
+///     int __func_hoist_ret__1 = square(__func_hoist_ret__2);
+///     return __func_hoist_ret__1 + 1;
+///
+/// Every iteration of every pass is checked to compile; what doesn't is recovered from, by leaving
+/// functions as written or rerunning from decl-before-def, and otherwise the pipeline stops there.
 PipelineResult preprocess(const std::string& source, const std::string& filename, std::vector<std::string>& args,
                           const PipelineOptions& options = {});
 
-/// Run the information collector over @p source. Returns whether its output
-/// compiles, and stores that output in @p result.
+/// Runs the information collector over @p source (the `info` mode), see
+/// InformationCollectorVisitor. Returns whether its output compiles, and stores that output in
+/// @p result.
 bool collectInfo(const std::string& source, const std::string& filename, std::vector<std::string>& args, std::string& result);
 
-/// Repeat every optimization until none of them changes the source.
+/// Repeats every optimization, constant folding, dead code and dead store elimination and copy
+/// propagation, until none of them changes the source (the `optimize` mode).
 OptimizeResult oneForAll(const std::string& source, const std::string& filename, std::vector<std::string>& args,
                          const std::function<void(unsigned iteration)>& on_iteration = {});
 

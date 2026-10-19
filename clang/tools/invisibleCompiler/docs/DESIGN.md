@@ -621,7 +621,7 @@ program of several. Each passes when:
 
 ```
 $ python3 test/run.py -j 10
-92 pass, 0 fail, 0 xfail, 0 xpass (92 tests)
+93 pass, 0 fail, 0 xfail, 0 xpass (93 tests)
 $ python3 test/run.py constant_fold --keep /tmp/t     # one test, keeping its files
 ```
 
