@@ -52,7 +52,7 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
                clang::RecursiveASTVisitor<FuncCallCleanupVisitor>::TraverseCXXTypeidExpr(expr, queue);
     }
 
-    /// hoists @p call unless it is a statement of its own already, see isTopLevelCall, or may not be
+    /// hoists @p call unless it is a statement of its own already, see topLevelStatement, or may not be
     /// evaluated, eg. a branch of `?:` left as written
     bool VisitCallExpr(clang::CallExpr* call);
     /// whether this iteration hoisted anything, so that the pass runs again
@@ -83,18 +83,11 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
     bool containsLabel(const clang::Stmt* stmt);
     /// whether the body of a function or lambda has a label
     std::map<const clang::Stmt*, bool> m_has_labels;
-    /// whether @p call is a statement of its own already: `f();`, `int x = f();`, `x = f();`
-    bool isTopLevelCall(const clang::CallExpr* call);
     /// whether the function being traversed is a template, whose calls aren't resolved
     bool m_is_uninstantiated_template;
     /// the N of the next `__func_hoist_ret__N`, shared with short-circuit-to-ir
     size_t& m_current_index;
     clang::PrintingPolicy m_policy;
-    /// whether @p s only wraps an expression without being an operation of the source, eg. an
-    /// implicit cast or the materialization of a temporary
-    bool isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator);
-    /// the first parent of @p node that isn't transparent, see isTransparentParent
-    clang::DynTypedNode getSemanticParent(const clang::Stmt* node, bool isExplicitCoversionOperator);
 };
 
 }  // namespace invisible

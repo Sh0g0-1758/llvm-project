@@ -78,7 +78,7 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
     // declare its result with. The calls are hoisted in each instantiation instead. 
     if(m_is_uninstantiated_template) return true;
 
-    if (isTopLevelCall(call)) return true;
+    if (topLevelStatement(m_ctx, call)) return true;
 
     // `__mono_addr(make())` is the address of a temporary object, passed to a copy of a member
     // function, eg. `get__mono...(__mono_addr(make()))`. The temporary dies at the end of the
@@ -351,122 +351,6 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
 
         current = parent;
     }
-}
-
-// These node types are only relevant for C++
-// CXXBindTemporaryExpr -> It marks the creation of a temporary with a non-trivial
-//                         destructor
-// MaterializeTemporaryExpr -> Emitted when a prvalue needs to be converted to an 
-//                             xvalue. Usually when its address is needed.
-// ExprWithCleanups -> Enclosing an expression. Indicates there is some temporary
-//                     created inside this expression that needs to be cleaned up
-//                     ie. its destructor needs to be called. 
-// ImplicitCastExpr -> A NoOp of adding a const to a function return type. This can
-//                     be needed in cases when say a class's copy constructor needs
-//                     to be called. 
-// ParenExpr        -> relevant for both C/C++. Ignore enclosing parentheses
-// ExplicitCastExpr -> an explicit C++ conversion function within a class needs to retain
-//                     the explicit cast. We should not hoist such conversion operators as
-//                     they will lead to an infinite loop of hoisting. 
-bool FuncCallCleanupVisitor::isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator) {
-    return llvm::isa<clang::ParenExpr,
-                     clang::ImplicitCastExpr,
-                     clang::ExprWithCleanups,
-                     clang::CXXBindTemporaryExpr,
-                     clang::MaterializeTemporaryExpr>(s) || 
-           (isExplicitCoversionOperator ? 
-            (llvm::isa<clang::ExplicitCastExpr>(s)) : false);
-}
-
-// eg. the VarDecl of `std::string s = make();`, past the temporary's materialization and cleanups
-clang::DynTypedNode FuncCallCleanupVisitor::getSemanticParent(const clang::Stmt* node, bool isExplicitCoversionOperator) {
-    for (const clang::Stmt* child = node;;) {
-        auto parents = m_ctx.getParents(*child);
-        if (parents.empty()) return {};
-        const auto* parent = parents[0].get<clang::Stmt>();
-        if (!parent || !isTransparentParent(parent, isExplicitCoversionOperator)) return parents[0];
-        child = parent;
-    }
-}
-
-// Whether @p call is a statement of its own already, which needs no hoisting, directly in a block:
-//  - a declaration, `int x = f();`;
-//  - an assignment, `x = f();`, also `a = f();` of a class, whose `=` is a call itself;
-//  - a call returning void, `f();`.
-// A call returning a value, `f();`, is hoisted all the same, as it may be the value of a
-// statement expression, `({ ...; f(); })`. The cast around an explicit conversion operator,
-// `bool b = static_cast<bool>(obj);`, is looked through: hoisting it would write the same cast
-// again, and the pass would never stop.
-bool FuncCallCleanupVisitor::isTopLevelCall(const clang::CallExpr* call) {
-    bool isExplicitCoversionOperator = false;
-    if (auto* member_call_expr = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
-        const auto* conversion_decl = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(member_call_expr->getMethodDecl());
-        if (conversion_decl && conversion_decl->isExplicit()) {
-            isExplicitCoversionOperator = true;
-        }
-    }
-
-    auto parent_node = getSemanticParent(call, isExplicitCoversionOperator);
-    if (parent_node.getNodeKind().isNone())
-        return false;
-
-    // int x = foo();
-    if (const auto* var_decl = parent_node.get<clang::VarDecl>()) {
-        auto vd_parents = m_ctx.getParents(*var_decl);
-        if (!vd_parents.empty()) {
-            if (const auto* decl_stmt = vd_parents[0].get<clang::DeclStmt>()) {
-                auto ds_parents = m_ctx.getParents(*decl_stmt);
-                if (!ds_parents.empty()) {
-                    if (const auto* parent_stmt = ds_parents[0].get<clang::Stmt>()) {
-                        if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    } else if (const auto* parent_stmt = parent_node.get<clang::Stmt>()) {
-        // x = foo();
-        // note that x += foo() would need to be hoisted because x can be a pointer
-        // and the way we inline right now means that the pointer update can get awry
-        // if we take a pointer to the pointer with the type of the return value of the
-        // the function and then dereference it to update. 
-        if (const auto* bin_op = llvm::dyn_cast<clang::BinaryOperator>(parent_stmt)) {
-            if (bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Assign) {
-                auto bo_parents = m_ctx.getParents(*bin_op);
-                if (!bo_parents.empty()) {
-                    if (const auto* grandparent = bo_parents[0].get<clang::Stmt>()) {
-                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        // a = foo();  where a is a class type
-        } else if (const auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(parent_stmt)) {
-            if (op_call->getOperator() == clang::OO_Equal) {
-                auto oc_parents = m_ctx.getParents(*op_call);
-                if (!oc_parents.empty()) {
-                    if (const auto* grandparent = oc_parents[0].get<clang::Stmt>()) {
-                        if (llvm::isa<clang::CompoundStmt>(grandparent)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        // foo();
-        } else if (llvm::isa<clang::CompoundStmt>(parent_stmt)) {
-            // we still hoist function calls that have a valid return value. 
-            // This is because the function call can occur as the last expr
-            // in a Expression Statement. 
-            // int res = ({
-            //    foo(); // returns an int
-            // })
-            if (call->getType()->isVoidType())
-                return true;
-        }
-    }
-    return false;
 }
 
 }  // namespace invisible
