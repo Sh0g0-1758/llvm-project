@@ -24,8 +24,10 @@ namespace invisible {
 // ─── DeclBeforeDefVisitor ──────────────────────────────────────────────
 
 /// decl-before-def: declares every function before any definition, and writes the definitions
-/// the binary has at the end of the TU, the instantiations of templates as explicit
-/// specializations, or with INVISIBLE_MONO set, as copies, see docs/DESIGN.md sections 6 and 7.
+/// the binary has at the end of the TU. An instantiation of a template is given a copy, a free
+/// function of its own name, which what is deferred calls, and the template is reduced to a
+/// declaration; a constructor, a destructor or a virtual function is written as an explicit
+/// specialization instead. See docs/DESIGN.md sections 6 and 7.
 ///
 /// The inliner pastes a callee's body into its caller, so every function it inlines must have
 /// a body in the text, and every body must be able to call anything. eg.
@@ -37,18 +39,18 @@ namespace invisible {
 ///
 ///     template <class T> T twice(T x);
 ///     int main();
-///     template<> int twice(int x);
+///     [[gnu::used]] inline int twice__mono1a2b3c4d5e(int x);
 ///
-///     int main(){ return twice(2); }
-///     template<> int twice(int x){ return x + x; }
+///     int main(){ return twice__mono1a2b3c4d5e(2); }
+///     [[gnu::used]] inline int twice__mono1a2b3c4d5e(int x){ return x + x; }
 ///
 /// The driver retries it, leaving as written what it wrote that doesn't compile, see
 /// entries(), replaced(), stripped() and copyKeys().
 class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisitor> {
   public:
     /// @p kept_in_place is left as written, see KeepInPlaceVisitor
-    /// With INVISIBLE_MONO set, a template instantiation, and what is left as written, is
-    /// given a copy instead, a free function of its own name, called instead of it by what is
+    /// A template instantiation, and what is left as written, is given a copy, a free function of
+    /// its own name, called instead of it by what is
     /// deferred, see monomorphize. @p dropped names by their mangled names the functions not given one.
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter,
                          const std::set<const clang::FunctionDecl*>& kept_in_place,
@@ -107,6 +109,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     // ── monomorphization ──
     /// the functions, by mangled name, not given a copy: theirs didn't compile on an earlier attempt
     const std::set<std::string>& m_dropped;
+    /// whether the TU is C++: C has no templates to copy
     bool m_mono;
     /// the name of the copy of each function given one, by canonical declaration, and those functions in order
     std::map<const clang::FunctionDecl*, std::string> m_copies;

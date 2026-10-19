@@ -1,7 +1,7 @@
 // A copy is printed outside its class, with every name qualified, also inside braces, whose
 // syntactic form the printer prints: googletest's `static constexpr VTable kVTable =
 // {&MatchAndExplainImpl<P>}` would otherwise name a member the copy doesn't see.
-// CHECK-MONO: table__mono[0-9a-f]+\(M<int> \*__this\)\{
+// CHECK: table__mono[0-9a-f]+\(M<int> \*__this\)\{
 template <class T> struct M {
   struct VT { int (*f)(int); };
   template <class P> static int impl(int x) { return x + P::v; }

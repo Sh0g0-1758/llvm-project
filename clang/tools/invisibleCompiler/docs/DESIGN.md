@@ -16,7 +16,7 @@ Contents
 4. [The driver: running, checking and recovering](#4-the-driver-running-checking-and-recovering)
 5. [The passes](#5-the-passes)
 6. [decl-before-def in depth](#6-decl-before-def-in-depth)
-7. [Monomorphization (`INVISIBLE_MONO=1`)](#7-monomorphization-invisible_mono1)
+7. [Monomorphization](#7-monomorphization)
 8. [The inliner](#8-the-inliner)
 9. [Testing](#9-testing)
 10. [Limitations and accepted differences](#10-limitations-and-accepted-differences)
@@ -38,7 +38,7 @@ Everything else, the preprocessing passes included, exists to make that possible
   the inliner can paste a body in front of it without reasoning about evaluation order.
 - Every called function must have a **body in the text**, which the inliner can copy. An
   instantiation such as `std::vector<int>::size()` has no text of its own until it is written
-  out as a specialization, or, in monomorphization, as a free function.
+  out, as a free function of its own (a copy, §7) or as a specialization.
 - Every function must be **declared before any definition**. Then a pasted body can call
   anything.
 
@@ -460,10 +460,9 @@ Some functions keep their text in place, along with their instantiations:
 
 - **Friends.** They're left exactly as written.
 - **Defaulted, deleted and `consteval` functions.**
-- In monomorphization, **`constexpr` functions** that aren't templates, members included. A
-  constant expression anywhere may evaluate a `constexpr` function, also through a concept or
-  argument-dependent lookup, which no scan can see. It still gets a copy for what is deferred
-  to call. The default mode defers them like any other function.
+- **`constexpr` functions** that aren't templates, members included. A constant expression
+  anywhere may evaluate a `constexpr` function, also through a concept or argument-dependent
+  lookup, which no scan can see. It still gets a copy for what is deferred to call.
 - **Explicitly instantiated templates.** `template void Data::reserve<true>(int);` needs the
   template's definition where it's written, and no specialization may follow it.
 - **Templates instantiated for a lambda's closure type.** The closure type can't be named.
@@ -498,15 +497,13 @@ decl-before-def runs four more visitors on the same AST first:
   constructors that hoist-calls will call. Otherwise a constructor of a member of a class
   template could be used without ever being defined.
 
-## 7. Monomorphization (`INVISIBLE_MONO=1`)
+## 7. Monomorphization
 
-The default mode writes every instantiation as an explicit specialization **and leaves the
-templates in place**. An instantiation that's only declared in place, whose template is
-still there, works for the compiler but gives the inliner nothing.
-
-Monomorphization instead gives every instantiation a **copy**: a free function with a name
-of its own. Callers call the copy, and as many templates as possible are reduced to
-declarations.
+An instantiation written as an explicit specialization **leaves its template in place**, and
+one that's only declared in place, whose template is still there, works for the compiler but
+gives the inliner nothing. So every instantiation of C++ gets a **copy** instead: a free
+function with a name of its own. Callers call the copy, and as many templates as possible are
+reduced to declarations. C has no templates.
 
 ```cpp
 Box<int> box{sum(xs, 3)};
@@ -549,7 +546,7 @@ return operator__monofddf8e98a0(__builtin_addressof(add), twice(clamp(get__monof
 
 ### 7.2 What isn't copied
 
-These instantiations are **specialized** as in the default mode instead:
+These instantiations are written as explicit **specializations** instead (§6):
 
 | Kind | Why |
 |---|---|
@@ -614,17 +611,17 @@ int &__func_hoist_ret__2 = static_cast<int &>(*__inline_ret__0);
 ### 9.1 Regression tests: `test/run.py`
 
 Every file in `test/cases/` is a translation unit, and every directory in `test/link/` is a
-program of several. Each runs in both modes and passes when:
+program of several. Each passes when:
 
 1. invisible preprocesses it;
 2. the output compiles with `-w -Wno-out-of-line-declaration`;
 3. the output leaves nothing undefined that the original defines (`nm`);
 4. a program prints and returns what the original does;
-5. the output matches the test's `CHECK`, `CHECK-NOT`, `CHECK-MONO`… lines.
+5. the output matches the test's `CHECK` and `CHECK-NOT` lines.
 
 ```
 $ python3 test/run.py -j 10
-182 pass, 0 fail, 0 xfail, 0 xpass (92 tests)
+92 pass, 0 fail, 0 xfail, 0 xpass (92 tests)
 $ python3 test/run.py constant_fold --keep /tmp/t     # one test, keeping its files
 ```
 

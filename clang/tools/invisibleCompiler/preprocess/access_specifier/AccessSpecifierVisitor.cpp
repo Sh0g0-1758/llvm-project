@@ -47,8 +47,8 @@ bool AccessSpecifierVisitor::VisitCXXMethodDecl(clang::CXXMethodDecl* method) {
 }
 
 // `private:` and `protected:` => `public:`. decl-before-def moves member definitions out of their
-// class, hoist-calls and the inliner write code that names members from outside it, and a copy
-// of a member function in monomorphization is a free function: all of them need public members.
+// class, hoist-calls and the inliner write code that names members from outside it, and the copy
+// of a member function is a free function: all of them need public members.
 bool AccessSpecifierVisitor::VisitAccessSpecDecl(clang::AccessSpecDecl* access_decl) {
     if (access_decl->getAccess() == clang::AS_public) return true;
     m_rewriter.ReplaceText(access_decl->getSourceRange(), "public:");

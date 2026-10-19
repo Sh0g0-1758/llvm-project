@@ -23,8 +23,8 @@ namespace invisible {
 ///  - what a constant expression calls, eg. in a template argument or a static_assert, also in
 ///    a body, which the compiler evaluates where it is written;
 ///  - an explicitly instantiated template, a function whose type or class can't be named
-///    elsewhere, eg. of a return type deduced to name a lambda's closure type, and in
-///    monomorphization a constexpr function that isn't a template, which a constant expression
+///    elsewhere, eg. of a return type deduced to name a lambda's closure type, and a constexpr
+///    function that isn't a template, which a constant expression
 ///    may evaluate through a concept or argument dependent lookup;
 ///  - the functions of @p names (passKey), which a later pass needs as written.
 /// Of what these use, only the templates and constexpr functions are kept, the others being
@@ -108,6 +108,7 @@ class KeepInPlaceVisitor : public clang::RecursiveASTVisitor<KeepInPlaceVisitor>
     llvm::StringRef m_text;
     const std::set<std::string>& m_names;
     const std::set<std::string>& m_dropped;
+    /// whether the TU is C++: C has no templates to copy
     bool m_mono;
     /// whether what is traversed is the assertion of a static_assert in a body
     bool m_in_body_assertion = false;

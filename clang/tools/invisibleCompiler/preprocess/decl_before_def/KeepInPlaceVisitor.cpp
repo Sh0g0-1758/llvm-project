@@ -25,7 +25,7 @@ const clang::FunctionDecl* namedFunction(const clang::Stmt* stmt) {
 
 KeepInPlaceVisitor::KeepInPlaceVisitor(clang::ASTContext& ctx, const std::set<std::string>& names,
                                        const std::set<std::string>& dropped)
-    : m_ctx(ctx), m_names(names), m_dropped(dropped), m_mono(monoMode() && ctx.getLangOpts().CPlusPlus) {
+    : m_ctx(ctx), m_names(names), m_dropped(dropped), m_mono(ctx.getLangOpts().CPlusPlus) {
     const auto& src_mgr = ctx.getSourceManager();
     m_text = src_mgr.getBufferData(src_mgr.getMainFileID());
 }
@@ -95,7 +95,7 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     // an explicit instantiation definition, eg. `template void Data::reserve<true>(int);`, needs
     // the template's definition where it is written, and can't be followed by a specialization
     if (function->getTemplateSpecializationKind() == clang::TSK_ExplicitInstantiationDefinition) keep(function, true, true);
-    // and in monomorphization, a constexpr function that isn't a template, which a constant
+    // and a constexpr function that isn't a template, which a constant
     // expression anywhere may evaluate, also through a concept or argument dependent lookup, which
     // can't all be seen; it is given a copy for what is deferred to call
     if (m_mono && function->isConstexpr() && !function->isTemplated() && !isInstantiatedCopy(function) &&

@@ -44,7 +44,7 @@ class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
     clang::PrintingPolicy m_policy;
 };
 
-/// The printer of monomorphization (INVISIBLE_MONO): prints a call of a function that was given
+/// The printer of monomorphization: prints a call of a function that was given
 /// a copy as a call of the copy, a free function taking the object of a member first, eg.
 ///
 ///     v.size()        => size__mono1a2b3c4d5e(__builtin_addressof(v))

@@ -113,10 +113,6 @@ clang::PrintingPolicy codePolicy(const clang::ASTContext& ctx);
 /// `std::min(2305843009213693951UL, n)`, which still deduces `size_t`.
 std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& value, clang::QualType type);
 
-/// Whether INVISIBLE_MONO is set to something other than empty or `0`, which turns on
-/// monomorphization, see DeclBeforeDefVisitor and docs/DESIGN.md section 7.
-bool monoMode();
-
 /// The name of the monomorphized copy of the function of mangled name @p key, named @p base, eg.
 /// `size__mono1a2b3c4d5e`: the same in every TU, so that the copies merge at link time.
 std::string copyName(llvm::StringRef base, llvm::StringRef key);
@@ -138,7 +134,7 @@ std::string passKey(const clang::FunctionDecl* func);
 
 /// Whether the passes after DeclBeforeDef leave @p decl as written: a template or anything in one,
 /// whose text all its instantiations share, a friend, which stays exactly as written, what the
-/// pass's fallback skips, and in monomorphization a constexpr function left in place, which the
+/// pass's fallback skips, and a constexpr function left in place, which the
 /// compiler may evaluate, eg. `constexpr int sq(int x) { return x * x; }` stays `return x * x;`.
 bool isLeftAsWritten(const clang::Decl* decl);
 

@@ -328,15 +328,6 @@ std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& valu
     }
 }
 
-bool monoMode() {
-    // set to anything but empty or `0`, eg. INVISIBLE_MONO=1
-    static const bool mono = [] {
-        const char* value = getenv("INVISIBLE_MONO");
-        return value && *value && llvm::StringRef(value) != "0";
-    }();
-    return mono;
-}
-
 // 40 bits of the hash of the mangled name, in lowercase hexadecimal, eg. `size__mono1a2b3c4d5e`: two instantiations of one
 // name, `vector<int>::size` and `vector<char>::size`, get different copies, and every TU gives
 // `vector<int>::size` the same one, which `inline` lets the linker merge
@@ -379,10 +370,10 @@ bool isLeftAsWritten(const clang::Decl* decl) {
     if (const auto* func = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl)) {
         if (isSkippedByPass(func)) return true;
         if (func->getFriendObjectKind() != clang::Decl::FOK_None) return true;
-        // in monomorphization a constexpr function is left in place, as the compiler may evaluate
+        // a constexpr function is left in place, as the compiler may evaluate
         // it in a constant expression, where what the passes write, eg. a hoisted temporary, may
         // not be allowed. The calls go to its copy, which the compiler never evaluates
-        if (monoMode() && func->isConstexpr() && func->doesThisDeclarationHaveABody() && !isCopy(func)) return true;
+        if (func->isConstexpr() && func->doesThisDeclarationHaveABody() && !isCopy(func)) return true;
     }
     // eg. the definition of a static data member of a class template
     if (const auto* var = llvm::dyn_cast_or_null<clang::VarDecl>(decl);

@@ -316,7 +316,7 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Sema& 
       m_copy_policy(codePolicy(ctx)),
       m_names(ctx),
       m_dropped(dropped),
-      m_mono(monoMode() && ctx.getLangOpts().CPlusPlus),
+      m_mono(ctx.getLangOpts().CPlusPlus),
       m_custom_printer(ctx, m_policy, m_copies) {
     // the bodies of what is deferred, as written
     if (m_ctx.getLangOpts().CPlusPlus) m_policy.adjustForCPlusPlus();
@@ -554,7 +554,7 @@ void DeclBeforeDefVisitor::recordFunctionDefinition(clang::FunctionDecl* func, s
     // the body isn't fully qualified like the head, which would break eg. a function redeclared in a block
     std::string body;
     llvm::raw_string_ostream body_out(body);
-    // in monomorphization the body calls the copies, see redirectCalls
+    // the body calls the copies, see redirectCalls
     if (m_mono) {
         clang::Stmt* stmt = func->getBody();
         redirectCalls(stmt);
@@ -830,7 +830,7 @@ void DeclBeforeDefVisitor::replaceFunctionDeclaration(clang::FunctionDecl* func,
 // Every function definition, of the input and of every template instantiation (see
 // shouldVisitTemplateInstantiations), goes through here once:
 //  - what stays in place (isKeptByDeclBeforeDef) is left as written;
-//  - in monomorphization, an instantiation that gets a copy is only copied, see monomorphize;
+//  - an instantiation that gets a copy is only copied, see monomorphize;
 //  - a declaration without a body is written again, with the parameters renamed;
 //  - a definition is replaced by its declaration where it is written, and, unless it is a
 //    template, recorded to be written at the end, an instantiation as an explicit specialization:
@@ -1038,7 +1038,7 @@ std::vector<size_t> DeclBeforeDefVisitor::deferredDefinitionOrder() const {
 }
 
 // What is written at the end of the TU, in this order:
-//  1. in monomorphization, the helper `__mono_addr` that takes the address of a temporary object;
+//  1. the helper `__mono_addr` that takes the address of a temporary object, when a copy is called;
 //  2. the declaration of every deferred definition;
 //  3. the declaration of every copy;
 //  4. the deferred definitions, see deferredDefinitionOrder;

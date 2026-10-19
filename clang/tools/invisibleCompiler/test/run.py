@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests of `invisible preprocess`.
 
-Every test is a translation unit in cases/ (or a directory of them in link/), run in each of the
-two modes, the default one and monomorphization (INVISIBLE_MONO=1). A test passes when:
+Every test is a translation unit in cases/ (or a directory of them in link/). A test passes when:
 
   1. invisible preprocesses it,
   2. the output compiles as a compiler builds it (-w -Wno-out-of-line-declaration),
@@ -14,12 +13,9 @@ two modes, the default one and monomorphization (INVISIBLE_MONO=1). A test passe
 A test states what differs from the defaults in comment lines anywhere in it:
 
   // STD: c++17                 the language standard (default: c++23, or c17 for a .c file)
-  // MODES: mono                the modes it runs in (default: normal mono; a .c file: normal)
-  // XFAIL: mono                a known failure, reported but not counted
-  // CHECK: <regex>             the output of every mode matches it
-  // CHECK-NOT: <regex>         the output of no mode matches it
-  // CHECK-MONO: <regex>        and the same for the output of one mode
-  // CHECK-NOT-NORMAL: <regex>
+  // XFAIL: <why>               a known failure, reported but not counted
+  // CHECK: <regex>             the output matches it
+  // CHECK-NOT: <regex>         the output doesn't match it
 
 usage: run.py [-j N] [--invisible PATH] [--keep DIR] [NAME_FILTER ...]
 """
@@ -36,7 +32,6 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 CXX = os.environ.get("CXX", "/usr/lib/llvm-22/bin/clang++")
 INVISIBLE = HERE.parents[3] / "build" / "bin" / "invisible"
-MODES = ("normal", "mono")
 COMPILE_FLAGS = ["-w", "-Wno-out-of-line-declaration"]
 RUN_TIMEOUT = 20
 
@@ -56,11 +51,8 @@ class Test:
         text = "\n".join(u.read_text() for u in self.units)
         directive = lambda key: [m.group(1).strip() for m in re.finditer(rf"^\s*//\s*{key}:(.*)$", text, re.M)]
         self.std = (directive("STD") or ["c17" if self.is_c else "c++23"])[0]
-        self.modes = (directive("MODES") or ["normal" if self.is_c else "normal mono"])[0].split()
-        self.xfail = set(" ".join(directive("XFAIL")).split())
-        self.checks = {mode: [(True, r) for r in directive("CHECK") + directive(f"CHECK-{mode.upper()}")] +
-                             [(False, r) for r in directive("CHECK-NOT") + directive(f"CHECK-NOT-{mode.upper()}")]
-                       for mode in MODES}
+        self.xfail = bool(directive("XFAIL"))
+        self.checks = [(True, r) for r in directive("CHECK")] + [(False, r) for r in directive("CHECK-NOT")]
         self.is_program = re.search(r"\bint\s+main\s*\(", text) is not None
 
     def language(self) -> list[str]:
@@ -115,13 +107,12 @@ def execute(exe: pathlib.Path) -> tuple[str, int]:
     return ran.stdout, ran.returncode
 
 
-def run_mode(test: Test, mode: str, work: pathlib.Path, originals: list[pathlib.Path], expected: tuple[str, int] | None) -> None:
+def run_invisible(test: Test, work: pathlib.Path, originals: list[pathlib.Path], expected: tuple[str, int] | None) -> None:
     outputs = []
-    env = dict(os.environ, INVISIBLE_MONO="1" if mode == "mono" else "")
     for unit in test.units:
         source = work / unit.name
-        out = work / f"{unit.stem}.{mode}{unit.suffix}"
-        pre = run([INVISIBLE, "preprocess", source, *test.language(), "-q", "-o", out], cwd=work, env=env)
+        out = work / f"{unit.stem}.out{unit.suffix}"
+        pre = run([INVISIBLE, "preprocess", source, *test.language(), "-q", "-o", out], cwd=work)
         if pre.returncode:
             raise Failure(f"preprocessing {unit.name} failed: {first_error(pre.stderr)}")
         outputs.append(out)
@@ -130,43 +121,40 @@ def run_mode(test: Test, mode: str, work: pathlib.Path, originals: list[pathlib.
         names = run(["c++filt"], input="\n".join(lost)).stdout.splitlines()
         raise Failure(f"leaves undefined what the original defines: {'; '.join(names[:3])}")
     if expected is not None:
-        link(objects, work / f"{mode}.exe")
-        if (got := execute(work / f"{mode}.exe")) != expected:
+        link(objects, work / "out.exe")
+        if (got := execute(work / "out.exe")) != expected:
             raise Failure(f"prints or returns other than the original: {got} vs {expected}")
     text = "\n".join(o.read_text() for o in outputs)
-    for wanted, pattern in test.checks[mode]:
+    for wanted, pattern in test.checks:
         if (re.search(pattern, text, re.M) is not None) != wanted:
             raise Failure(f"{'CHECK' if wanted else 'CHECK-NOT'}: {pattern}")
 
 
-def run_test(test: Test, keep: pathlib.Path | None) -> list[tuple[str, str, str]]:
-    """The results of every mode of @p test, as (mode, PASS|FAIL|XFAIL|XPASS, why)."""
+def run_test(test: Test, keep: pathlib.Path | None) -> tuple[str, str]:
+    """The result of @p test, as (PASS|FAIL|XFAIL|XPASS, why)."""
     work = pathlib.Path(tempfile.mkdtemp(prefix="invisible-test-"))
-    results = []
     try:
         # invisible takes a translation unit without #include and line markers
         for unit in test.units:
             expanded = run([CXX, *test.language(), "-E", "-P", unit, "-o", work / unit.name])
             if expanded.returncode:
-                return [(mode, "FAIL", f"the test does not compile: {first_error(expanded.stderr)}") for mode in test.modes]
+                return "FAIL", f"the test does not compile: {first_error(expanded.stderr)}"
         originals = compile_all(test, [work / u.name for u in test.units])
         # a test that only declares some of what it calls is not run
         expected = None
         if test.is_program and run([CXX, *originals, "-o", work / "original.exe"]).returncode == 0:
             expected = execute(work / "original.exe")
-        for mode in test.modes:
-            try:
-                run_mode(test, mode, work, originals, expected)
-                results.append((mode, "XPASS" if mode in test.xfail else "PASS", ""))
-            except Failure as failure:
-                results.append((mode, "XFAIL" if mode in test.xfail else "FAIL", str(failure)))
+        try:
+            run_invisible(test, work, originals, expected)
+            return ("XPASS" if test.xfail else "PASS"), ""
+        except Failure as failure:
+            return ("XFAIL" if test.xfail else "FAIL"), str(failure)
     except Failure as failure:
-        results = [(mode, "FAIL", f"the original: {failure}") for mode in test.modes]
+        return "FAIL", f"the original: {failure}"
     finally:
         if keep:
             shutil.copytree(work, keep / test.name.replace("/", "_"), dirs_exist_ok=True)
         shutil.rmtree(work, ignore_errors=True)
-    return results
 
 
 def discover(filters: list[str]) -> list[Test]:
@@ -188,11 +176,10 @@ def main() -> int:
     tests = discover(args.filters)
     counts = dict.fromkeys(("PASS", "FAIL", "XFAIL", "XPASS"), 0)
     with concurrent.futures.ThreadPoolExecutor(args.j) as pool:
-        for test, results in zip(tests, pool.map(lambda t: run_test(t, args.keep), tests)):
-            for mode, status, why in results:
-                counts[status] += 1
-                if status != "PASS":
-                    print(f"{status:5} {test.name} [{mode}] {why}", flush=True)
+        for test, (status, why) in zip(tests, pool.map(lambda t: run_test(t, args.keep), tests)):
+            counts[status] += 1
+            if status != "PASS":
+                print(f"{status:5} {test.name} {why}", flush=True)
     print(", ".join(f"{n} {status.lower()}" for status, n in counts.items()) + f" ({len(tests)} tests)")
     return 1 if counts["FAIL"] or counts["XPASS"] else 0
 
