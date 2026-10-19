@@ -1,3 +1,19 @@
+# Builds in the clang tree, or standalone against an installed LLVM, eg.
+#   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DClang_DIR=/usr/lib/llvm-22/lib/cmake/clang
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  cmake_minimum_required(VERSION 3.20)
+  project(invisible C CXX)
+  find_package(Clang REQUIRED CONFIG)
+  list(APPEND CMAKE_MODULE_PATH ${LLVM_CMAKE_DIR} ${CLANG_CMAKE_DIR})
+  include(AddLLVM)
+  include(AddClang)
+  include(HandleLLVMOptions)
+  include_directories(SYSTEM ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+  add_definitions(${LLVM_DEFINITIONS})
+  add_custom_target(clang-resource-headers)
+endif()
+
 set(LLVM_LINK_COMPONENTS
   Option
   Support
