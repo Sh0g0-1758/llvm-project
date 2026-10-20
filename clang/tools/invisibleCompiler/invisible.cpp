@@ -688,16 +688,22 @@ std::vector<PassInfo> preprocessPasses() {
 
 namespace {
 
-/// Runs the preprocess passes in order. Every iteration's output must compile, and when it doesn't,
-/// what the errors are in is left as written and the pass runs again. Who leaves it depends on who
-/// broke it:
-///  - decl-before-def retries itself, see declBeforeDef;
-///  - when a later pass needs what decl-before-def took away, eg. a template it reduced to a
-///    declaration, decl-before-def is told to leave it (laterUnmoved) and every pass from it on
-///    runs again, see rerunFromDeclBeforeDef;
-///  - otherwise the pass itself leaves the functions around the errors as written (passSkips).
-/// See docs/DESIGN.md section 4. The three sets are global, as the visitors that read them are
-/// deep in the passes: laterUnmoved() and strippedTemplates() hold for the TU, passSkips() for
+/// Runs the preprocess passes in order, each on the previous one's output. A pass rewrites code, and
+/// what it writes may not compile, eg. hoist-calls declaring a temporary of a type that can't be
+/// named where it puts it. So every iteration is compiled, and when it doesn't compile, the
+/// functions the errors are in are left as written and the work is done again. Who leaves them
+/// depends on what went wrong:
+///  - decl-before-def wrote code that doesn't compile: it retries itself, leaving those functions
+///    as written or giving them no copy, see declBeforeDef;
+///  - a later pass needs something decl-before-def took away, eg. the body of a template it reduced
+///    to a declaration: decl-before-def is told to keep it (laterUnmoved), and every pass from
+///    decl-before-def on runs again, see rerunFromDeclBeforeDef;
+///  - otherwise the pass broke a function itself: it runs again, leaving that function as the pass
+///    before left it (passSkips), see runIteration.
+/// When nothing helps, the pipeline stops there and reports that pass. See docs/DESIGN.md section 4.
+///
+/// What the driver learns is kept in three global sets, as the visitors that read them run deep
+/// inside clang: laterUnmoved() and strippedTemplates() last for the whole TU, passSkips() only for
 /// the pass being run.
 class Pipeline {
   public:
@@ -731,8 +737,13 @@ class Pipeline {
     std::string m_before_decl_before_def;
 };
 
-// Each pass runs until it changes nothing, if it repeats, then the next. A rerun from
-// decl-before-def jumps m_pass back, see rerunFromDeclBeforeDef, and the loop carries on from there.
+// The passes run one after the other. A pass that repeats, eg. hoist-calls, which pulls out one level
+// of nested calls per iteration, runs until an iteration changes nothing; the others run once. When
+// runIteration asks for a rerun from decl-before-def, rerunFromDeclBeforeDef has already put the
+// source back and set m_pass to just before decl-before-def, so the loop simply goes on from there.
+// After the last pass, the code is checked once more for templates decl-before-def reduced to
+// declarations that it still needs, which can also rerun from decl-before-def. --stop-after ends
+// the run after the pass of that name.
 PipelineResult Pipeline::run(const std::string& source) {
     m_out.source = source;
     m_decl_before_def = m_passes.size();
