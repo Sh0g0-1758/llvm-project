@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── NameTemplateTypeParmVisitor ──────────────────────────────────────────────
+// --- NameTemplateTypeParmVisitor ----------------------------------------------
 
 NameTemplateTypeParmVisitor::NameTemplateTypeParmVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_index(0) { }
@@ -48,7 +48,7 @@ bool NameTemplateTypeParmVisitor::VisitTemplateTypeParmDecl(clang::TemplateTypeP
     return true;
 }
 
-// Names an unnamed non-type template parameter, eg. `template <int>` → `template <int __non_type_param__0 >`,
+// Names an unnamed non-type template parameter, eg. `template <int>` => `template <int __non_type_param__0 >`,
 // for the same reason. The name goes where clang locates the missing name, after the type.
 bool NameTemplateTypeParmVisitor::VisitNonTypeTemplateParmDecl(clang::NonTypeTemplateParmDecl* decl) {
     if (decl->getIdentifier() != nullptr) return true;

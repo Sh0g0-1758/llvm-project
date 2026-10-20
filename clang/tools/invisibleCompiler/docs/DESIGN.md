@@ -6,7 +6,7 @@ tool produces, the rules every pass follows, and what each pass does, with the t
 output as examples. Read it before the code: every file maps to a section here.
 
 It describes monomorphization as of v17 (12 October 2026) with the fixes ported onto it, built
-standalone against a production LLVM (§12).
+standalone against a production LLVM (section 12).
 
 Contents
 
@@ -38,23 +38,23 @@ Everything else, the preprocessing passes included, exists to make that possible
   the inliner can paste a body in front of it without reasoning about evaluation order.
 - Every called function must have a **body in the text**, which the inliner can copy. An
   instantiation such as `std::vector<int>::size()` has no text of its own until it is written
-  out, as a free function of its own (a copy, §7) or as a specialization.
+  out, as a free function of its own (a copy, section 7) or as a specialization.
 - Every function must be **declared before any definition**. Then a pasted body can call
   anything.
 
 ```
- input.cc ──► preprocess (14 passes) ──► pre.cc ──► clang -O2 -fsave-optimization-record
-                                            │                         │
-                                            │                    opt.yaml ──► oracle.txt
-                                            ▼                                    │
-                                   invisible inline ◄────────────────────────────┘
-                                            │
-                                            ▼
+ input.cc --> preprocess (14 passes) --> pre.cc --> clang -O2 -fsave-optimization-record
+                                            |                         |
+                                            |                    opt.yaml --> oracle.txt
+                                            v                                    |
+                                   invisible inline <----------------------------+
+                                            |
+                                            v
                                        inlined.cc
 ```
 
 The oracle is one line per inlined call: `caller callee line`, with functions
-named by their mangled names (see §8).
+named by their mangled names (see section 8).
 
 ## 2. Pipeline at a glance
 
@@ -67,7 +67,7 @@ and hands the result on. `invisible --list-passes` prints the same list.
 | 1 | insert-braces | `if (c) x;` => `if (c) { x; }`; drops `extern template` | |
 | 2 | access-specifier | every member and base becomes `public` | |
 | 3 | name-template-type-parm | `template <class = void>` => `template <class __type_param__0 = void>` | |
-| 4 | materialize-lambda | a lambda becomes a named struct | ✓ |
+| 4 | materialize-lambda | a lambda becomes a named struct | yes |
 | 5 | decl-before-def | declarations first, every definition at the end, instantiations specialized | |
 | 6 | compound-stmt-wrapper | `for`, `if` and `switch` are wrapped in `{ }`, and the body of a `switch` | |
 | 7 | mark-switch-case | `case 1: f();` => `case 1: ; f();` | |
@@ -75,11 +75,11 @@ and hands the result on. `invisible --list-passes` prints the same list.
 | 9 | disassemble-cxx-for-range-stmt | `for (x : r)` => an iterator loop | |
 | 10 | loop-to-ir | a loop condition with a call becomes `if (!(cond)) break;` | |
 | 11 | comma-init | `int a = 1, b = f();` => one declaration each | |
-| 12 | short-circuit-to-ir | `&&`, `||` and  `?:` with calls become `if`s | ✓ |
-| 13 | constant-fold | constant expressions  become literals | ✓ |
-| 14 | hoist-calls | every nested call moves into a temporary of its own | ✓ |
+| 12 | short-circuit-to-ir | `&&`, `||` and  `?:` with calls become `if`s | yes |
+| 13 | constant-fold | constant expressions  become literals | yes |
+| 14 | hoist-calls | every nested call moves into a temporary of its own | yes |
 
-Passes 6–14 run on what decl-before-def wrote, and each prepares the code for the last one,
+Passes 6-14 run on what decl-before-def wrote, and each prepares the code for the last one,
 hoist-calls. A repeating pass runs until it changes nothing.
 
 Every pass only looks at C++ constructs when the input is C++. A C input runs the same
@@ -105,7 +105,7 @@ regression tests check the final output.
    `[[gnu::used]] inline`: weak, so duplicates across TUs merge, and `used`, so each one is
    still emitted for the optimization records.
 3. **It means the same.** A program prints and returns what the original does. The only
-   accepted differences are the object lifetimes that hoisting changes (§10).
+   accepted differences are the object lifetimes that hoisting changes (section 10).
 4. **Templates and friends stay as written** where they are needed as written. A
    dependent context is never rewritten by a pass after decl-before-def
    (`isLeftAsWritten`), and friends are left exactly as written.
@@ -150,10 +150,10 @@ retries (up to 20 attempts), attributing each error to the deferred definition o
 lines it falls in:
 
 - a deferred **specialization** that doesn't compile is left as written instead (`unmoved`);
-- a **copy** (§7) that doesn't compile is dropped (`dropped`), and its callers call the
+- a **copy** (section 7) that doesn't compile is dropped (`dropped`), and its callers call the
   original again;
 - an instantiation the output uses without a definition, whose template was stripped, has its
-  template left as written (`strippedTemplatesUsedIn`, as in §4.1).
+  template left as written (`strippedTemplatesUsedIn`, as in section 4.1).
 
 Both are fallbacks: they keep the TU compiling at the cost of a function that the inliner
 can't inline into. The verbose log reports them as `attempt N left X as written and Y
@@ -215,7 +215,7 @@ only while `B` is a private base. When the all-public version doesn't compile, t
 redone with the bases, and the constructors, destructors and assignment operators, **keeping
 their access** (`protected: ~buffer() = default; public:`). Everything else is still made
 public. A copy of a member that converts to a base left private doesn't compile then, and is
-dropped by decl-before-def (§4.2): its callers call the original.
+dropped by decl-before-def (section 4.2): its callers call the original.
 
 ### 5.3 name-template-type-parm
 
@@ -234,7 +234,7 @@ its type can be named, by a specialization of a template it's passed to, for exa
 
 ```cpp
 auto add = [a](int y) { return a + y; };
-        ↓
+        =>
 struct __invisible_lambda_0 {
   int a;
   inline constexpr int operator()(int y) const { return a + y; }
@@ -254,7 +254,7 @@ the pass repeats until none is left. It leaves a lambda alone when it can't expr
 
 ### 5.5 decl-before-def
 
-The heart of the tool; see §6. In short: every function is declared before any definition,
+The heart of the tool; see section 6. In short: every function is declared before any definition,
 and every definition the binary has is written at the end of the TU, instantiations as
 explicit specializations.
 
@@ -293,7 +293,7 @@ Writes a range-based `for` as the iterator loop the standard defines it as, so t
 
 ```cpp
 for (int x : xs) { a += x; }
-        ↓
+        =>
 {
 auto __for_begin_0 = xs;
 auto __for_end_0 = xs + 3L;
@@ -333,7 +333,7 @@ expression is spelled out as `if`s, so that hoisting the call keeps it condition
 
 ```cpp
 int both = argc > 1 && twice(b) > 4;
-        ↓
+        =>
 bool __short_circuit_result_0 = false;
 if (argc > 1) {
     if (twice(b) > 4) {
@@ -359,8 +359,8 @@ keeps its type:
 
 | Value of type | Written as | Why |
 |---|---|---|
-| `int`, `long`, `unsigned`… | `17`, `17L`, `17U` (`integerSuffix`) | the literal's type is the expression's |
-| `char`, `short`, `char16_t`… | `(char)36` | a bare `36` is an `int`: `D(char('$'))` would call `D(const T&)` instead |
+| `int`, `long`, `unsigned`... | `17`, `17L`, `17U` (`integerSuffix`) | the literal's type is the expression's |
+| `char`, `short`, `char16_t`... | `(char)36` | a bare `36` is an `int`: `D(char('$'))` would call `D(const T&)` instead |
 | minimum of a signed type wider than `int` | `(9223372036854775807L - 1)` | the literal of the minimum doesn't exist |
 | `float`, `double` | `1.5F`, `1.5` | full precision |
 
@@ -375,7 +375,7 @@ until every call is a statement. This is what the inliner needs.
 
 ```cpp
 return add(twice(clamp(box.get())));
-        ↓
+        =>
 int __func_hoist_ret__8 = box.get();
 int __func_hoist_ret__7 = clamp(static_cast<int &&>(__func_hoist_ret__8));
 int __func_hoist_ret__5 = twice(static_cast<int &&>(__func_hoist_ret__7));
@@ -391,7 +391,7 @@ return static_cast<int &&>(__func_hoist_ret__3);
   short-circuit-to-ir left as written isn't hoisted.
 - **Unevaluated operands.** Calls in `decltype`, `sizeof`, `noexcept` and `requires` aren't
   hoisted.
-- **Temporaries.** A call taking `__mono_addr(...)` (the address of a temporary, §7) isn't
+- **Temporaries.** A call taking `__mono_addr(...)` (the address of a temporary, section 7) isn't
   hoisted out of its statement.
 - **Constant expressions.** Calls in template arguments, `case` labels and `if constexpr`
   conditions are made by the compiler and aren't hoisted.
@@ -422,12 +422,12 @@ int twice(int ___var__1);
 class Counter { public: int n = 0; public: int next(); };
 template <class T> T sum(const T *___var__5, int ___var__7);
 
-// at the end: declarations…
+// at the end: declarations...
 int Counter::next();
 template<> int Box<int>::get() const;
 template<> int sum(const int *___var__5, int ___var__7);         // sum<int>, deduced
 
-// …then definitions
+// ...then definitions
 [[gnu::used]] inline int Counter::next(){ return ++this->n; }
 template<> [[gnu::used]] inline int sum(const int *___var__5, int ___var__7){ ... }
 ```
@@ -449,7 +449,7 @@ function the binary contains. Printing a specialization that compiles takes care
 | a constructor template's arguments can't be written | stripped (`stripConstructorTemplateArgs`) |
 | a pack's arguments are printed with extra `<>` | reprinted (`fixParameterPack`) |
 | written template arguments are substituted into every template of the name, which can fail hard, eg. `__niter_base<ostream_iterator<char>>` instantiating `reverse_iterator<ostream_iterator<char>>` | arguments omitted when they're all deducible and only one template deduces the type (`stripTemplateArguments`): `template<> int sum(const int *, int)` |
-| a class hidden by a function of its name, `struct stat` and `stat()` | not handled: the printer drops the keyword, the specialization doesn't compile and is left as written (§4.2, §10) |
+| a class hidden by a function of its name, `struct stat` and `stat()` | not handled: the printer drops the keyword, the specialization doesn't compile and is left as written (section 4.2, section 10) |
 | a type in an unnamed namespace | the definition is reopened in it (`enterUnnamedNamespace`) |
 | an instantiation of a `constexpr` function template that can never be constant, eg. constructing a `std::string` before C++23 | printed without `constexpr` (`printsConstexpr`); a member of a class template must keep it |
 | an enum template argument that's no enumerator, `VM<int, Mode(Search \| Backward)>` | every template argument is printed with its type, `VM<int, (Mode)5>`, and an integer with its suffix, `array<int, 3UL>` (`codePolicy`, clang's `AlwaysIncludeTypeForTemplateArgument`) |
@@ -489,7 +489,7 @@ decl-before-def runs four more visitors on the same AST first:
 
 - **`FunctionalCastToCStyleCast`.** `T(x)` becomes `(T)(x)` in the AST. Once specialized,
   `T(x)` with `T = unsigned long` would print as `unsigned long(x)`, which doesn't parse.
-- **`CanonicalizeVarDecl`.** The unique `___var__N` names of §6.1.
+- **`CanonicalizeVarDecl`.** The unique `___var__N` names of section 6.1.
 - **`BreakLocalRecordDeclStmt` and `MarkLocalRecordDeclMethodsExplicit`.** By default the
   printer hides a local class declared together with variables, and the implicit
   instantiations of its members. These visitors make it print both.
@@ -508,7 +508,7 @@ reduced to declarations. C has no templates.
 ```cpp
 Box<int> box{sum(xs, 3)};
 return add(twice(clamp(box.get())));
-        ↓
+        =>
 Box<int> box{sum__monocb30900316(xs, 3)};
 return operator__monofddf8e98a0(__builtin_addressof(add), twice(clamp(get__monof72ff75422(__builtin_addressof(box)))));
 
@@ -546,7 +546,7 @@ return operator__monofddf8e98a0(__builtin_addressof(add), twice(clamp(get__monof
 
 ### 7.2 What isn't copied
 
-These instantiations are written as explicit **specializations** instead (§6):
+These instantiations are written as explicit **specializations** instead (section 6):
 
 | Kind | Why |
 |---|---|
@@ -563,7 +563,7 @@ A template is reduced to a declaration unless something still needs its text:
   arguments, `if constexpr`, any `ConstantExpr`;
 - a call from a template that stays, so keeping spreads through calls (a closure);
 - an instantiation that can be neither copied nor specialized;
-- whatever the driver's recovery found a later pass needs (§4.1).
+- whatever the driver's recovery found a later pass needs (section 4.1).
 
 A template that's still called keeps its text.
 
@@ -582,7 +582,7 @@ and pastes each callee's body at the call on that line of the caller:
 
 ```cpp
 int &__func_hoist_ret__2 = at__mono1492d308f1(__func_hoist_ret__3, i);
-        ↓
+        =>
 int *__inline_ret__0;
 {Vec<int> *__inline_param__0_0 = __func_hoist_ret__3;
  int __inline_param__0_1 = i;
@@ -643,35 +643,35 @@ outputs of a project define twice, against the originals.
 - **Lifetimes.** A hoisted temporary lives until the end of its block, not of its full
   expression. Copy elision is lost and an extra move may happen. This is accepted.
 - **Access.** Members and bases made public change what access-based SFINAE sees. The pass
-  only notices when the TU stops compiling (§5.2); an overload that SFINAE silently chooses
+  only notices when the TU stops compiling (section 5.2); an overload that SFINAE silently chooses
   differently isn't noticed. Two runtime checks of a base's access change too, with no compile
   error to tell: a handler `catch (B&)` catches a `D` whose base `B` was private, and
   `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
-  (§4.2, §4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
+  (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.
 - **Constructors and destructors aren't inlined.** A destructor also runs on paths the source
   never writes (exceptions, scope exits).
 - **A class hidden by a function of its name.** `struct stat` next to the function `stat()`
   needs its keyword, which clang's printer drops in C++. Fixing that needs a change to clang's
   `TypePrinter`, which a tool linked against a production LLVM can't make, so a specialization
-  naming such a class is left as written (§4.2).
+  naming such a class is left as written (section 4.2).
 
 ## 11. Code map
 
 | Path | Contents |
 |---|---|
 | `main.cpp` | command line, modes, files |
-| `invisible.cpp` | the passes' list, decl-before-def's retries (§4.2), `Pipeline` and its recovery (§4); `oneForAll` |
+| `invisible.cpp` | the passes' list, decl-before-def's retries (section 4.2), `Pipeline` and its recovery (section 4); `oneForAll` |
 | `helper.cpp`, `helpers.h` | parsing in memory, the compile check, shared AST utilities |
-| `preprocess/<pass>/` | one directory per pass of §5 |
-| `preprocess/decl_before_def/DeclBeforeDefVisitor.*` | §6: deferring, and printing the specializations; §7: the copies (`monomorphize`, `copyHeader`, `redirectCalls`, at the end of the file) |
-| `preprocess/decl_before_def/KeepInPlaceVisitor.*` | what stays as written (§6.3, §7.3) |
+| `preprocess/<pass>/` | one directory per pass of section 5 |
+| `preprocess/decl_before_def/DeclBeforeDefVisitor.*` | section 6: deferring, and printing the specializations; section 7: the copies (`monomorphize`, `copyHeader`, `redirectCalls`, at the end of the file) |
+| `preprocess/decl_before_def/KeepInPlaceVisitor.*` | what stays as written (section 6.3, section 7.3) |
 | `common/DeclBeforeDefPrinterHelper.*` | how deferred bodies print around the printer's shortcomings; `MonoPrinterHelper`, which prints calls of copied functions as calls of their copies |
-| `constant_fold/` | §5.13, also a standalone optimization |
-| `inline/` | §8 |
+| `constant_fold/` | section 5.13, also a standalone optimization |
+| `inline/` | section 8 |
 | `copy_propagation/`, `dead_code_elim/`, `dead_store_elim/` | the `optimize` mode, outside this pipeline |
-| `test/` | §9.1 |
+| `test/` | section 9.1 |
 
 ## 12. Building
 

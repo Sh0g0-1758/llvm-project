@@ -17,17 +17,17 @@
 
 namespace invisible {
 
-// ─── InformationCollectorVisitor ──────────────────────────────────────
+// --- InformationCollectorVisitor --------------------------------------
 
-/// The `info` mode, a debugging aid: prints what clang knows of every function of the TU, its
-/// instantiations included, eg. whether it has a body, is a template instantiation or a friend,
-/// to stdout. It rewrites nothing.
+// The `info` mode, a debugging aid: prints what clang knows of every function of the TU, its
+// instantiations included, eg. whether it has a body, is a template instantiation or a friend,
+// to stdout. It rewrites nothing.
 class InformationCollectorVisitor : public clang::RecursiveASTVisitor<InformationCollectorVisitor> {
   public:
     InformationCollectorVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
-    /// prints the facts of @p func
+    // prints the facts of @p func
     bool VisitFunctionDecl(clang::FunctionDecl* func);
-    /// the instantiations are printed too
+    // the instantiations are printed too
     bool shouldVisitTemplateInstantiations() const;
 
   private:

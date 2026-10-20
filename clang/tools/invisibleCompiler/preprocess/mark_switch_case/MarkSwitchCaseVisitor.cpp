@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── MarkSwitchCaseVisitor ──────────────────────────────────────────────
+// --- MarkSwitchCaseVisitor ----------------------------------------------
 
 MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext&, clang::Rewriter& rewriter)
     : m_rewriter(rewriter) {}

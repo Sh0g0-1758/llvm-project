@@ -5,7 +5,7 @@
 
 namespace invisible {
 
-// ─── DisassembleCXXForRangeStmtVisitor ────────────────────────────
+// --- DisassembleCXXForRangeStmtVisitor ----------------------------
 
 DisassembleCXXForRangeStmtVisitor::DisassembleCXXForRangeStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)) {

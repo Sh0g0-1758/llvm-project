@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── transferLivenessStmtVisitor ──────────────────────────────────────────────
+// --- transferLivenessStmtVisitor ----------------------------------------------
 
 transferLivenessStmtVisitor::transferLivenessStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, live_variables_t& live_variables, bool do_updates, bool& did_elim, std::unordered_map<unsigned, bool>& source_loc_updated, std::unordered_map<clang::VarDecl*, bool>& aliased_and_global_vars) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_live_variables(live_variables), m_do_updates(do_updates), m_did_elim(did_elim), m_source_loc_updated(source_loc_updated), m_aliased_and_global_vars(aliased_and_global_vars) { }
 
@@ -366,7 +366,7 @@ bool transferLivenessStmtVisitor::TraverseBinaryOperator(clang::BinaryOperator* 
     else return clang::RecursiveASTVisitor<transferLivenessStmtVisitor>::TraverseBinaryOperator(bin_op);
 }
 
-// ─── AliasedAndGlobalVarCollector ──────────────────────────────────────────────
+// --- AliasedAndGlobalVarCollector ----------------------------------------------
 
 class AliasedAndGlobalVarCollector : public clang::RecursiveASTVisitor<AliasedAndGlobalVarCollector> {
 private:
@@ -450,7 +450,7 @@ public:
     }
 };
 
-// ─── deadStoreElimVisitor ──────────────────────────────────────────────
+// --- deadStoreElimVisitor ----------------------------------------------
 
 deadStoreElimVisitor::deadStoreElimVisitor(clang::ASTContext& context, clang::Rewriter& rewriter)
     : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_did_elim(false) {}
@@ -709,7 +709,7 @@ bool deadStoreElimVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
-// ─── dead-store-elimination ────────────────────────────────────────────
+// --- dead-store-elimination --------------------------------------------
 
 std::string deadStoreElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;

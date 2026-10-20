@@ -22,11 +22,11 @@
 
 namespace invisible {
 
-// ─── preprocess ────────────────────────────────────────────────────
+// --- preprocess ----------------------------------------------------
 
 namespace {
 
-/// What a pass does with the AST of its input: edit the text through the rewriter.
+// What a pass does with the AST of its input: edit the text through the rewriter.
 using Visit = std::function<void(clang::ASTContext&, clang::Sema&, clang::Rewriter&)>;
 
 // clang's printer writes `__typeof(x)` as `typeof(x)` and `__asm__("label")` as `asm("label")`,
@@ -60,14 +60,14 @@ std::string spellGnuKeywords(const std::string& source) {
     return result.append(source, copied, std::string::npos);
 }
 
-/// An explicit instantiation declaration, eg. `extern template class basic_string<char>;`, as
-/// the offsets of its text in the source.
+// An explicit instantiation declaration, eg. `extern template class basic_string<char>;`, as
+// the offsets of its text in the source.
 struct ExternTemplate {
     size_t begin, end;
 };
 
-/// The explicit instantiation declarations of @p source, found with the raw lexer: `extern template`
-/// up to the `;` that ends it, outside brackets.
+// The explicit instantiation declarations of @p source, found with the raw lexer: `extern template`
+// up to the `;` that ends it, outside brackets.
 std::vector<ExternTemplate> findExternTemplates(const std::string& source) {
     clang::LangOptions lang_opts;
     lang_opts.CPlusPlus = true;
@@ -95,7 +95,7 @@ std::vector<ExternTemplate> findExternTemplates(const std::string& source) {
     return found;
 }
 
-/// @p source without the explicit instantiation declarations @p decls, but those of @p kept.
+// @p source without the explicit instantiation declarations @p decls, but those of @p kept.
 std::string dropExternTemplates(const std::string& source, const std::vector<ExternTemplate>& decls, const std::set<size_t>& kept) {
     std::string result;
     size_t copied = 0;
@@ -107,8 +107,8 @@ std::string dropExternTemplates(const std::string& source, const std::vector<Ext
     return result.append(source, copied, std::string::npos);
 }
 
-/// The identifiers of @p text, eg. `basic_string`, `char` and `allocator` of
-/// `extern template class basic_string<char, allocator<char>>;`, numbers left out.
+// The identifiers of @p text, eg. `basic_string`, `char` and `allocator` of
+// `extern template class basic_string<char, allocator<char>>;`, numbers left out.
 std::vector<llvm::StringRef> identifiers(llvm::StringRef text) {
     std::vector<llvm::StringRef> words;
     auto is_word = [](char c) { return llvm::isAlnum(c) || c == '_'; };
@@ -121,8 +121,8 @@ std::vector<llvm::StringRef> identifiers(llvm::StringRef text) {
     return words;
 }
 
-/// The names of the functions and classes whose instantiation the notes of @p diagnostics report,
-/// eg. `__ostream_insert` and `basic_string` of `std::basic_string<char>::append`.
+// The names of the functions and classes whose instantiation the notes of @p diagnostics report,
+// eg. `__ostream_insert` and `basic_string` of `std::basic_string<char>::append`.
 std::set<std::string> instantiatedNames(const std::string& diagnostics) {
     static const llvm::Regex instantiation("note: in instantiation of [^']*'([^']+)' requested here");
     std::set<std::string> names;
@@ -144,40 +144,40 @@ std::set<std::string> instantiatedNames(const std::string& diagnostics) {
     return names;
 }
 
-/// Drops the explicit instantiation declarations of @p source, eg. libstdc++'s
-/// `extern template class basic_string<char>;`, so that what they name is instantiated in the TU.
-///
-/// The problem: such a declaration says the instantiation is in another TU, eg. libstdc++.so, and
-/// clang then gives the TU no instantiation of its own. With
-///
-///     template <class T> inline T twice(T x) { return x + x; }
-///     extern template int twice<int>(int);
-///     int use(int a) { return twice(a); }
-///
-///  - an inline function, as `twice` here or a member defined in its class, is still instantiated,
-///    but emitted `available_externally`: a body for the optimizer only, the code being the other
-///    TU's. LLVM inlines `twice<int>` into `use`, and calls into such bodies, eg. into a constructor
-///    of `basic_string<char>`, which decl-before-def can't write out, as a specialization after the
-///    declaration is an error. The oracle then names sites in functions that have no text of their
-///    own in the TU, only the template's, and the inliner finds no call there;
-///  - a function that isn't inline isn't instantiated at all: without the `inline`, `twice<int>`
-///    has no body, gets no copy, and its calls are never inlined.
-/// Dropped, the declarations leave plain instantiations, which are copied and specialized like any
-/// other, and on the dev units notably more oracle sites are inlined than with them kept.
-///
-/// Why it is right: the other TU's `twice<int>` is the template's body, as the TU's own instantiation
-/// is. A body of its own would be an explicit specialization, `template <> int twice<int>(int x)
-/// { return x * 3; }`, which every TU using `twice<int>` has to declare; a TU that doesn't is
-/// ill-formed, no diagnostic required. It links, and differs at run time: with the specialization
-/// in another TU only, `use` runs `x * 3` when `twice` isn't inline, the call reaching it, and
-/// `x + x` when it is, LLVM having inlined the template's body (see experiments/extern_template_odr).
-/// So in a valid program an instantiation made here is the one the binary uses, and LLVM relies on
-/// the same when it inlines an `available_externally` body.
-///
-/// Some can't be dropped: without `extern template ostream &__ostream_insert(ostream &, const char *,
-/// streamsize);` the TU instantiates `__ostream_insert`, which fails when basic_ostream is only
-/// declared. So all are dropped, and while that doesn't compile, those naming what the errors'
-/// instantiation notes name are put back. If it never compiles, the source is returned as it was.
+// Drops the explicit instantiation declarations of @p source, eg. libstdc++'s
+// `extern template class basic_string<char>;`, so that what they name is instantiated in the TU.
+//
+// The problem: such a declaration says the instantiation is in another TU, eg. libstdc++.so, and
+// clang then gives the TU no instantiation of its own. With
+//
+//     template <class T> inline T twice(T x) { return x + x; }
+//     extern template int twice<int>(int);
+//     int use(int a) { return twice(a); }
+//
+//  - an inline function, as `twice` here or a member defined in its class, is still instantiated,
+//    but emitted `available_externally`: a body for the optimizer only, the code being the other
+//    TU's. LLVM inlines `twice<int>` into `use`, and calls into such bodies, eg. into a constructor
+//    of `basic_string<char>`, which decl-before-def can't write out, as a specialization after the
+//    declaration is an error. The oracle then names sites in functions that have no text of their
+//    own in the TU, only the template's, and the inliner finds no call there;
+//  - a function that isn't inline isn't instantiated at all: without the `inline`, `twice<int>`
+//    has no body, gets no copy, and its calls are never inlined.
+// Dropped, the declarations leave plain instantiations, which are copied and specialized like any
+// other, and on the dev units notably more oracle sites are inlined than with them kept.
+//
+// Why it is right: the other TU's `twice<int>` is the template's body, as the TU's own instantiation
+// is. A body of its own would be an explicit specialization, `template <> int twice<int>(int x)
+// { return x * 3; }`, which every TU using `twice<int>` has to declare; a TU that doesn't is
+// ill-formed, no diagnostic required. It links, and differs at run time: with the specialization
+// in another TU only, `use` runs `x * 3` when `twice` isn't inline, the call reaching it, and
+// `x + x` when it is, LLVM having inlined the template's body (see experiments/extern_template_odr).
+// So in a valid program an instantiation made here is the one the binary uses, and LLVM relies on
+// the same when it inlines an `available_externally` body.
+//
+// Some can't be dropped: without `extern template ostream &__ostream_insert(ostream &, const char *,
+// streamsize);` the TU instantiates `__ostream_insert`, which fails when basic_ostream is only
+// declared. So all are dropped, and while that doesn't compile, those naming what the errors'
+// instantiation notes name are put back. If it never compiles, the source is returned as it was.
 std::string dropInstantiableExternTemplates(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::vector<ExternTemplate> decls = findExternTemplates(source);
     std::set<size_t> kept;
@@ -197,8 +197,8 @@ std::string dropInstantiableExternTemplates(const std::string& source, const std
     return source;
 }
 
-/// Runs @p visit on the AST of @p source and returns the rewritten source, its GNU keywords
-/// respelled. Every pass but insert-braces is a call of it.
+// Runs @p visit on the AST of @p source and returns the rewritten source, its GNU keywords
+// respelled. Every pass but insert-braces is a call of it.
 std::string rewrite(const std::string& source, const std::string& filename, std::vector<std::string>& args, const Visit& visit) {
     clang::Rewriter rewriter;
     return spellGnuKeywords(runInMemory(source, filename, args, [&rewriter, &visit](clang::ASTContext& ctx, clang::Sema& sema) {
@@ -222,9 +222,9 @@ std::string insertBraces(const std::string& source) {
     return formatted ? std::move(*formatted) : source;
 }
 
-/// Adds to @p kept the functions named by @p names (passKeys), or their templates, so that
-/// decl-before-def leaves them as written along with what KeepInPlaceVisitor found, eg. what a
-/// later pass needs, see laterUnmoved.
+// Adds to @p kept the functions named by @p names (passKeys), or their templates, so that
+// decl-before-def leaves them as written along with what KeepInPlaceVisitor found, eg. what a
+// later pass needs, see laterUnmoved.
 void keepByName(clang::ASTContext& ctx, const std::set<std::string>& names, std::set<const clang::FunctionDecl*>& kept) {
     if (names.empty()) return;
     struct Finder : clang::RecursiveASTVisitor<Finder> {
@@ -242,11 +242,11 @@ void keepByName(clang::ASTContext& ctx, const std::set<std::string>& names, std:
     finder.TraverseDecl(ctx.getTranslationUnitDecl());
 }
 
-/// The functions the errors of @p diagnostics are in, by passKey, which the per-function fallback
-/// leaves as written: for each `a.cc:812:5: error:`, the smallest definition of @p source around
-/// line 812, eg. the member of a local class rather than the function it is in. A lambda was made
-/// a struct before the function it was in, so an error in the struct is given to the next
-/// definition after it, that function.
+// The functions the errors of @p diagnostics are in, by passKey, which the per-function fallback
+// leaves as written: for each `a.cc:812:5: error:`, the smallest definition of @p source around
+// line 812, eg. the member of a local class rather than the function it is in. A lambda was made
+// a struct before the function it was in, so an error in the struct is given to the next
+// definition after it, that function.
 std::vector<std::string> functionsAround(const std::string& source, const std::string& filename, std::vector<std::string>& args,
                                          const std::string& diagnostics) {
     static const llvm::Regex error("^[^ ]*:([0-9]+):[0-9]+: error:");
@@ -298,24 +298,24 @@ std::vector<std::string> functionsAround(const std::string& source, const std::s
     return names;
 }
 
-/// What decl-before-def must leave as written because a later pass needs it, by passKey, eg. a
-/// template it reduced to a declaration whose instantiation hoist-calls writes, see
-/// neededAsWritten. Learned when a later pass fails, and kept through the reruns of the TU.
+// What decl-before-def must leave as written because a later pass needs it, by passKey, eg. a
+// template it reduced to a declaration whose instantiation hoist-calls writes, see
+// neededAsWritten. Learned when a later pass fails, and kept through the reruns of the TU.
 std::set<std::string>& laterUnmoved() {
     static std::set<std::string> keys;
     return keys;
 }
 
-/// The templates decl-before-def reduced to declarations, by passKey: a template whose
-/// instantiations all got copies keeps only its declaration, eg. `template <class T> T twice(T);`.
-/// Kept for the TU, as a later pass can still need one.
+// The templates decl-before-def reduced to declarations, by passKey: a template whose
+// instantiations all got copies keeps only its declaration, eg. `template <class T> T twice(T);`.
+// Kept for the TU, as a later pass can still need one.
 std::set<std::string>& strippedTemplates() {
     static std::set<std::string> keys;
     return keys;
 }
 
-/// The templates DeclBeforeDef reduced to declarations, by passKey, declared on @p lines of @p source,
-/// eg. the lines a `note: declared here` points at.
+// The templates DeclBeforeDef reduced to declarations, by passKey, declared on @p lines of @p source,
+// eg. the lines a `note: declared here` points at.
 std::set<std::string> strippedTemplatesDeclaredAt(const std::string& source, const std::string& filename,
                                                   std::vector<std::string>& args, const std::set<unsigned>& lines) {
     std::set<std::string> keys;
@@ -341,9 +341,9 @@ std::set<std::string> strippedTemplatesDeclaredAt(const std::string& source, con
     return keys;
 }
 
-/// The templates DeclBeforeDef reduced to declarations that @p source uses an instantiation of,
-/// by passKey: the instantiation is undefined, eg. a conversion to bool that hoist-calls writes
-/// for the variable of a condition, `bool b(ptr);`, where the conversion called before was copied.
+// The templates DeclBeforeDef reduced to declarations that @p source uses an instantiation of,
+// by passKey: the instantiation is undefined, eg. a conversion to bool that hoist-calls writes
+// for the variable of a condition, `bool b(ptr);`, where the conversion called before was copied.
 std::set<std::string> strippedTemplatesUsedIn(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::set<std::string> keys;
     if (strippedTemplates().empty()) return keys;
@@ -366,14 +366,14 @@ std::set<std::string> strippedTemplatesUsedIn(const std::string& source, const s
     return keys;
 }
 
-/// decl-before-def only sees the code as it was when it ran, and a later pass can write code that
-/// needs what it took away. This finds two such errors in the @p diagnostics of @p source and
-/// returns what decl-before-def must then leave as written, by passKey:
-///  - a note pointing at a template it reduced to a declaration, eg. hoist-calls writes
-///    `bool b(ptr);` for a condition, which instantiates the conversion to bool of `ptr`'s class,
-///    whose template was reduced as the call decl-before-def saw went to a copy;
-///  - "explicit specialization after instantiation" on a specialization it wrote, which the new
-///    code instantiates before the specialization is declared.
+// decl-before-def only sees the code as it was when it ran, and a later pass can write code that
+// needs what it took away. This finds two such errors in the @p diagnostics of @p source and
+// returns what decl-before-def must then leave as written, by passKey:
+//  - a note pointing at a template it reduced to a declaration, eg. hoist-calls writes
+//    `bool b(ptr);` for a condition, which instantiates the conversion to bool of `ptr`'s class,
+//    whose template was reduced as the call decl-before-def saw went to a copy;
+//  - "explicit specialization after instantiation" on a specialization it wrote, which the new
+//    code instantiates before the specialization is declared.
 std::set<std::string> neededAsWritten(const std::string& source, const std::string& filename, std::vector<std::string>& args,
                                       const std::string& diagnostics) {
     static const llvm::Regex declared("^[^ ]*:([0-9]+):[0-9]+: note: .*(declared here|declaration of template entity is here)");
@@ -398,22 +398,22 @@ std::set<std::string> neededAsWritten(const std::string& source, const std::stri
     return keys;
 }
 
-/// What a run of DeclBeforeDef wrote, and what the retries of declBeforeDef learn from it: which
-/// lines of the result each deferred function is on, which copy each `__mono` name stands for, which
-/// declaration replaced which definition, and which templates were reduced to declarations.
+// What a run of DeclBeforeDef wrote, and what the retries of declBeforeDef learn from it: which
+// lines of the result each deferred function is on, which copy each `__mono` name stands for, which
+// declaration replaced which definition, and which templates were reduced to declarations.
 struct DeclBeforeDefRun {
     std::string source;
-    /// what it put at the end, and the lines of each function in it
+    // what it put at the end, and the lines of each function in it
     std::string deferred;
     std::vector<DeclBeforeDefVisitor::Entry> entries;
     std::map<std::string, std::string> copy_keys;
     std::vector<std::pair<std::string, std::string>> replaced, stripped;
 };
 
-/// Runs decl-before-def once, leaving the functions of @p unmoved as written and giving those of
-/// @p dropped no copy. Its helper visitors change the AST, eg. rename the local variables, and the
-/// changes only show in what decl-before-def prints from that same AST, so they all run in this one
-/// parse: what stays in place is found first, then the AST is changed, then everything is printed.
+// Runs decl-before-def once, leaving the functions of @p unmoved as written and giving those of
+// @p dropped no copy. Its helper visitors change the AST, eg. rename the local variables, and the
+// changes only show in what decl-before-def prints from that same AST, so they all run in this one
+// parse: what stays in place is found first, then the AST is changed, then everything is printed.
 DeclBeforeDefRun runDeclBeforeDef(const std::string& source, const std::string& filename, std::vector<std::string>& args,
                                   const std::set<std::string>& unmoved, const std::set<std::string>& dropped) {
     DeclBeforeDefRun run;
@@ -447,15 +447,15 @@ DeclBeforeDefRun runDeclBeforeDef(const std::string& source, const std::string& 
     return run;
 }
 
-/// Blames the errors of @p diagnostics on what @p run wrote: a specialization, or a declaration
-/// written in place of a definition, is left as written (@p unmoved), and a copy isn't given
-/// (@p dropped). Returns whether either grew. eg. for
-///
-///     a.cc:4123:12: error: no member named 'x' in 'Box<int>'
-///
-/// when line 4123 is in the deferred specialization of `Box<int>::get`, that specialization is
-/// left as written on the next attempt; when it is in the copy `get__mono3f2a...`, no copy is
-/// given and its callers call `Box<int>::get` as written.
+// Blames the errors of @p diagnostics on what @p run wrote: a specialization, or a declaration
+// written in place of a definition, is left as written (@p unmoved), and a copy isn't given
+// (@p dropped). Returns whether either grew. eg. for
+//
+//     a.cc:4123:12: error: no member named 'x' in 'Box<int>'
+//
+// when line 4123 is in the deferred specialization of `Box<int>::get`, that specialization is
+// left as written on the next attempt; when it is in the copy `get__mono3f2a...`, no copy is
+// given and its callers call `Box<int>::get` as written.
 bool blameErrors(const DeclBeforeDefRun& run, const std::string& diagnostics, std::set<std::string>& unmoved,
                  std::set<std::string>& dropped) {
     bool changed = false;
@@ -523,12 +523,12 @@ bool blameErrors(const DeclBeforeDefRun& run, const std::string& diagnostics, st
     return changed;
 }
 
-/// decl-before-def writes every deferred definition, specialization and copy of the TU, and some of
-/// it may not compile, eg. a specialization the printer gets wrong. So it is retried: the errors
-/// are blamed on what it wrote (blameErrors), which is left as written or not copied on the next
-/// attempt, up to 20 more times, until it compiles or the errors blame nothing new. The last
-/// attempt is returned either way, and the driver's check fails the pass if it still doesn't
-/// compile. See docs/DESIGN.md section 4.2.
+// decl-before-def writes every deferred definition, specialization and copy of the TU, and some of
+// it may not compile, eg. a specialization the printer gets wrong. So it is retried: the errors
+// are blamed on what it wrote (blameErrors), which is left as written or not copied on the next
+// attempt, up to 20 more times, until it compiles or the errors blame nothing new. The last
+// attempt is returned either way, and the driver's check fails the pass if it still doesn't
+// compile. See docs/DESIGN.md section 4.2.
 std::string declBeforeDef(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::set<std::string> dropped, unmoved = laterUnmoved();
     std::vector<std::string> check_args = args;
@@ -550,16 +550,16 @@ std::string declBeforeDef(const std::string& source, const std::string& filename
     }
 }
 
-/// A preprocess pass: its name and how to run one iteration of it.
+// A preprocess pass: its name and how to run one iteration of it.
 struct Pass {
     PassInfo info;
-    /// Runs one iteration on @p source and returns its output. A repeating pass
-    /// sets @p changed to run again.
+    // Runs one iteration on @p source and returns its output. A repeating pass
+    // sets @p changed to run again.
     std::function<std::string(const std::string& source, unsigned iteration, bool& changed)> run;
 };
 
-/// Runs @p Visitor, made of the AST and the rewriter, over the TU once, eg.
-/// `visitOnce<CommaInitVisitor>(source, filename, args)` for a pass that is just a visitor.
+// Runs @p Visitor, made of the AST and the rewriter, over the TU once, eg.
+// `visitOnce<CommaInitVisitor>(source, filename, args)` for a pass that is just a visitor.
 template <class Visitor>
 std::string visitOnce(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     return rewrite(source, filename, args, [](clang::ASTContext& ctx, clang::Sema&, clang::Rewriter& rewriter) {
@@ -567,8 +567,8 @@ std::string visitOnce(const std::string& source, const std::string& filename, st
     });
 }
 
-/// The preprocess passes in order, see docs/DESIGN.md section 5. @p current_index numbers the
-/// variables short-circuit-to-ir and hoist-calls name.
+// The preprocess passes in order, see docs/DESIGN.md section 5. @p current_index numbers the
+// variables short-circuit-to-ir and hoist-calls name.
 std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector<std::string>& args, size_t& current_index) {
     std::vector<Pass> passes;
 
@@ -669,7 +669,7 @@ std::vector<Pass> buildPreprocessPasses(const std::string& filename, std::vector
     return passes;
 }
 
-/// The number of lines of @p text, for PassStats.
+// The number of lines of @p text, for PassStats.
 size_t countLines(const std::string& text) {
     return std::count(text.begin(), text.end(), '\n');
 }
@@ -688,23 +688,23 @@ std::vector<PassInfo> preprocessPasses() {
 
 namespace {
 
-/// Runs the preprocess passes in order, each on the previous one's output. A pass rewrites code, and
-/// what it writes may not compile, eg. hoist-calls declaring a temporary of a type that can't be
-/// named where it puts it. So every iteration is compiled, and when it doesn't compile, the
-/// functions the errors are in are left as written and the work is done again. Who leaves them
-/// depends on what went wrong:
-///  - decl-before-def wrote code that doesn't compile: it retries itself, leaving those functions
-///    as written or giving them no copy, see declBeforeDef;
-///  - a later pass needs something decl-before-def took away, eg. the body of a template it reduced
-///    to a declaration: decl-before-def is told to keep it (laterUnmoved), and every pass from
-///    decl-before-def on runs again, see rerunFromDeclBeforeDef;
-///  - otherwise the pass broke a function itself: it runs again, leaving that function as the pass
-///    before left it (passSkips), see runIteration.
-/// When nothing helps, the pipeline stops there and reports that pass. See docs/DESIGN.md section 4.
-///
-/// What the driver learns is kept in three global sets, as the visitors that read them run deep
-/// inside clang: laterUnmoved() and strippedTemplates() last for the whole TU, passSkips() only for
-/// the pass being run.
+// Runs the preprocess passes in order, each on the previous one's output. A pass rewrites code, and
+// what it writes may not compile, eg. hoist-calls declaring a temporary of a type that can't be
+// named where it puts it. So every iteration is compiled, and when it doesn't compile, the
+// functions the errors are in are left as written and the work is done again. Who leaves them
+// depends on what went wrong:
+//  - decl-before-def wrote code that doesn't compile: it retries itself, leaving those functions
+//    as written or giving them no copy, see declBeforeDef;
+//  - a later pass needs something decl-before-def took away, eg. the body of a template it reduced
+//    to a declaration: decl-before-def is told to keep it (laterUnmoved), and every pass from
+//    decl-before-def on runs again, see rerunFromDeclBeforeDef;
+//  - otherwise the pass broke a function itself: it runs again, leaving that function as the pass
+//    before left it (passSkips), see runIteration.
+// When nothing helps, the pipeline stops there and reports that pass. See docs/DESIGN.md section 4.
+//
+// What the driver learns is kept in three global sets, as the visitors that read them run deep
+// inside clang: laterUnmoved() and strippedTemplates() last for the whole TU, passSkips() only for
+// the pass being run.
 class Pipeline {
   public:
     Pipeline(const std::string& filename, std::vector<std::string>& args, const PipelineOptions& options)
@@ -713,13 +713,13 @@ class Pipeline {
     PipelineResult run(const std::string& source);
 
   private:
-    /// What became of an iteration of a pass: its output is accepted, the passes are run again
-    /// from decl-before-def, or the pipeline fails.
+    // What became of an iteration of a pass: its output is accepted, the passes are run again
+    // from decl-before-def, or the pipeline fails.
     enum class Outcome { Accepted, Rerun, Failed };
 
     Outcome runIteration(const Pass& pass, PassStats& stats, bool& changed);
-    /// Leaves @p keys as written from decl-before-def on, see neededAsWritten, and has the passes
-    /// run again from there, unless they are known or too many already are.
+    // Leaves @p keys as written from decl-before-def on, see neededAsWritten, and has the passes
+    // run again from there, unless they are known or too many already are.
     bool rerunFromDeclBeforeDef(const Pass& pass, const std::set<std::string>& keys);
     bool rerunFromDeclBeforeDef(const Pass& pass, const std::string& code) {
         return rerunFromDeclBeforeDef(pass, neededAsWritten(code, m_filename, m_args, lastCompileFailure().diagnostics));
@@ -731,7 +731,7 @@ class Pipeline {
     size_t m_current_index = 0;
     std::vector<Pass> m_passes;
     PipelineResult m_out;
-    /// the pass being run, and decl-before-def and its input
+    // the pass being run, and decl-before-def and its input
     size_t m_pass = 0;
     size_t m_decl_before_def = 0;
     std::string m_before_decl_before_def;
@@ -881,7 +881,7 @@ bool collectInfo(const std::string& source, const std::string& filename, std::ve
     return isCompilable(result, filename, args);
 }
 
-// ─── optimize ──────────────────────────────────────────────────────
+// --- optimize ------------------------------------------------------
 
 // The optimize mode: rounds of constant-fold, dce, copy-propagate, constant-fold, dce and
 // dead-store-elim, until a whole round changes nothing; each one is checked to compile.

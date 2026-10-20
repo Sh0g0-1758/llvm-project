@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── CommaInitVisitor ──────────────────────────────────────────────
+// --- CommaInitVisitor ----------------------------------------------
 
 CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)) {

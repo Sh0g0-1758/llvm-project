@@ -17,7 +17,7 @@
 
 namespace invisible {
 
-// ─── deadCodeElimVisitor ───────────────────────────────────────────
+// --- deadCodeElimVisitor -------------------------------------------
 
 class deadCodeElimVisitor : public clang::RecursiveASTVisitor<deadCodeElimVisitor> {
 private:
@@ -38,7 +38,7 @@ public:
     bool did_elim();
 };
 
-// ─── deadCodeElimCleanupVisitor ───────────────────────────────────────────
+// --- deadCodeElimCleanupVisitor -------------------------------------------
 
 class deadCodeElimCleanupVisitor : public clang::RecursiveASTVisitor<deadCodeElimCleanupVisitor> {
 private:
@@ -56,7 +56,7 @@ public:
     void merge_and_clean_removable_locs();
 };
 
-// ─── deadCodeElimCfgAnalysisVisitor ───────────────────────────────────────────
+// --- deadCodeElimCfgAnalysisVisitor -------------------------------------------
 
 class deadCodeElimCfgAnalysisVisitor : public clang::RecursiveASTVisitor<deadCodeElimCfgAnalysisVisitor> {
 private:

@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── InformationCollectorVisitor ──────────────────────────────────────────────
+// --- InformationCollectorVisitor ----------------------------------------------
 
 InformationCollectorVisitor::InformationCollectorVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) { }
@@ -50,7 +50,7 @@ bool InformationCollectorVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     llvm::outs() << "isDeleted                        : " << func->isDeleted() << "\n";
     llvm::outs() << "friendObjectKind(!=None)         : " << (func->getFriendObjectKind() != clang::Decl::FOK_None) << "\n";
 
-    // getTemplatedKind is an enum, not a bool — print it numerically
+    // getTemplatedKind is an enum, not a bool: print it numerically
     llvm::outs() << "getTemplatedKind (enum)          : " << func->getTemplatedKind() << "\n";
 
     return true;

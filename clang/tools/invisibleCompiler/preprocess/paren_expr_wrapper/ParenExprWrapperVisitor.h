@@ -18,16 +18,16 @@
 
 namespace invisible {
 
-// ─── ParenExprWrapperVisitor ──────────────────────────────────────
+// --- ParenExprWrapperVisitor --------------------------------------
 
-/// paren-expr-wrapper: parenthesizes every comma operator, so that what a later pass moves out of
-/// an operand doesn't change how it groups, see docs/DESIGN.md section 5.8.
+// paren-expr-wrapper: parenthesizes every comma operator, so that what a later pass moves out of
+// an operand doesn't change how it groups, see docs/DESIGN.md section 5.8.
 class ParenExprWrapperVisitor : public LaterPassVisitor<ParenExprWrapperVisitor> {
   public:
     ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
-    /// `a(), b()` => `(a(), b())`
+    // `a(), b()` => `(a(), b())`
     bool VisitBinaryOperator(clang::BinaryOperator* bin_op);
-    /// whether @p binary_op is directly in parentheses already
+    // whether @p binary_op is directly in parentheses already
     bool isWrappedWithParenExpr(const clang::BinaryOperator* binary_op);
   private:
     clang::ASTContext& m_ctx;

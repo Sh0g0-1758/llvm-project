@@ -17,7 +17,7 @@
 
 namespace invisible {
 
-// ─── deadStoreElimVisitor ───────────────────────────────────────────
+// --- deadStoreElimVisitor -------------------------------------------
 
 struct live_variables_t {
   bool m_is_bottom = true;

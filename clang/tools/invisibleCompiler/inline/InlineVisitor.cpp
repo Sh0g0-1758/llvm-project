@@ -17,7 +17,7 @@
 
 namespace invisible {
 
-// ─── FunctionParamRenamer ───────────────────────────────────────────
+// --- FunctionParamRenamer -------------------------------------------
 
 FunctionParamRenamer::FunctionParamRenamer(clang::ASTContext &C, std::map<int, std::string> &PR)
     : Ctx(C), callerParams(PR) {}
@@ -31,7 +31,7 @@ bool FunctionParamRenamer::VisitDeclRefExpr(clang::DeclRefExpr *DRE) {
     return true;
 }
 
-// ─── InlinePrinterHelper ───────────────────────────────────────────
+// --- InlinePrinterHelper -------------------------------------------
 
 InlinePrinterHelper::InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var, std::string bind_type,
                                          std::map<int, std::string> caller_params, clang::PrintingPolicy policy,
@@ -188,7 +188,7 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
     return false;
 }
 
-// ─── LabelMaker ───────────────────────────
+// --- LabelMaker ---------------------------
 
 // Renames the labels of a callee's body to labels of its own site, eg. `retry:` to
 // `__inline_label_3__0`: the same body pasted twice into one caller, or next to a label of the
@@ -214,7 +214,7 @@ public:
     }
 };
 
-// ─── InlineVisitor ─────────────────────────────────────────────────
+// --- InlineVisitor -------------------------------------------------
 
 InlineVisitor::InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
                              std::vector<size_t>& call_sites, size_t& current_index,
@@ -652,7 +652,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
     return true;
 }
 
-// ─── what the driver of the rounds is told ───
+// --- what the driver of the rounds is told ---
 
 bool InlineVisitor::matched() const { return m_matched; }
 
@@ -660,7 +660,7 @@ const std::string& InlineVisitor::skipped() const { return m_skipped; }
 
 size_t InlineVisitor::get_net_change() { return m_net_lines; }
 
-// ─── FunctionDeclMapVisitor ──────────────────────────────────────────────
+// --- FunctionDeclMapVisitor ----------------------------------------------
 
 // the rewriter and policy are kept for the interface's sake; only the names are used
 FunctionDeclMapVisitor::FunctionDeclMapVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
@@ -682,7 +682,7 @@ std::map<std::string, clang::FunctionDecl*>& FunctionDeclMapVisitor::get_functio
     return m_function_decl_map;
 }
 
-// ─── inline_functions ──────────────────────────────────────────────
+// --- inline_functions ----------------------------------------------
 
 // Sites are inlined in rounds, each from one parse and checked by one compile. A
 // round takes the sites whose callee no site left is inlined into, so that a body is

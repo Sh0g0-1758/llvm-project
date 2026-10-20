@@ -39,7 +39,7 @@ clang::SourceLocation endOf(const clang::Stmt* stmt, const clang::ASTContext& ct
 
 }  // namespace
 
-// ─── CompoundStmtWrapperVisitor ──────────────────────────────────────────────
+// --- CompoundStmtWrapperVisitor ----------------------------------------------
 
 CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) {}

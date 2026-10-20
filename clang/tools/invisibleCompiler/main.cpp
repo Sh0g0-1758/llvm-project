@@ -28,31 +28,31 @@
 
 namespace {
 
-// ─── Exit codes ────────────────────────────────────────────────────
+// --- Exit codes ----------------------------------------------------
 
 // what a script running invisible over a dataset tells apart: 3 is the input's fault, 1 a pass's
 
 enum ExitCode : int {
     Success = 0,
-    TransformFailed = 1,  ///< a pass produced code that doesn't compile, or didn't converge
-    UsageError = 2,       ///< bad command line, or a file couldn't be read or written
-    InputError = 3,       ///< the input doesn't compile to begin with
+    TransformFailed = 1,  // a pass produced code that doesn't compile, or didn't converge
+    UsageError = 2,       // bad command line, or a file couldn't be read or written
+    InputError = 3,       // the input doesn't compile to begin with
 };
 
-// ─── Modes ─────────────────────────────────────────────────────────
+// --- Modes ---------------------------------------------------------
 
-/// How a mode is run, see Driver::run.
+// How a mode is run, see Driver::run.
 enum class ModeKind { Preprocess, Info, SinglePass, Optimize, Inline };
 
-/// An optimization run once, eg. invisible::constant_fold: (source, filename, args, changed, compiles).
+// An optimization run once, eg. invisible::constant_fold: (source, filename, args, changed, compiles).
 using SinglePassFn = std::string (*)(const std::string&, const std::string&, std::vector<std::string>&, bool*, bool*);
 
-/// A mode of the command line, the first positional argument, eg. `preprocess`.
+// A mode of the command line, the first positional argument, eg. `preprocess`.
 struct Mode {
     const char* name;
     const char* description;
     ModeKind kind;
-    const char* default_output;  ///< `-` for stdout
+    const char* default_output;  // `-` for stdout
     SinglePassFn run = nullptr;
 };
 
@@ -68,14 +68,14 @@ const Mode modes[] = {
     {"inline", "Inline the call sites listed in the oracle file", ModeKind::Inline, "inlined.cpp"},
 };
 
-/// The mode named @p name, or null.
+// The mode named @p name, or null.
 const Mode* findMode(llvm::StringRef name) {
     for (const Mode& mode : modes)
         if (name == mode.name) return &mode;
     return nullptr;
 }
 
-// ─── Output helpers ────────────────────────────────────────────────
+// --- Output helpers ------------------------------------------------
 
 // Every message invisible prints itself starts `invisible: error:`, `warning:` or `note:`, like
 // clang's, colored as clang colors them when --color allows.
@@ -95,24 +95,24 @@ llvm::raw_ostream& note() {
     return llvm::WithColor(llvm::errs(), llvm::HighlightColor::Note, colorMode()).get() << "invisible: note: ";
 }
 
-/// Prints @p text in @p color, eg. a pass's `ok` or `FAILED`.
+// Prints @p text in @p color, eg. a pass's `ok` or `FAILED`.
 void printColored(llvm::raw_ostream& os, llvm::raw_ostream::Colors color, llvm::StringRef text, bool bold = true) {
     llvm::WithColor(os, color, bold, false, colorMode()) << text;
 }
 
-/// `2.31s` under a minute, `4m12s` from one.
+// `2.31s` under a minute, `4m12s` from one.
 std::string formatSeconds(double seconds) {
     if (seconds < 60) return llvm::formatv("{0:f2}s", seconds).str();
     return llvm::formatv("{0}m{1:f0}s", unsigned(seconds) / 60, seconds - 60 * (unsigned(seconds) / 60)).str();
 }
 
-/// `1 iteration`, `3 iterations`.
+// `1 iteration`, `3 iterations`.
 std::string plural(size_t count, llvm::StringRef word) {
     return std::to_string(count) + " " + word.str() + (count == 1 ? "" : "s");
 }
 
-/// Quote an argument for a shell command line, when it needs it, eg. for the reproduction command
-/// printed after a failure: `-DNAME="a b"` becomes `'-DNAME="a b"'`.
+// Quote an argument for a shell command line, when it needs it, eg. for the reproduction command
+// printed after a failure: `-DNAME="a b"` becomes `'-DNAME="a b"'`.
 std::string shellQuote(llvm::StringRef arg) {
     if (!arg.empty() && arg.find_first_of(" \t\"'\\$`!*?[]{}()<>|&;#~") == llvm::StringRef::npos) return arg.str();
     std::string quoted = "'";
@@ -120,7 +120,7 @@ std::string shellQuote(llvm::StringRef arg) {
     return quoted + "'";
 }
 
-/// The text of @p path, `-` for stdin, or nothing after reporting why it couldn't be read.
+// The text of @p path, `-` for stdin, or nothing after reporting why it couldn't be read.
 std::optional<std::string> readFile(llvm::StringRef path) {
     auto buffer = llvm::MemoryBuffer::getFileOrSTDIN(path, /*IsText=*/true);
     if (!buffer) {
@@ -133,7 +133,7 @@ std::optional<std::string> readFile(llvm::StringRef path) {
     return text;
 }
 
-/// Writes @p text to @p path, `-` for stdout; reports and returns false when it can't.
+// Writes @p text to @p path, `-` for stdout; reports and returns false when it can't.
 bool writeFile(llvm::StringRef path, llvm::StringRef text) {
     if (path == "-") {
         llvm::outs() << text;
@@ -150,10 +150,10 @@ bool writeFile(llvm::StringRef path, llvm::StringRef text) {
     return true;
 }
 
-// ─── Command line ──────────────────────────────────────────────────
+// --- Command line --------------------------------------------------
 
-/// The parsed command line: the mode, the input, invisible's options, and every other argument,
-/// which is clang's.
+// The parsed command line: the mode, the input, invisible's options, and every other argument,
+// which is clang's.
 struct CommandLine {
     std::string mode;
     std::string input;
@@ -171,7 +171,7 @@ struct CommandLine {
     std::vector<std::string> clang_flags;
 };
 
-/// The text of --help, also printed when no mode is given.
+// The text of --help, also printed when no mode is given.
 void printHelp(llvm::raw_ostream& os) {
     os << "OVERVIEW: invisible - source to source C/C++ transformations\n\n"
           "USAGE: invisible <mode> <input> [options] [clang flags...] [-- clang flags...]\n\n"
@@ -207,17 +207,17 @@ void printHelp(llvm::raw_ostream& os) {
           "  invisible preprocess b.cc -x c++ -std=c++23 --save-temps --time-passes\n";
 }
 
-/// clang options whose value is the next argument, so that it isn't taken for the input.
+// clang options whose value is the next argument, so that it isn't taken for the input.
 bool clangOptionTakesValue(llvm::StringRef arg) {
     static const char* const options[] = {"-x", "-I", "-D", "-U", "-include", "-isystem", "-iquote", "-idirafter",
                                           "-Xclang", "-target", "-arch", "-imacros", "-isysroot", "--sysroot"};
     return llvm::is_contained(options, arg);
 }
 
-/// Parses the command line: invisible's own options anywhere, the first two arguments that aren't
-/// options as the mode and the input, and everything else, or everything after `--`, for clang,
-/// eg. `invisible preprocess a.cc -x c++ -std=c++23 -q` gives clang `-x c++ -std=c++23`.
-/// Returns nothing after reporting a bad option.
+// Parses the command line: invisible's own options anywhere, the first two arguments that aren't
+// options as the mode and the input, and everything else, or everything after `--`, for clang,
+// eg. `invisible preprocess a.cc -x c++ -std=c++23 -q` gives clang `-x c++ -std=c++23`.
+// Returns nothing after reporting a bad option.
 std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
     CommandLine cl;
     std::vector<llvm::StringRef> positional;
@@ -301,10 +301,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char** argv) {
     return cl;
 }
 
-// ─── Progress ──────────────────────────────────────────────────────
+// --- Progress ------------------------------------------------------
 
-/// Prints one line per pass to stderr. On a terminal the line of the running
-/// pass is updated in place with its iteration count.
+// Prints one line per pass to stderr. On a terminal the line of the running
+// pass is updated in place with its iteration count.
 class Progress {
   public:
     explicit Progress(bool quiet) : m_quiet(quiet), m_live(llvm::errs().is_displayed()) {}
@@ -342,10 +342,10 @@ class Progress {
     std::string m_prefix;
 };
 
-/// The table of --time-passes, the slowest pass first, eg.
-///
-///     pass                       time      %   iterations
-///     hoist-calls              12.40s   41.2      37
+// The table of --time-passes, the slowest pass first, eg.
+//
+//     pass                       time      %   iterations
+//     hoist-calls              12.40s   41.2      37
 void printTimings(const std::vector<invisible::PassStats>& passes) {
     double total = 0;
     for (const auto& stats : passes) total += stats.seconds;
@@ -361,10 +361,10 @@ void printTimings(const std::vector<invisible::PassStats>& passes) {
     llvm::errs() << llvm::formatv("  {0,-24} {1,8}\n", "total", formatSeconds(total));
 }
 
-// ─── Running a mode ────────────────────────────────────────────────
+// --- Running a mode ------------------------------------------------
 
-/// Runs one mode on the input: reads it, checks it compiles, runs the mode, then writes the result
-/// or reports the failure with the failing code and a command reproducing it.
+// Runs one mode on the input: reads it, checks it compiles, runs the mode, then writes the result
+// or reports the failure with the failing code and a command reproducing it.
 class Driver {
   public:
     Driver(const CommandLine& cl, const Mode& mode) : m_cl(cl), m_mode(mode), m_progress(cl.quiet) {
@@ -376,7 +376,7 @@ class Driver {
         m_failed_path = failedPath(m_output, m_extension);
     }
 
-    /// The exit code of the mode, see ExitCode.
+    // The exit code of the mode, see ExitCode.
     int run() {
         auto source = readFile(m_cl.input);
         if (!source) return UsageError;
@@ -392,8 +392,8 @@ class Driver {
     }
 
   private:
-    /// Where the code of a failed pass goes. Clang is given this name too, so the
-    /// diagnostics point into a file that exists.
+    // Where the code of a failed pass goes. Clang is given this name too, so the
+    // diagnostics point into a file that exists.
     static std::string failedPath(llvm::StringRef output, llvm::StringRef extension) {
         if (output == "-") return ("invisible.failed" + extension).str();
         llvm::SmallString<256> path = llvm::sys::path::parent_path(output);
@@ -401,14 +401,14 @@ class Driver {
         return std::string(path);
     }
 
-    /// The flags a mode parses with, for the input check and the reproduction command.
+    // The flags a mode parses with, for the input check and the reproduction command.
     std::vector<std::string> flags(bool pipeline_flags) const {
         std::vector<std::string> args = m_cl.clang_flags;
         if (pipeline_flags) invisible::addPipelineFlags(args);
         return args;
     }
 
-    /// Checks that the input compiles, so that a broken input isn't blamed on a pass.
+    // Checks that the input compiles, so that a broken input isn't blamed on a pass.
     bool checkInput(const std::string& source, bool pipeline_flags) {
         std::string name = m_cl.input == "-" ? "stdin" + m_extension : m_cl.input;
         if (invisible::isCompilable(source, name, flags(pipeline_flags))) return true;
@@ -422,8 +422,8 @@ class Driver {
         return false;
     }
 
-    /// Reports the last compile failure: clang's diagnostics, where the failing code
-    /// was written and how to reproduce it.
+    // Reports the last compile failure: clang's diagnostics, where the failing code
+    // was written and how to reproduce it.
     void reportCompileFailure(llvm::StringRef what) {
         const auto& failure = invisible::lastCompileFailure();
         llvm::errs() << failure.diagnostics;
@@ -435,12 +435,12 @@ class Driver {
         llvm::errs() << "    " << command << " " << shellQuote(failure.filename) << "\n";
     }
 
-    /// Removes the failing code of an earlier run, which would mislead once this one succeeded.
+    // Removes the failing code of an earlier run, which would mislead once this one succeeded.
     void removeStaleFailure() {
         if (llvm::sys::fs::exists(m_failed_path)) llvm::sys::fs::remove(m_failed_path);
     }
 
-    /// Writes @p result to the output and says where, unless --quiet.
+    // Writes @p result to the output and says where, unless --quiet.
     int finishSuccess(const std::string& result, double seconds) {
         if (!writeFile(m_output, result)) return UsageError;
         removeStaleFailure();
@@ -451,8 +451,8 @@ class Driver {
         return Success;
     }
 
-    /// The preprocess mode: the pipeline of invisible::preprocess, with a progress line per pass and,
-    /// with --save-temps, the input and every pass's output written as `00-input.cc`, `01-insert-braces.cc`...
+    // The preprocess mode: the pipeline of invisible::preprocess, with a progress line per pass and,
+    // with --save-temps, the input and every pass's output written as `00-input.cc`, `01-insert-braces.cc`...
     int runPreprocess(const std::string& source) {
         auto start = std::chrono::steady_clock::now();
         m_last_flags = flags(true);
@@ -510,14 +510,14 @@ class Driver {
         return finishSuccess(result.source, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
     }
 
-    /// Where --save-temps writes the output of the @p index -th pass, eg. `invisible-temps/05-decl-before-def.cc`.
+    // Where --save-temps writes the output of the @p index -th pass, eg. `invisible-temps/05-decl-before-def.cc`.
     std::string tempPath(size_t index, llvm::StringRef name) const {
         llvm::SmallString<256> path(m_cl.save_temps);
         llvm::sys::path::append(path, llvm::formatv("{0}{1}-{2}{3}", index < 10 ? "0" : "", index, name, m_extension).str());
         return std::string(path);
     }
 
-    /// The info mode, see invisible::collectInfo.
+    // The info mode, see invisible::collectInfo.
     int runInfo(const std::string& source) {
         auto start = std::chrono::steady_clock::now();
         m_last_flags = flags(true);
@@ -531,7 +531,7 @@ class Driver {
         return finishSuccess(result, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
     }
 
-    /// One optimization run once, eg. `invisible constant-fold a.cc`, printed to stdout by default.
+    // One optimization run once, eg. `invisible constant-fold a.cc`, printed to stdout by default.
     int runSinglePass(const std::string& source) {
         auto start = std::chrono::steady_clock::now();
         m_last_flags = flags(false);
@@ -566,7 +566,7 @@ class Driver {
         return finishSuccess(result, stats.seconds);
     }
 
-    /// The optimize mode, see invisible::oneForAll.
+    // The optimize mode, see invisible::oneForAll.
     int runOptimize(const std::string& source) {
         auto start = std::chrono::steady_clock::now();
         m_last_flags = flags(true);
@@ -585,12 +585,12 @@ class Driver {
         return finishSuccess(result.source, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
     }
 
-    /// The inline mode: reads the oracle, the call sites clang -O2 inlined, eg.
-    ///
-    ///     _Z5totalR3VecIiE _Z6squarei 28
-    ///
-    /// and has invisible::inline_functions paste each callee's body at its call, see docs/DESIGN.md
-    /// section 8. It fails, exit code 1, unless every site was inlined, but writes the result anyway.
+    // The inline mode: reads the oracle, the call sites clang -O2 inlined, eg.
+    //
+    //     _Z5totalR3VecIiE _Z6squarei 28
+    //
+    // and has invisible::inline_functions paste each callee's body at its call, see docs/DESIGN.md
+    // section 8. It fails, exit code 1, unless every site was inlined, but writes the result anyway.
     int runInline(const std::string& source) {
         auto start = std::chrono::steady_clock::now();
         m_last_flags = flags(true);
@@ -635,7 +635,7 @@ class Driver {
     std::vector<std::string> m_last_flags;
 };
 
-/// The list of --list-passes.
+// The list of --list-passes.
 void printPasses() {
     auto passes = invisible::preprocessPasses();
     llvm::outs() << "The preprocess passes, in the order they run:\n\n";

@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── ParenExprWrapperVisitor ──────────────────────────────────────────────
+// --- ParenExprWrapperVisitor ----------------------------------------------
 
 ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) {}

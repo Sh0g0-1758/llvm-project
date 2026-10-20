@@ -21,7 +21,7 @@ const clang::FunctionDecl* namedFunction(const clang::Stmt* stmt) {
 
 }  // namespace
 
-// ─── KeepInPlaceVisitor ───────────────────────────────────────────
+// --- KeepInPlaceVisitor -------------------------------------------
 
 KeepInPlaceVisitor::KeepInPlaceVisitor(clang::ASTContext& ctx, const std::set<std::string>& names,
                                        const std::set<std::string>& dropped)
@@ -81,7 +81,7 @@ void KeepInPlaceVisitor::addUse(clang::SourceLocation loc, const clang::Function
     if (function && offsetOf(loc, offset)) m_uses.push_back({offset, function});
 }
 
-// ─── collection ───────────────────────────────────────────────────
+// --- collection ---------------------------------------------------
 
 // The seeds: what must stay as written whatever uses it. And the bodies, inside which a use doesn't
 // count, since a body is moved to the end with what it calls declared before it.
@@ -183,7 +183,7 @@ bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
     return true;
 }
 
-// ─── keep ─────────────────────────────────────────────────────────
+// --- keep ---------------------------------------------------------
 
 // eg. `auto View<__invisible_lambda_3>::begin()` can't be declared at the end, where the lambda's
 // struct is local to a function

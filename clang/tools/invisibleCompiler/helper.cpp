@@ -21,7 +21,7 @@
 
 namespace invisible {
 
-// ─── Settings shared by the passes ─────────────────────────────────
+// --- Settings shared by the passes ---------------------------------
 
 ToolSettings& settings() {
     static ToolSettings tool_settings;
@@ -65,7 +65,7 @@ const CompileFailure& lastCompileFailure() {
     return last_compile_failure;
 }
 
-// ─── Clang in-memory pass infrastructure ───────────────────────────
+// --- Clang in-memory pass infrastructure ---------------------------
 
 std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& original) {
     auto& SM = rewriter.getSourceMgr();
@@ -77,10 +77,10 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 
 namespace {
 
-/// Prints the errors, and their notes, of a run checked as a compiler builds it, which
-/// leaves warnings on, see checkAsCompiled. A note belongs to the diagnostic before it, so a
-/// note after a warning is dropped with it. The driver parses these lines, eg. `a.cc:12:3: error:`,
-/// and warnings in between would only be noise to it.
+// Prints the errors, and their notes, of a run checked as a compiler builds it, which
+// leaves warnings on, see checkAsCompiled. A note belongs to the diagnostic before it, so a
+// note after a warning is dropped with it. The driver parses these lines, eg. `a.cc:12:3: error:`,
+// and warnings in between would only be noise to it.
 class ErrorPrinter : public clang::TextDiagnosticPrinter {
   public:
     using TextDiagnosticPrinter::TextDiagnosticPrinter;
@@ -94,8 +94,8 @@ class ErrorPrinter : public clang::TextDiagnosticPrinter {
     bool m_printing = true;
 };
 
-/// Renders the diagnostics of a clang run into a string instead of stderr: a pass parses the
-/// source many times, and only the diagnostics of the run that fails are worth showing.
+// Renders the diagnostics of a clang run into a string instead of stderr: a pass parses the
+// source many times, and only the diagnostics of the run that fails are worth showing.
 void captureDiagnostics(clang::CompilerInstance& ci, llvm::raw_ostream& out) {
     ci.getDiagnosticOpts().ShowColors = settings().color;
     out.enable_colors(settings().color);
@@ -104,7 +104,7 @@ void captureDiagnostics(clang::CompilerInstance& ci, llvm::raw_ostream& out) {
     ci.setVerboseOutputStream(out);
 }
 
-/// Hands the whole TU, once parsed, to the pass's callback.
+// Hands the whole TU, once parsed, to the pass's callback.
 class InvisibleConsumer : public clang::ASTConsumer {
   public:
     explicit InvisibleConsumer(TUCallback callback, clang::CompilerInstance& ci) : m_callback(std::move(callback)), m_ci(ci) {}
@@ -116,7 +116,7 @@ class InvisibleConsumer : public clang::ASTConsumer {
     clang::CompilerInstance& m_ci;
 };
 
-/// The frontend action of runInMemory: diagnostics captured, then InvisibleConsumer.
+// The frontend action of runInMemory: diagnostics captured, then InvisibleConsumer.
 class InvisibleAction : public clang::ASTFrontendAction {
   public:
     InvisibleAction(TUCallback callback, llvm::raw_ostream& diagnostics)
@@ -209,8 +209,8 @@ bool isCompilable(const std::string& source, const std::string& filename,
 
 namespace {
 
-/// Whether the template argument @p arg can be named anywhere, see isNameableAnywhere: a type,
-/// each element of a pack, and a declaration, eg. the address `&local_fn` can't be of a local.
+// Whether the template argument @p arg can be named anywhere, see isNameableAnywhere: a type,
+// each element of a pack, and a declaration, eg. the address `&local_fn` can't be of a local.
 bool isNameableArgument(const clang::TemplateArgument& arg) {
     switch (arg.getKind()) {
     case clang::TemplateArgument::Type:
@@ -506,8 +506,8 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
 
 namespace {
 
-/// Replaces every `this` of a body with an expression, by rewriting the child pointers of their
-/// parents, see replaceThis.
+// Replaces every `this` of a body with an expression, by rewriting the child pointers of their
+// parents, see replaceThis.
 class ReplaceThisVisitor : public clang::RecursiveASTVisitor<ReplaceThisVisitor> {
   public:
     ReplaceThisVisitor(clang::Expr* replacement) : m_replacement(replacement) {}

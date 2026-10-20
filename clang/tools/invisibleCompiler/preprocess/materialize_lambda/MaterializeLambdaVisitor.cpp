@@ -19,14 +19,14 @@ namespace invisible {
 
 namespace {
 
-/// The type aliases local to @p function that are used in what is traversed, and
-/// the member types of @p record, whose scope the lambda is taken out of, eg. `It` in
-///
-///     void f() { using It = int*; auto g = [](It p) { return *p; }; }
-///
-/// The struct is put before f, where `It` isn't declared, so it repeats `using It = int*;`.
-/// It also tells whether the lambda names a class or enumeration local to the function, which
-/// can't be named before it at all.
+// The type aliases local to @p function that are used in what is traversed, and
+// the member types of @p record, whose scope the lambda is taken out of, eg. `It` in
+//
+//     void f() { using It = int*; auto g = [](It p) { return *p; }; }
+//
+// The struct is put before f, where `It` isn't declared, so it repeats `using It = int*;`.
+// It also tells whether the lambda names a class or enumeration local to the function, which
+// can't be named before it at all.
 struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
     const clang::FunctionDecl* function;
     const clang::DeclContext* record;
@@ -56,10 +56,10 @@ struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
     }
 };
 
-/// Prints a lambda's body in its record: its implicit member accesses are the
-/// ones of the `this` it captured, eg. `[this] { return size; }` in a template, whose `size` is
-/// unresolved, prints `this->__parent_this__->size`. Resolved accesses are rewritten in the AST
-/// instead, see replaceThis.
+// Prints a lambda's body in its record: its implicit member accesses are the
+// ones of the `this` it captured, eg. `[this] { return size; }` in a template, whose `size` is
+// unresolved, prints `this->__parent_this__->size`. Resolved accesses are rewritten in the AST
+// instead, see replaceThis.
 class LambdaBodyPrinterHelper : public DeclBeforeDefPrinterHelper {
   public:
     LambdaBodyPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy, std::string this_member)
@@ -87,7 +87,7 @@ class LambdaBodyPrinterHelper : public DeclBeforeDefPrinterHelper {
 
 }  // namespace
 
-// ─── MaterializeLambdaVisitor ──────────────────────────────────────────────
+// --- MaterializeLambdaVisitor ----------------------------------------------
 
 size_t MaterializeLambdaVisitor::s_counter = 0;
 

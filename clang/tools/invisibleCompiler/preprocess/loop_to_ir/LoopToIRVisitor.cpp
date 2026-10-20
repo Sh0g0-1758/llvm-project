@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── LoopToIRVisitor ──────────────────────────────────────────────
+// --- LoopToIRVisitor ----------------------------------------------
 
 LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)) {

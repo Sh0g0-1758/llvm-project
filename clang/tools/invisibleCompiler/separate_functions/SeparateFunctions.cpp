@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── FilterVisitor ─────────────────────────────────────────────────
+// --- FilterVisitor -------------------------------------------------
 
 FilterVisitor::FilterVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter) : m_ctx(ctx), m_rewriter(rewriter) {
     
@@ -55,7 +55,7 @@ std::string FilterVisitor::toJSON() {
     return result;
 }
 
-// ─── separate_functions ────────────────────────────────────────────
+// --- separate_functions --------------------------------------------
 
 std::string separate_functions(const std::string& source, const std::string& filename, std::vector<std::string>& args) {
     std::string result;

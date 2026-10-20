@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── DeclBeforeDefPrinterHelper ──────────────────────────────────────────────
+// --- DeclBeforeDefPrinterHelper ----------------------------------------------
 
 // the statements are printed as the code around them is: C++ spelling, with the definitions of
 // the tags they declare, eg. a local `struct Node { int v; };` keeps its members
@@ -242,7 +242,7 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
     return false;
 }
 
-// ─── MonoPrinterHelper ──────────────────────────────────────────────
+// --- MonoPrinterHelper ----------------------------------------------
 //
 // What is deferred calls the copies, see MonoPrinterHelper in the header: the AST still calls
 // the instantiations, which are only declared at the end, so the calls are respelled as the

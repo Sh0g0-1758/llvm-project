@@ -17,7 +17,7 @@
 
 namespace invisible {
 
-// ─── copyPropagationVisitor ───────────────────────────────────────────
+// --- copyPropagationVisitor -------------------------------------------
 
 struct reaching_copies_t {
   bool m_is_top = true;

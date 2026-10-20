@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── CanonicalizeVarDeclVisitor ──────────────────────────────────────────────
+// --- CanonicalizeVarDeclVisitor ----------------------------------------------
 
 CanonicalizeVarDeclVisitor::CanonicalizeVarDeclVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_next_index(0) { }

@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── MarkLocalRecordDeclMethodsExplicitVisitor ──────────────────────────────────────────────
+// --- MarkLocalRecordDeclMethodsExplicitVisitor ----------------------------------------------
 
 MarkLocalRecordDeclMethodsExplicitVisitor::MarkLocalRecordDeclMethodsExplicitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) { }

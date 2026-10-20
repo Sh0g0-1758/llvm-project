@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── ConstantFoldVisitor ──────────────────────────────────────────────
+// --- ConstantFoldVisitor ----------------------------------------------
 
 ConstantFoldVisitor::ConstantFoldVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter) { }
 
@@ -241,7 +241,7 @@ bool ConstantFoldVisitor::VisitExpr(clang::Expr* expr) {
     return true;
 }
 
-// ─── constant fold ────────────────────────────────────────────
+// --- constant fold --------------------------------------------
 
 // the `constant-fold` mode, outside the preprocess pipeline: the visitor repeated until it folds
 // nothing more, stopping at the last result that compiles

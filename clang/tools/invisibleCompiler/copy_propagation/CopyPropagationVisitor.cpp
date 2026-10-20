@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── transferStmtVisitor ──────────────────────────────────────────────
+// --- transferStmtVisitor ----------------------------------------------
 
 transferStmtVisitor::transferStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, clang::PrintingPolicy policy, reaching_copies_t& copies, bool do_updates, bool& did_propagate, std::unordered_map<unsigned, bool>& source_loc_updated) : m_ctx(ctx), m_rewriter(rewriter), m_policy(policy), m_copies(copies), m_do_updates(do_updates), m_did_propagate(did_propagate), m_source_loc_updated(source_loc_updated) { }
 
@@ -311,7 +311,7 @@ bool transferStmtVisitor::TraverseBinaryOperator(clang::BinaryOperator* bin_op) 
     else return clang::RecursiveASTVisitor<transferStmtVisitor>::TraverseBinaryOperator(bin_op);
 }
 
-// ─── varsInScopeCollector ──────────────────────────────────────────────
+// --- varsInScopeCollector ----------------------------------------------
 
 class varsInScopeCollector : public clang::RecursiveASTVisitor<varsInScopeCollector> {
 private:
@@ -372,7 +372,7 @@ public:
     }
 };
 
-// ─── copyPropagationVisitor ──────────────────────────────────────────────
+// --- copyPropagationVisitor ----------------------------------------------
 
 copyPropagationVisitor::copyPropagationVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), m_did_propagate(false) {
     if (m_ctx.getLangOpts().CPlusPlus)
@@ -632,7 +632,7 @@ bool copyPropagationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
-// ─── copy-propagation ────────────────────────────────────────────
+// --- copy-propagation --------------------------------------------
 
 std::string copyPropagation(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;

@@ -18,9 +18,9 @@ namespace invisible {
 
 namespace {
 
-/// How a use by value of a hoisted temporary of class type, eg. passing it to a parameter
-/// taken by value or returning it, makes its own object out of it: the unnamed result the
-/// temporary replaces needed neither.
+// How a use by value of a hoisted temporary of class type, eg. passing it to a parameter
+// taken by value or returning it, makes its own object out of it: the unnamed result the
+// temporary replaces needed neither.
 enum class ByValue { Move, ExplicitMove, Copy, ExplicitCopy, Impossible };
 
 // eg. a std::unique_ptr result is moved, a class with a copy constructor only is copied, and a
@@ -38,7 +38,7 @@ ByValue byValue(clang::Sema& sema, clang::QualType type) {
 
 }  // namespace
 
-// ─── FuncCallCleanupVisitor ────────────────────────────────────────
+// --- FuncCallCleanupVisitor ----------------------------------------
 
 FuncCallCleanupVisitor::FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter,
                                                size_t& current_index)

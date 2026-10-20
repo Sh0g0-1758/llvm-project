@@ -18,8 +18,8 @@ namespace invisible {
 
 namespace {
 
-/// Whether @p expr is a constant expression, which is left as written: it may have to
-/// be one, eg. initializing a constexpr variable, and has the same value either way.
+// Whether @p expr is a constant expression, which is left as written: it may have to
+// be one, eg. initializing a constexpr variable, and has the same value either way.
 bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
     if (expr->isValueDependent() || expr->isTypeDependent()) return false;
     // C has integer constant expressions only
@@ -28,7 +28,7 @@ bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
 
 }  // namespace
 
-// ─── ShortCircuitOperatorToIRVisitor ──────────────────────────────────────────────
+// --- ShortCircuitOperatorToIRVisitor ----------------------------------------------
 
 ShortCircuitOperatorToIRVisitor::ShortCircuitOperatorToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, size_t& current_index)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)), m_current_index(current_index), m_last_update_loc(0) {

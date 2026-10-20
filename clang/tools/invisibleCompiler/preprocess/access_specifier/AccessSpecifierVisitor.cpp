@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── AccessSpecifierVisitor ──────────────────────────────────────────────
+// --- AccessSpecifierVisitor ----------------------------------------------
 
 AccessSpecifierVisitor::AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool keep_observable_access)
     : m_ctx(ctx), m_rewriter(rewriter), m_keep_observable_access(keep_observable_access) { }
@@ -56,7 +56,7 @@ bool AccessSpecifierVisitor::VisitAccessSpecDecl(clang::AccessSpecDecl* access_d
 }
 
 // `class D : B` and `struct S : private B` become `class D : public B` and `struct S : public B`:
-// a copy of a member, `f__mono…(D *__this)`, converts its object to its bases outside the class.
+// a copy of a member, `f__mono...(D *__this)`, converts its object to its bases outside the class.
 void AccessSpecifierVisitor::makePublic(const clang::CXXBaseSpecifier& base, bool in_class) {
     switch (base.getAccessSpecifierAsWritten()) {
     case clang::AS_public:

@@ -6,7 +6,7 @@
 
 namespace invisible {
 
-// ─── FunctionalCastToCStyleCastVisitor ──────────────────────────────────────
+// --- FunctionalCastToCStyleCastVisitor --------------------------------------
 
 FunctionalCastToCStyleCastVisitor::FunctionalCastToCStyleCastVisitor(clang::ASTContext& ctx, clang::Sema& sema)
     : m_ctx(ctx), m_sema(sema), m_policy(codePolicy(ctx)) {

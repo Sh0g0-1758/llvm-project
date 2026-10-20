@@ -17,7 +17,7 @@
 
 namespace invisible {
 
-// ─── deadCodeElimVisitor ──────────────────────────────────────────────
+// --- deadCodeElimVisitor ----------------------------------------------
 
 // If while doing a structural change, it so happens that there is a label inside of it, 
 // then its possible that a goto statement outside this body jumps to this label via a 
@@ -208,7 +208,7 @@ bool deadCodeElimVisitor::VisitConditionalOperator(clang::ConditionalOperator* c
     return true;
 }
 
-// ─── LoopFlowCollector ──────────────────────────────────────────────
+// --- LoopFlowCollector ----------------------------------------------
 
 class LoopFlowCollector : public clang::RecursiveASTVisitor<LoopFlowCollector> {
 private:
@@ -265,7 +265,7 @@ bool deadCodeElimVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     return true;
 }
 
-// ─── deadCodeElimCfgAnalysisVisitor ──────────────────────────────────────────────
+// --- deadCodeElimCfgAnalysisVisitor ----------------------------------------------
 
 deadCodeElimCfgAnalysisVisitor::deadCodeElimCfgAnalysisVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), m_policy(m_ctx.getLangOpts()), did_remove(false) {
     if (m_ctx.getLangOpts().CPlusPlus)
@@ -559,7 +559,7 @@ bool deadCodeElimCfgAnalysisVisitor::VisitFunctionDecl(clang::FunctionDecl* func
     return true;
 }
 
-// ─── deadCodeElimCleanupVisitor ──────────────────────────────────────────────
+// --- deadCodeElimCleanupVisitor ----------------------------------------------
 
 deadCodeElimCleanupVisitor::deadCodeElimCleanupVisitor(clang::ASTContext& context, clang::Rewriter& rewriter) : m_ctx(context), m_rewriter(rewriter), did_remove(false) { }
 
@@ -645,7 +645,7 @@ void deadCodeElimCleanupVisitor::merge_and_clean_removable_locs() {
         m_rewriter.RemoveText({removable_loc.first, removable_loc.second});
 }
 
-// ─── dead-code-elimination ────────────────────────────────────────────
+// --- dead-code-elimination --------------------------------------------
 
 std::string deadCodeElim(const std::string& source, const std::string& filename, std::vector<std::string>& args, bool* did_change, bool* is_compilable) {
     std::string result = source;

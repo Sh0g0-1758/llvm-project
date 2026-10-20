@@ -16,7 +16,7 @@
 
 namespace invisible {
 
-// ─── BreakLocalRecordDeclStmtVisitor ──────────────────────────────────────────────
+// --- BreakLocalRecordDeclStmtVisitor ----------------------------------------------
 
 BreakLocalRecordDeclStmtVisitor::BreakLocalRecordDeclStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) { }
