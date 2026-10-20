@@ -823,10 +823,17 @@ Pipeline::Outcome Pipeline::runIteration(const Pass& pass, PassStats& stats, boo
     return Outcome::Accepted;
 }
 
-// eg. hoist-calls writes the variable of a condition, `bool b(ptr);`, which instantiates the
-// conversion to bool of `ptr`'s class, whose template decl-before-def reduced to a declaration as
-// the call it saw went to a copy: the template is kept as written from decl-before-def on. Capped
-// at 100 keys, after which the pass's own fallback is all there is.
+// A later pass can write code that needs what decl-before-def took away. eg. short-circuit-to-ir
+// turns `dir d(argc > 1 ? b.sub(1) : b);` into ifs that assign `__short_circuit_result_0 = b.sub(1);`.
+// That assignment is a call of `str<int>::operator=(str &&)`, whose `noexcept(traits<T>::nothrow())`
+// needs the body of `nothrow`, but decl-before-def had reduced `nothrow`'s template to a
+// declaration, as nothing used it when it ran. So @p keys, here `nothrow`, are added to
+// laterUnmoved(), the source goes back to what it was before decl-before-def, and the passes run
+// again from there, decl-before-def now leaving them as written.
+//
+// Returns whether it reruns. It doesn't when the failing pass isn't after decl-before-def, when
+// @p keys add nothing new, as rerunning again wouldn't change anything, or when 100 keys already
+// are, after which only the pass's own fallback is left.
 bool Pipeline::rerunFromDeclBeforeDef(const Pass& pass, const std::set<std::string>& keys) {
     size_t known = laterUnmoved().size();
     if (m_pass <= m_decl_before_def || known >= 100) return false;
