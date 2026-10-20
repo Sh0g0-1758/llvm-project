@@ -284,9 +284,7 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
     if (found == m_copies.end())
         return DeclBeforeDefPrinterHelper::handledStmt(stmt, stream);
 
-    // the object of a member function, a virtual one called on what it is: `p->draw()` of a
-    // virtual `draw` dispatches at run time, which a copy can't, so it stays a member call. A
-    // qualified call, `p->Base::draw()`, or one of a final function, doesn't dispatch.
+    // the object of a member function
     const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(callee);
     clang::Expr* object = nullptr;
     bool arrow = false;
@@ -301,13 +299,7 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
             return DeclBeforeDefPrinterHelper::handledStmt(stmt, stream);
         object = member->getBase();
         arrow = member->isArrow();
-        if (method->isVirtual() && !member->hasQualifier() && !method->hasAttr<clang::FinalAttr>() &&
-            !method->getParent()->hasAttr<clang::FinalAttr>())
-            return DeclBeforeDefPrinterHelper::handledStmt(stmt, stream);
     }
-    // a virtual member operator, eg. `a + b`, dispatches too
-    if (method && method->isVirtual() && first)
-        return DeclBeforeDefPrinterHelper::handledStmt(stmt, stream);
 
     // `obj.f(a)` becomes `f__mono...(__builtin_addressof(obj), a)` and `ptr->f(a)` becomes
     // `f__mono...(ptr, a)`. A temporary has no address of its own: `make().f()` becomes

@@ -27,8 +27,10 @@ namespace invisible {
 //    function that isn't a template, which a constant expression
 //    may evaluate through a concept or argument dependent lookup;
 //  - the functions of @p names (passKey), which a later pass needs as written.
-// Of what these use, only the templates and constexpr functions are kept, the others being
-// declared before they are called.
+// Of what is used outside the bodies and what these use, only the templates and constexpr
+// functions are kept, the others being declared before they are called, eg. `base` of
+// `template <class T> T add(T x, T y = T(base()))`. A function of a deduced return type used
+// outside the bodies is kept too, as its type is only known from its body.
 //
 // Monomorphization reduces the other templates to declarations, so it also keeps what an
 // instantiation that can be neither copied nor specialized uses. An instantiation named where a

@@ -469,8 +469,9 @@ Some functions keep their text in place, along with their instantiations:
 - **Ambiguous operators.** An operator template whose specialization can't be declared,
   because neither its arguments nor its type tell it from the other templates of its name
   (`keepAmbiguousOperators`).
-- **What `KeepInPlaceVisitor` finds.** Functions used outside function bodies, and what
-  those use; what a constant expression calls, in a template argument or a `static_assert` for
+- **What `KeepInPlaceVisitor` finds.** Templates and `constexpr` functions used outside
+  function bodies, and what those use; a plain function used there only needs its
+  declaration, unless its return type is deduced; what a constant expression calls, in a template argument or a `static_assert` for
   example, also in a body; and a function whose type or class can't be named elsewhere, such as
   a return type deduced to name a lambda's closure type.
 

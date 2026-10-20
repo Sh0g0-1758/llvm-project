@@ -1149,13 +1149,15 @@ namespace {
 
 // The functions given a copy, see DeclBeforeDefVisitor::monomorphize: the copyable template
 // instantiations, `constexpr` functions, which stay in place for the compiler to evaluate, and
-// what DeclBeforeDef leaves as written.
+// what DeclBeforeDef leaves as written. A virtual function isn't copied: its specialization is
+// written for the vtable anyway, and its calls call that.
 class CopiedCollector : public clang::RecursiveASTVisitor<CopiedCollector> {
   public:
     CopiedCollector(const std::set<const clang::FunctionDecl*>& kept) : m_kept(kept) {}
     bool shouldVisitTemplateInstantiations() const { return true; }
     bool VisitFunctionDecl(clang::FunctionDecl* func) {
-        if (isCopyable(func) && (isInstantiatedCopy(func) || func->isConstexpr() || isKeptByDeclBeforeDef(func, m_kept)))
+        if (isCopyable(func) && !isAlwaysSpecialized(func) &&
+            (isInstantiatedCopy(func) || func->isConstexpr() || isKeptByDeclBeforeDef(func, m_kept)))
             m_found.push_back(func);
         return true;
     }
@@ -1200,7 +1202,7 @@ clang::FunctionDecl* DeclBeforeDefVisitor::printedFunction(const std::string& na
 
 // Has the calls in @p node of what is given a copy call the copy, in the AST, as a call
 // in a declaration isn't printed with a PrinterHelper. A copy takes the object of a
-// member function first, a virtual function called on what it is is left be, eg.
+// member function first, eg.
 //
 //     v.push_back(x)            =>  push_back__mono...(__builtin_addressof(v), x)
 //     it->second.size()         =>  size__mono...(__builtin_addressof(it->second))
@@ -1242,21 +1244,17 @@ void DeclBeforeDefVisitor::redirectCalls(clang::Stmt*& node) {
     if (found == m_copies.end()) return;
 
     // the object: the first argument of a member operator, eg. `a` of `a + b`, or the base of
-    // the member expression, eg. `v` of `v.size()`; a virtual call that dispatches stays a call
+    // the member expression, eg. `v` of `v.size()`
     const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(callee);
     clang::Expr* object = nullptr;
     bool arrow = false;
     unsigned first = 0;
     if (llvm::isa<clang::CXXOperatorCallExpr>(call) && method) {
-        if (method->isVirtual()) return;
         if (method->isInstance()) object = call->getArg(0);
         first = 1;
     } else if (method && method->isInstance()) {
         auto* member = llvm::dyn_cast<clang::MemberExpr>(call->getCallee()->IgnoreParens());
         if (!member) return;
-        if (method->isVirtual() && !member->hasQualifier() && !method->hasAttr<clang::FinalAttr>() &&
-            !method->getParent()->hasAttr<clang::FinalAttr>())
-            return;
         object = member->getBase();
         arrow = member->isArrow();
     }

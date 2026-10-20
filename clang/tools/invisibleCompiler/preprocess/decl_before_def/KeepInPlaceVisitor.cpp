@@ -265,8 +265,10 @@ std::set<const clang::FunctionDecl*> KeepInPlaceVisitor::run() {
                                    [](unsigned at, const Range& body) { return at < body.first; });
         return it != bodies.begin() && offset < std::prev(it)->second;
     };
+    // eg. `decltype(f())` of `auto f()` needs the body of `f`
     for (const Use& use : m_uses)
-        if (!in_body(use.offset)) keep(use.function);
+        if (!in_body(use.offset))
+            keep(use.function, !use.function->getDeclaredReturnType()->getContainedDeducedType());
     // and what a kept function uses
     while (!m_work.empty()) {
         auto [range, templates] = m_work.back();
