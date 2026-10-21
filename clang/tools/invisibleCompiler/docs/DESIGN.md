@@ -414,7 +414,12 @@ For every function definition in the TU:
 2. A **declaration** of it is added at the end of the TU, followed by its **definition**.
 
 So every function is declared before any definition, and any deferred body can call any
-function, which is what a pasted body needs. For the demo:
+function, which is what a pasted body needs. The definitions at the end, deferred definitions,
+specializations and copies alike, keep the order of the input: a copy is written where the
+template it comes from is defined. So what must be defined before it is used, not just
+declared, eg. a copy a `constexpr` variable's initializer calls, is defined in time, as it was
+in the input. Specializations returning `auto` are the exception and come first
+(`deferredDefinitionOrder`). For the demo:
 
 ```cpp
 // in place

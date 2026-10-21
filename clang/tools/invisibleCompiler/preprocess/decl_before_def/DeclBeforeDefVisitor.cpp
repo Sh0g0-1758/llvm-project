@@ -575,6 +575,7 @@ void DeclBeforeDefVisitor::recordFunctionDefinition(clang::FunctionDecl* func, s
     // what is in an unnamed namespace is declared and defined in it again
     enterUnnamedNamespace(func, definition);
     enterUnnamedNamespace(func, declaration);
+    m_written.push_back({false, m_deferred_definitions.size()});
     m_deferred_definitions.push_back(definition);
     m_deferred_functions.push_back(func);
     m_deferred_keys.push_back(m_names.getName(func));
@@ -810,6 +811,10 @@ void DeclBeforeDefVisitor::replaceFunctionDeclaration(clang::FunctionDecl* func,
 //
 // Class templates aren't specialized, only the functions: a class is only a type.
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
+    // a copy is written at the end where the definition it copies is, eg. that of `twice<int>`
+    // where `twice` is defined, so that what is written at the end keeps the order of the TU
+    if (auto copies = m_copies_at.find(func); copies != m_copies_at.end())
+        for (size_t i : copies->second) m_written.push_back({true, i});
     if (isKeptByDeclBeforeDef(func, m_kept_in_place)) return true;
     // the instantiations of templates are given copies, so a template is only left as written when
     // something still needs it (see KeepInPlaceVisitor), and is otherwise reduced to a declaration.
@@ -970,7 +975,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 
 // a specialization whose return type is deduced keeps the `auto` of its template and
 // can't be called before it is defined. These are defined first, each after the
-// ones it calls, the others follow in order. eg. with `template <class T> auto get(T t)` and
+// ones it calls; returns their indices in the deferred definitions. eg. with `template <class T> auto get(T t)` and
 // `int use() { return get(1) + 1; }`, `template<> auto get(int t){...}` is written before `use`,
 // which would otherwise fail with "function 'get<int>' with deduced return type cannot be used
 // before it is defined".
@@ -1002,8 +1007,6 @@ std::vector<size_t> DeclBeforeDefVisitor::deferredDefinitionOrder() const {
     };
     for (size_t i = 0; i < m_deferred_functions.size(); ++i)
         if (deduced(m_deferred_functions[i])) place(i);
-    for (size_t i = 0; i < m_deferred_functions.size(); ++i)
-        if (!placed[i]) order.push_back(i);
     return order;
 }
 
@@ -1011,8 +1014,10 @@ std::vector<size_t> DeclBeforeDefVisitor::deferredDefinitionOrder() const {
 //  1. the helper `__mono_addr` that takes the address of a temporary object, when a copy is called;
 //  2. the declaration of every deferred definition;
 //  3. the declaration of every copy;
-//  4. the deferred definitions, see deferredDefinitionOrder;
-//  5. the definitions of the copies.
+//  4. the deferred definitions and the definitions of the copies, in the order of the TU, a copy
+//     where its function is written: what a definition needs defined before it, eg. the body of
+//     a function a `constexpr` variable's initializer calls, was before it in the input too. The
+//     specializations whose return type is deduced come first, see deferredDefinitionOrder.
 // Declaring everything first lets any definition call any function, and keeps a specialization
 // from being declared after a definition instantiated it, eg. `template<> int bar<int>()` after
 // `int zed() { return foo<int>(); }` where `foo<T>` calls `bar<T>`. Each entry's lines are recorded, see
@@ -1044,13 +1049,10 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 
     result += "\n";
     ++lines;
-    for (size_t i : deferredDefinitionOrder())
-        add(m_deferred_definitions[i], m_deferred_keys[i], false);
-
     // the copies, eg. `template <class T> struct Box { T v; T get() const { return v; } }` gives
     // `get` of `Box<int>` the copy `[[gnu::used]] inline int get__mono...(const Box<int> *__this){
     // return __this->v; }`
-    for (size_t i = 0; i < m_copied.size(); ++i) {
+    auto add_copy = [&](size_t i) {
         clang::FunctionDecl* func = m_copied[i];
         clang::Stmt* body = func->getBody();
         // `this` is the first parameter, and the names the body uses are looked up from the global namespace
@@ -1067,7 +1069,22 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         llvm::raw_string_ostream def_out(def);
         body->printPretty(def_out, &printer, m_copy_policy);
         add("[[gnu::used]] inline " + headers[i] + def_out.str(), m_names.getName(func), true);
+    };
+    std::vector<bool> deferred_done(m_deferred_definitions.size(), false);
+    std::vector<bool> copy_done(m_copied.size(), false);
+    for (size_t i : deferredDefinitionOrder()) {
+        deferred_done[i] = true;
+        add(m_deferred_definitions[i], m_deferred_keys[i], false);
     }
+    for (auto [copy, i] : m_written) {
+        if (copy ? copy_done[i] : deferred_done[i]) continue;
+        (copy ? copy_done : deferred_done)[i] = true;
+        if (copy) add_copy(i);
+        else add(m_deferred_definitions[i], m_deferred_keys[i], false);
+    }
+    // a copy of a function the traversal didn't reach still has to be defined
+    for (size_t i = 0; i < m_copied.size(); ++i)
+        if (!copy_done[i]) add_copy(i);
 
     // `__builtin_va_list` decayed in a parameter prints as `__va_list_tag *`, which isn't a name
     respellDecayedVaList(result);
@@ -1154,6 +1171,8 @@ void DeclBeforeDefVisitor::monomorphize() {
                                                                         : "operator";
         std::string name = copyName(base, key);
         m_copies[func->getCanonicalDecl()] = name;
+        const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern();
+        m_copies_at[pattern ? pattern : func->getDefinition()].push_back(m_copied.size());
         m_copied.push_back(func);
         m_copy_keys[name] = key;
     }

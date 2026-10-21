@@ -114,6 +114,12 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     // the name of the copy of each function given one, by canonical declaration, and those functions in order
     std::map<const clang::FunctionDecl*, std::string> m_copies;
     std::vector<clang::FunctionDecl*> m_copied;
+    // the indices in m_copied of the copies written where a definition is, eg. those of every
+    // instance of `template <class T> T twice(T x) {...}` where that definition is
+    std::map<const clang::FunctionDecl*, std::vector<size_t>> m_copies_at;
+    // what is written at the end, in the order of the TU: whether it is a copy, and its index in
+    // m_copied or in the deferred definitions
+    std::vector<std::pair<bool, size_t>> m_written;
     MonoPrinterHelper m_custom_printer;
 
     // -- what is written at the end, see getDeferredDefinitions --
