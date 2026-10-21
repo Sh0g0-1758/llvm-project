@@ -265,36 +265,6 @@ unsigned countDeducedTemplates(clang::Sema& sema, clang::FunctionDecl* func, boo
     return deduced;
 }
 
-namespace {
-
-// The instantiated operator templates that more than one template of their name deduces, with
-// or without their template arguments, eg. two `operator==` templates of the same signature
-// told apart only by their constraints: no specialization declaration names one of them alone.
-class AmbiguousOperatorCollector : public clang::RecursiveASTVisitor<AmbiguousOperatorCollector> {
-  public:
-    AmbiguousOperatorCollector(clang::Sema& sema, std::set<const clang::FunctionDecl*>& kept) : m_sema(sema), m_kept(kept) {}
-    bool shouldVisitTemplateInstantiations() const { return true; }
-    bool VisitFunctionDecl(clang::FunctionDecl* func) {
-        if (func->isOverloadedOperator() && func->isTemplateInstantiation() && !func->isDependentContext() &&
-            func->getPrimaryTemplate() && countDeducedTemplates(m_sema, func, false) > 1 &&
-            countDeducedTemplates(m_sema, func, true) > 1)
-            m_kept.insert(func->getTemplateInstantiationPattern()->getCanonicalDecl());
-        return true;
-    }
-
-  private:
-    clang::Sema& m_sema;
-    std::set<const clang::FunctionDecl*>& m_kept;
-};
-
-}  // namespace
-
-void keepAmbiguousOperators(clang::ASTContext& ctx, clang::Sema& sema, std::set<const clang::FunctionDecl*>& kept) {
-    if (!ctx.getLangOpts().CPlusPlus) return;
-    AmbiguousOperatorCollector collector(sema, kept);
-    collector.TraverseDecl(ctx.getTranslationUnitDecl());
-}
-
 // --- DeclBeforeDefVisitor ----------------------------------------------
 
 // the instantiations are what is deferred as specializations, or copied
@@ -1210,9 +1180,15 @@ clang::FunctionDecl* DeclBeforeDefVisitor::printedFunction(const std::string& na
 //     auto f = &twice<int>;     =>  auto f = &twice__mono...;
 void DeclBeforeDefVisitor::redirectCalls(clang::Stmt*& node) {
     // a constant expression is evaluated by the compiler, which needs the definition of what it
-    // calls before it, and a comparison rewritten from another, eg. `a != b` from `a == b`, is
-    // printed as written, not as the call it was rewritten to
-    if (!node || llvm::isa<clang::ConstantExpr, clang::CXXRewrittenBinaryOperator>(node)) return;
+    // calls before it
+    if (!node || llvm::isa<clang::ConstantExpr>(node)) return;
+    // a comparison rewritten from another calls the copy as what it was rewritten to, eg. `a != b`
+    // => `!operator__mono...(a, b)`
+    if (auto* rewritten = llvm::dyn_cast<clang::CXXRewrittenBinaryOperator>(node)) {
+        clang::Expr* form = rewrittenForm(m_ctx, rewritten, m_copies);
+        if (!form) return;
+        node = form;
+    }
     // the address of a function, rather than a call of it, is that of its copy, which has its type
     if (auto* call = llvm::dyn_cast<clang::CallExpr>(node)) m_callees.insert(call->getCallee()->IgnoreParenImpCasts());
     if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node); ref && !m_callees.count(ref))

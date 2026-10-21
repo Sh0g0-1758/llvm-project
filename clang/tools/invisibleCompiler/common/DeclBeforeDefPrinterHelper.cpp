@@ -248,6 +248,27 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 // the instantiations, which are only declared at the end, so the calls are respelled as the
 // copies are printed.
 
+// `a != b` is `!(a == b)`, `a < b` is `(a <=> b) < 0`, and reversed, `b < a` is `0 < (a <=> b)`.
+// Once a call in it is redirected, the comparison can't be printed as written, as clang prints it
+// from the rewritten form it no longer recognizes, so the rewritten form is printed instead. Its
+// `!` has no parentheses around its operand, which `!a == b` would need.
+clang::Expr* rewrittenForm(clang::ASTContext& ctx, clang::CXXRewrittenBinaryOperator* comparison,
+                           const std::map<const clang::FunctionDecl*, std::string>& copies) {
+    std::function<bool(const clang::Stmt*)> calls_copied = [&](const clang::Stmt* stmt) {
+        if (!stmt || llvm::isa<clang::ConstantExpr>(stmt)) return false;
+        if (const auto* call = llvm::dyn_cast<clang::CallExpr>(stmt))
+            if (const clang::FunctionDecl* callee = call->getDirectCallee(); callee && copies.count(callee->getCanonicalDecl()))
+                return true;
+        return llvm::any_of(stmt->children(), calls_copied);
+    };
+    clang::Expr* semantic = comparison->getSemanticForm();
+    if (!calls_copied(semantic)) return nullptr;
+    if (auto* negation = llvm::dyn_cast<clang::UnaryOperator>(semantic->IgnoreImplicit());
+        negation && !llvm::isa<clang::ParenExpr>(negation->getSubExpr()))
+        negation->setSubExpr(new (ctx) clang::ParenExpr(clang::SourceLocation(), clang::SourceLocation(), negation->getSubExpr()));
+    return semantic;
+}
+
 // the same policy as the base printer, kept here for the calls of copies it prints itself
 MonoPrinterHelper::MonoPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy,
                                      const std::map<const clang::FunctionDecl*, std::string>& copies)
@@ -277,6 +298,13 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
         stream << ";";
         return true;
     }
+    // a comparison rewritten from another calls the copy as what it was rewritten to, eg. `a != b`
+    // => `!operator__mono...(a, b)`
+    if (auto* rewritten = llvm::dyn_cast<clang::CXXRewrittenBinaryOperator>(stmt); rewritten && !m_constant)
+        if (clang::Expr* form = rewrittenForm(m_ctx, rewritten, m_copies)) {
+            form->printPretty(stream, this, m_policy);
+            return true;
+        }
     // a call of a function that has a copy, outside a constant expression
     auto* call = llvm::dyn_cast<clang::CallExpr>(stmt);
     const clang::FunctionDecl* callee = call ? call->getDirectCallee() : nullptr;

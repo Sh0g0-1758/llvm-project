@@ -466,9 +466,6 @@ Some functions keep their text in place, along with their instantiations:
 - **Explicitly instantiated templates.** `template void Data::reserve<true>(int);` needs the
   template's definition where it's written, and no specialization may follow it.
 - **Templates instantiated for a lambda's closure type.** The closure type can't be named.
-- **Ambiguous operators.** An operator template whose specialization can't be declared,
-  because neither its arguments nor its type tell it from the other templates of its name
-  (`keepAmbiguousOperators`).
 - **What `KeepInPlaceVisitor` finds.** Templates and `constexpr` functions used outside
   function bodies, and what those use; a plain function used there only needs its
   declaration, unless its return type is deduced; what a constant expression calls, in a template argument or a `static_assert` for
@@ -538,7 +535,11 @@ return operator__monofddf8e98a0(__builtin_addressof(add), twice(clamp(get__monof
   that a `PrinterHelper` never sees, such as the initializers of a local class's members. In
   the rest of what decl-before-def prints, a constructor's member initializers for example,
   `MonoPrinterHelper` prints a call of a copied function as a call of its copy, the object
-  first. A function's address, `&f`, becomes the copy's.
+  first. A function's address, `&f`, becomes the copy's. A comparison rewritten from another,
+  eg. `a != b` from `a == b`, or `a < b` from `<=>`, is written as what it was rewritten to once
+  a call in it goes to a copy: `!(operator__mono...(a, b))`, or `operator__mono...(a <=> b, 0)`
+  for a `<` whose `<=>` has no copy. clang can only print `a < b` while the calls under it are
+  the ones it made (`rewrittenForm`).
 - **`constexpr`.** A copy is `constexpr` exactly when its original instantiation can be a
   constant expression, the same rule as for specializations (`printsConstexpr`). The passes
   after decl-before-def still rewrite it. They leave as written only the `constexpr` functions

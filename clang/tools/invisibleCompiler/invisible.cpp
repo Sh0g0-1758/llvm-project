@@ -422,7 +422,6 @@ DeclBeforeDefRun runDeclBeforeDef(const std::string& source, const std::string& 
         // before the AST is changed below
         KeepInPlaceVisitor keep_in_place(ctx, unmoved, dropped);
         std::set<const clang::FunctionDecl*> kept_in_place = keep_in_place.run();
-        keepAmbiguousOperators(ctx, sema, kept_in_place);
         keepByName(ctx, unmoved, kept_in_place);
         // the constructors moving and copying hoisted temporaries will call
         instantiateConstructorsOfValues(ctx, sema);

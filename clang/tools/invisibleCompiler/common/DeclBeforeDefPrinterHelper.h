@@ -44,6 +44,11 @@ class DeclBeforeDefPrinterHelper : public clang::PrinterHelper {
     clang::PrintingPolicy m_policy;
 };
 
+// The form @p comparison was rewritten to, eg. `!(a == b)` for `a != b`, when it calls a function
+// of @p copies, else null.
+clang::Expr* rewrittenForm(clang::ASTContext& ctx, clang::CXXRewrittenBinaryOperator* comparison,
+                           const std::map<const clang::FunctionDecl*, std::string>& copies);
+
 // The printer of monomorphization: prints a call of a function that was given
 // a copy as a call of the copy, a free function taking the object of a member first, eg.
 //

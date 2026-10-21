@@ -184,9 +184,4 @@ bool isCopyable(const clang::FunctionDecl* func, bool specialized = false);
 // a virtual function, which can't be called as a free function.
 bool isAlwaysSpecialized(const clang::FunctionDecl* func);
 
-// Adds to @p kept the operator templates of which a specialization can't be declared, as
-// neither its template arguments nor its type tell its template from the others of its name,
-// eg. two `template <class T> bool operator==(const T&, const T&)` told apart only by `requires`.
-void keepAmbiguousOperators(clang::ASTContext& ctx, clang::Sema& sema, std::set<const clang::FunctionDecl*>& kept);
-
 }  // namespace invisible
