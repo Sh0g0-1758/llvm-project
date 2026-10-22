@@ -670,6 +670,10 @@ outputs of a project define twice, against the originals.
   constructor and a move constructor that isn't `noexcept`, `std::vector<T>` moves its elements
   when it grows, and once the copy constructor is public it copies them. A C++03-style
   noncopyable class, its copy constructor private and only declared, then fails to link.
+- **Layout.** A class whose data members are all private isn't POD, and under the Itanium ABI a
+  derived class may reuse its tail padding. Made public, it is POD and the padding isn't reused,
+  eg. `struct B : A { char d; }` of `A { private: int i; char c; }` grows from 8 to 12 bytes. The
+  binary agrees with itself, but not with code compiled from the original, eg. a prebuilt library.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
   (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.
