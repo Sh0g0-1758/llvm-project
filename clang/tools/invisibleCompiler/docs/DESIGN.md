@@ -325,6 +325,10 @@ while (clamp(a) > 100) {    =>   while (1) {
 `for`, `do` and condition variables (`while (T v = f())`, `if (init; cond)`) are handled
 alike. The comments of `LoopToIRVisitor.cpp` show each shape.
 
+"IR" refers to the shape the compiler lowers a loop to: in LLVM IR, the condition is a block
+that runs before every iteration and branches out of the loop. The pass writes that shape as
+source, `while (1)` for the loop and `if (!(cond)) break;` for the branch.
+
 ### 5.11 comma-init
 
 ```cpp
@@ -336,6 +340,9 @@ int a = 1, b = twice(argc);    =>   int a = 1;
 
 `&&`, `||` and `?:` evaluate an operand only sometimes. When an operand calls something, the
 expression is spelled out as `if`s, so that hoisting the call keeps it conditional.
+"IR" refers to the shape the compiler lowers these operators to: in LLVM IR, `a && f()` is a
+branch around the call of `f` and a phi that merges the result. The pass writes that shape as
+source, nested `if`s for the branches and `__short_circuit_result_N` for the phi.
 
 ```cpp
 int both = argc > 1 && twice(b) > 4;
