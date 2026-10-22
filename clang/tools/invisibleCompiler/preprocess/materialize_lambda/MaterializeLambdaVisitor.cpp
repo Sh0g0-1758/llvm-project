@@ -134,7 +134,8 @@ bool MaterializeLambdaVisitor::convertsToFunctionPointer(const clang::LambdaExpr
             return conversion && (decl->isUsed() || decl->isReferenced());
         }))
         return true;
-    // in a template the conversion isn't marked used, so look at where the lambda is used
+    // in a template, clang only marks the conversion used in the instantiations, not in the
+    // template's own lambda, so look at how the lambda is used: assigned to a function pointer, or `+`
     for (auto parents = m_ctx.getParents(*lambda); parents.size() == 1; parents = m_ctx.getParents(parents[0])) {
         if (const auto* var = parents[0].get<clang::VarDecl>()) return var->getType()->isFunctionPointerType();
         const auto* expr = parents[0].get<clang::Expr>();
