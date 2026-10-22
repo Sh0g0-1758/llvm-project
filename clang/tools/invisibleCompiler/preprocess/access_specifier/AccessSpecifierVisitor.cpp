@@ -21,15 +21,14 @@ namespace invisible {
 AccessSpecifierVisitor::AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool keep_observable_access)
     : m_ctx(ctx), m_rewriter(rewriter), m_keep_observable_access(keep_observable_access) { }
 
-// Only in the fallback the driver retries with (keep_observable_access), when making everything
-// public doesn't compile: a constructor, destructor or assignment operator keeps the access it is
-// declared with, eg.
+// With keep_observable_access, a constructor, destructor or assignment operator keeps the access
+// it is declared with, eg.
 //
 //     protected: ~buffer() = default;   =>   public: ... protected: ~buffer() = default; public: ...
 //
-// as code can tell its access, eg. `static_assert(!std::is_destructible_v<buffer>)` or a SFINAE
-// test choosing an overload. The member is put between its own access label and `public:`, the
-// members around it staying public. Implicit and out-of-line declarations have no label to keep.
+// Code can test that access, eg. `static_assert(!std::is_destructible_v<buffer>)` or a SFINAE
+// test. The driver retries with this when making everything public doesn't compile. Implicit and
+// out-of-line declarations have no label to keep.
 bool AccessSpecifierVisitor::VisitCXXMethodDecl(clang::CXXMethodDecl* method) {
     bool special = llvm::isa<clang::CXXConstructorDecl, clang::CXXDestructorDecl>(method) ||
                    method->isCopyAssignmentOperator() || method->isMoveAssignmentOperator();
@@ -82,9 +81,8 @@ void AccessSpecifierVisitor::makePublic(const clang::CXXBaseSpecifier& base, boo
 bool AccessSpecifierVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record) {
     if (!record->isThisDeclarationADefinition() || record->isLambda()) return true;
     // An explicit instantiation, `template class X<int>;` or a kept `extern template class X<int>;`,
-    // is visited (implicit instantiations aren't) and is a definition once instantiated, but its
-    // braces are the template's text, which the template's own visit makes public.
-    // Rewriting them again would write `public public B`. An explicit or partial specialization,
+    // is visited, but its source is the template's, which the template's own visit rewrites.
+    // Rewriting it again would write `public public B`. An explicit or partial specialization,
     // `template <> class X<int> { ... };`, has text of its own and is rewritten.
     if (const auto* spec = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record);
         spec && spec->getSpecializationKind() != clang::TSK_ExplicitSpecialization)

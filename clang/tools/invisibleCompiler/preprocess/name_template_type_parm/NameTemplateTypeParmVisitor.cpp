@@ -25,10 +25,10 @@ NameTemplateTypeParmVisitor::NameTemplateTypeParmVisitor(clang::ASTContext& ctx,
 //
 //     template <class = void, class...> struct S;   =>   template <class __type_param__0 = void, class... __type_param__1> struct S;
 //
-// decl-before-def replaces the definitions of a template's members with declarations it prints, and
-// the printer spells the class's own name inside it with the template's parameters, eg.
-// `void f(S other)` prints as `void f(S<type-parameter-0-0> other);` when the parameter is unnamed.
-// The name goes after the keyword, or after `...` of a pack.
+// decl-before-def prints declarations of a template's members. In them the printer spells the
+// class's own name with the template's parameters, and an unnamed one prints badly, eg.
+// `void f(S other)` => `void f(S<type-parameter-0-0> other);`. The name goes after the keyword,
+// or after the `...` of a pack.
 bool NameTemplateTypeParmVisitor::VisitTemplateTypeParmDecl(clang::TemplateTypeParmDecl* decl) {
     if (decl->getIdentifier() != nullptr) return true;
 

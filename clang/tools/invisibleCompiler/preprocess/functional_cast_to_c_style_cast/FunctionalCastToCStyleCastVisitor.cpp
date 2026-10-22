@@ -14,9 +14,9 @@ FunctionalCastToCStyleCastVisitor::FunctionalCastToCStyleCastVisitor(clang::ASTC
         m_policy.adjustForCPlusPlus();
 }
 
-// A cast is replaced through the slot of its parent that points to it, so the casts among the
-// children of a statement are replaced once its children are traversed. An InitListExpr keeps a
-// second list of the same children, its syntactic form, which is the one that is printed.
+// A cast is replaced through its parent's pointer to it, so a statement's children are replaced
+// after they are traversed. An InitListExpr has a second list of the same children, its syntactic
+// form, which is the one printed.
 bool FunctionalCastToCStyleCastVisitor::TraverseStmt(clang::Stmt* stmt) {
     if (!stmt) return true;
     if (!clang::RecursiveASTVisitor<FunctionalCastToCStyleCastVisitor>::TraverseStmt(stmt)) return false;

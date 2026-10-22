@@ -27,9 +27,8 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
   public:
     FuncCallCleanupVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter, size_t& current_index);
 
-    // a call in an unevaluated operand is never made, it only names a type or a
-    // property of one: hoisting it would make it, and eg. turn `decltype(f())` of a
-    // prvalue into a reference type. These operands are left as written.
+    // a call in an unevaluated operand, eg. `decltype(f())`, never runs. Hoisting would run it,
+    // and could turn the decltype of a prvalue into a reference type. These operands are left.
     bool TraverseDecltypeTypeLoc(clang::DecltypeTypeLoc, bool) { return true; }
     bool TraverseTypeOfExprTypeLoc(clang::TypeOfExprTypeLoc, bool) { return true; }
     bool TraverseCXXNoexceptExpr(clang::CXXNoexceptExpr*, DataRecursionQueue* = nullptr) { return true; }
@@ -70,9 +69,9 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
     clang::SourceLocation m_last_update_loc;
     clang::SourceRange m_last_call_loc;
 
-    // the start of the statement of the nearest block holding @p call, set in @p statement, after
-    // its labels; invalid where a temporary can't go, eg. a member initializer. @p unbraced is set
-    // when the statement is a body without braces, see isUnbracedBody
+    // where the temporary goes: the start of the statement holding @p call, after its labels.
+    // Sets @p statement, and @p unbraced for a body without braces, see isUnbracedBody. Invalid
+    // where no temporary can go, eg. a member initializer.
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement, bool* unbraced);
     // whether @p statement is directly in the block of a switch, `switch (c) { case 1: f(g()); }`
     bool isDirectlyInSwitch(const clang::Stmt* statement);

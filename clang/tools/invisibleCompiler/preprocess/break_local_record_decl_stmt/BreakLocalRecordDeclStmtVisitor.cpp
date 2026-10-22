@@ -80,8 +80,8 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
     if (enclosing_func->getBody() != compound) {
         auto parents = m_ctx.getParents(*compound);
         holder = parents.empty() ? nullptr : const_cast<clang::Stmt*>(parents[0].get<clang::Stmt>());
-        // the parents are those of the AST before any block was rebuilt: one rebuilt already for
-        // another class is no longer in its holder, and is left
+        // the parent map is from before any block was rebuilt. A block already rebuilt for another
+        // class is no longer in its holder, so it is left.
         if (!holder || !llvm::is_contained(holder->children(), compound)) {
             return true;
         }

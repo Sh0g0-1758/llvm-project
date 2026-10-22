@@ -47,19 +47,17 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
     if (!binary_op->isLogicalOp()) return true;
     if (!containsCall(binary_op->getLHS()) && !containsCall(binary_op->getRHS())) return true;
     if (isConstant(binary_op, m_ctx)) return true;
-    /**
-     * `.. expr1 && expr2 ..`                        `.. expr1 || expr2 ..`
-     * is transformed to                             is transformed to
-     * bool __short_circuit_result_#id = false;      bool __short_circuit_result_#id = true;
-     * if (expr1) {                                  if (!(expr1)) {
-     *     if (expr2) {                                  if (!(expr2)) {
-     *         __short_circuit_result_#id = true;            __short_circuit_result_#id = false;
-     *     }                                             }
-     * }                                             }
-     * .. __short_circuit_result_#id ..              .. __short_circuit_result_#id ..
-     * The result has the type of the expression: bool in C++, so that `show(a && b)` picks the
-     * same overload, and int, 1 or 0, in C.
-     */
+    // a() && b()   =>   bool __short_circuit_result_N = false;
+    //                   if (a()) {
+    //                       if (b()) {
+    //                           __short_circuit_result_N = true;
+    //                       }
+    //                   }
+    //                   ... __short_circuit_result_N ...
+    //
+    // `||` starts from true, tests `!(a())` and `!(b())`, and sets false. The result has the type
+    // of the expression: bool in C++, so that `show(a && b)` picks the same overload, and int, 1
+    // or 0, in C.
     // one operator per statement and iteration, see m_last_update_loc
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
     if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
@@ -83,8 +81,9 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
         << "    if (" << test(binary_op->getRHS()) << ") {\n"
         << "        " << result << " = " << (is_and ? truth : falsehood) << ";\n}\n}\n";
 
-    // an operator that starts its statement, `a() && b();`, is replaced by the if and the result,
-    // two edits at one location being one; otherwise the if goes before the statement
+    // an operator that starts its statement, `a() && b();`, is replaced by the if and the result
+    // in one edit, as two edits at one location would merge. Otherwise the if goes before the
+    // statement.
     if (nearest_compound_stmt == binary_op->getSourceRange().getBegin()) {
         replaceExpr(m_rewriter, binary_op->getSourceRange(), ir_form + result);
     } else {
@@ -97,21 +96,18 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
 bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
     if (!containsCall(conditional_op->getLHS()) && !containsCall(conditional_op->getRHS())) return true;
     if (isConstant(conditional_op, m_ctx)) return true;
-    /**
-     * .. `cond ? expr1 : expr2` ..
-     * is transformed to
-     * T __short_circuit_result_#id;
-     * if (cond) {
-     *     __short_circuit_result_#id = expr1;
-     * } else {
-     *     __short_circuit_result_#id = expr2;
-     * }
-     * .. __short_circuit_result_#id ..
-     * T is the type of the whole expression, eg. double for `c ? f() : 2.5`. When the expression
-     * names an object rather than a value, eg. `(c ? a : b) = 5`, the result holds its address
-     * instead, `T *__short_circuit_result_#id = __builtin_addressof(expr1);`, and is used as
-     * `(*__short_circuit_result_#id)`, so that the assignment still writes to `a` or `b`.
-     */
+    // c ? f() : g()   =>   T __short_circuit_result_N;
+    //                      if (c) {
+    //                          __short_circuit_result_N = f();
+    //                      } else {
+    //                          __short_circuit_result_N = g();
+    //                      }
+    //                      ... __short_circuit_result_N ...
+    //
+    // T is the type of the whole expression, eg. double for `c ? f() : 2.5`. A void expression
+    // becomes the if alone. When the expression names an object, eg. `(c ? a : b) = 5`, the result
+    // is a `T *` set to `__builtin_addressof(a)` or `__builtin_addressof(b)`. It is used as
+    // `(*__short_circuit_result_N)`, so that the assignment still writes to `a` or `b`.
     clang::QualType type = conditional_op->getType();
     bool by_address = conditional_op->isGLValue() && m_ctx.getLangOpts().CPlusPlus;
     // a bit-field has no address
@@ -148,7 +144,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::Conditiona
         std::string type_name = type.getAsString(m_policy);
         if (conditional_op->isXValue()) short_circuit_result = "static_cast<" + type_name + " &&>(*" + result + ")";
         else if (by_address) short_circuit_result = "(*" + result + ")";
-        // the temporary the expression was is moved from, as hoist-calls does
+        // a prvalue result is moved out, as hoist-calls does
         else if (m_ctx.getLangOpts().CPlusPlus) short_circuit_result = "static_cast<" + type_name + " &&>(" + result + ")";
         else short_circuit_result = result;
     }

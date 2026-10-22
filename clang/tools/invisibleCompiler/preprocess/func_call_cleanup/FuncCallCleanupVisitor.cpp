@@ -18,9 +18,8 @@ namespace invisible {
 
 namespace {
 
-// How a use by value of a hoisted temporary of class type, eg. passing it to a parameter
-// taken by value or returning it, makes its own object out of it: the unnamed result the
-// temporary replaces needed neither.
+// How a hoisted class temporary is passed on where it is used by value, eg. as a by-value
+// argument or a return value. The unnamed result needed no move or copy, the named temporary does.
 enum class ByValue { Move, ExplicitMove, Copy, ExplicitCopy, Impossible };
 
 // eg. a std::unique_ptr result is moved, a class with a copy constructor only is copied, and a
@@ -73,9 +72,8 @@ bool FuncCallCleanupVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
 //
 // The pass repeats, hoisting one call per statement and iteration, until none is left nested.
 bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
-    // in a template, an operator on dependent operands, eg. `a + b` with an `operator+` in
-    // sight, is a CXXOperatorCallExpr that may not be a call at all, and a call has no type to
-    // declare its result with. The calls are hoisted in each instantiation instead. 
+    // in a template, a call may have no type to declare its result with, and `a + b` on
+    // dependent operands may not be a call at all. The calls are hoisted in each instantiation.
     if(m_is_uninstantiated_template) return true;
 
     if (topLevelStatement(m_ctx, call)) return true;
@@ -87,8 +85,8 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
         callee && callee->getIdentifier() && callee->getName() == "__mono_addr")
         return true;
 
-    // a call that may not be evaluated, in a branch of `?:` or right of `&&` or `||`, which
-    // short-circuit-to-ir leaves as written when it is constant, isn't hoisted out of it
+    // a call in a branch of `?:` or right of `&&` or `||` may not run, so it isn't hoisted.
+    // These are the operators short-circuit-to-ir left as written, eg. constant ones.
     for (const clang::Stmt* child = call;;) {
         auto parents = m_ctx.getParents(*child);
         const auto* parent = parents.empty() ? nullptr : parents[0].get<clang::Expr>();
@@ -121,22 +119,17 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
     // member initializer or a default argument: the call is left
     if(nearest_compound_stmt.getRawEncoding() == 0)
         return;
-    // If there is an overlap between the function call that we just hoisted and the 
-    // function call that we intend to hoist
+    // one call per statement and iteration: this statement was already rewritten
     if(nearest_compound_stmt == m_last_update_loc)
         return;
 
-    // A function that does not return anything and is being hoisted just before its call should not
-    // be hoisted as they will result in no noticeable change in the rewrite and cause a infinite loop.
-    // for eg. a class method returning void. 
+    // a void call that starts its statement isn't hoisted: the rewrite would change nothing
+    // useful, and the pass would repeat forever
     if((nearest_compound_stmt == call->getSourceRange().getBegin()) && (call->getType()->isVoidType()))
         return;
 
-    // A function that occurs as a param in another function call should not be hoisted 
-    // as it would mess up the markers that rewriter uses to process the changes. Although
-    // this case should be caught early on for most of the cases since they would share the
-    // same nearest_compound_stmt loc but there are cases where this may not be entirely true. 
-    // for instance, Expression Statements. 
+    // a call inside the call hoisted last, eg. `g()` in `f(g())`: the rewriter can't edit text it
+    // already replaced
     if((call->getSourceRange().getBegin() >= m_last_call_loc.getBegin()) && (call->getSourceRange().getEnd() <= m_last_call_loc.getEnd()))
        return;
 
@@ -184,15 +177,8 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
         clang::QualType decl_ty = ret_ty;
         bool needs_cast = false;
 
-        /**
-         * functions can return an lvalue, an xvalue or a prvalue.
-         * For an lvalue, we need to convert the type to reflect
-         * taking an lvalue reference. Same for an xvalue. For a prvalue
-         * we create a copy as taking it by an rvalue reference would lead
-         * to an infinite loop of hoisting. Now we need to forward this result
-         * to the place where its used. Hence for an xvalue and a prvalue, we emit
-         * an extra cast which converts it to an rvalue. An lvalue is left
-         */
+        // in C++ an lvalue is declared `T &`, an xvalue `T &&` and a prvalue `T`. The xvalue and
+        // the prvalue are passed on with a cast, see ByValue.
         if (lang_opts.CPlusPlus) {
             if (call->isLValue()) {
                 decl_ty = m_ctx.getLValueReferenceType(ret_ty);
@@ -202,18 +188,18 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
             }
         }
 
-        // a type that can't be named, eg. of a template specialized for a lambda's closure type,
-        // is deduced, and named after the temporary where it is cast
+        // a type that can't be named, eg. a template specialized for a lambda's closure type, is
+        // declared `auto` and cast with `decltype(__func_hoist_ret__N)`. An explicit constructor
+        // would have to name it, so such a call is left.
         bool deduced = lang_opts.CPlusPlus && !isNameableAnywhere(ret_ty);
         if (deduced && (by_value == ByValue::ExplicitMove || by_value == ByValue::ExplicitCopy)) return;
         std::string name = ret_var;
         if (deduced) out << (call->isLValue() ? "auto &" : call->isXValue() ? "auto &&" : "auto ") << ret_var;
         else decl_ty.print(out, m_policy, ret_var);
 
-        // a conversion operator applied implicitly, eg. by `if (obj)`, has no source text
-        // of its own and may be explicit, which copy-initialization can't call. Direct
-        // initialization can, and is what a condition does. It considers constructors
-        // as well though, so a conversion that isn't explicit copy-initializes.
+        // an explicit conversion operator called implicitly, eg. by `if (obj)`, has no text of its
+        // own, and `T x = obj;` can't call it. `T x(obj);` can, as a condition does. Other
+        // conversions keep `=`, as `T x(obj);` would also consider constructors.
         if (const auto* member_call = llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
             const auto* member = llvm::dyn_cast<clang::MemberExpr>(member_call->getCallee());
             const auto* conversion = member ? llvm::dyn_cast<clang::CXXConversionDecl>(member->getMemberDecl()) : nullptr;
@@ -232,8 +218,9 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
             std::string ty_str = deduced ? "decltype(" + name + ") &&" : decl_ty.getAsString(m_policy);
             std::string value_ty = ret_ty.getUnqualifiedType().getAsString(m_policy);
             std::string lvalue_ty = deduced ? "decltype(" + name + ") &" : ret_ty.getAsString(m_policy) + " &";
-            // an `explicit` constructor is only called by direct initialization, and a
-            // temporary that can't be moved is copied, `return tmp;` would still move it
+            // Move => `static_cast<T &&>(tmp)`, Copy => `static_cast<T &>(tmp)`. Copy needs the
+            // cast too: a plain `tmp` in `return tmp;` would still try to move. An explicit
+            // constructor needs direct initialization, `T(...)`.
             switch (by_value) {
             case ByValue::Move: ret_var = "static_cast<" + ty_str + ">(" + name + ")"; break;
             case ByValue::ExplicitMove: ret_var = value_ty + "(static_cast<" + ty_str + ">(" + name + "))"; break;
@@ -249,24 +236,21 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
     out.flush();
 
     if(nearest_compound_stmt == call->getSourceRange().getBegin()) {
-        // This case is called when we have functions being called on the 
-        // result of the previous function
-        // ie. a().b().c()
+        // the call starts its statement, eg. `a().b();`: the declaration goes in the same
+        // replacement as the use, as two edits at one location would merge
         replaceExpr(m_rewriter, call->getSourceRange(), clean_call + ret_var + arrow);
     } else {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, clean_call);
         replaceExpr(m_rewriter, call->getSourceRange(), ret_var + arrow);
     }
-    // A hoisted temporary stays in scope until the end of its block, and C++ doesn't allow a jump
-    // past its initialization, eg. to the next case label:
+    // A case label or a goto must not jump past a hoisted temporary, eg.
     //
     //     case 1: f(g()); case 2: ...   =>   case 1: int __func_hoist_ret__0 = g(); f(...);
     //                                        case 2: ...     error: jump bypasses the initialization
     //
-    // So in a switch body, or in a function with any label, the statement and its temporaries are
-    // put in a block of their own. Not a declaration, `int n = f(g());`, whose `n` the code after it
-    // uses (and which no jump can cross, as it is initialized too), nor the last statement of a
-    // statement expression, whose value it is.
+    // So in a switch body, or in a function with a label, the statement and its temporaries go in
+    // braces. Not a declaration, `int n = f(g());`, as the code after it uses `n`. Nor the last
+    // statement of a statement expression, as it is the expression's value.
     //
     // A body without braces, eg. `if (c) return g(f(x));`, gets braces too, so that the
     // temporaries stay inside the if, see isUnbracedBody.
@@ -295,8 +279,8 @@ bool FuncCallCleanupVisitor::isDirectlyInSwitch(const clang::Stmt* statement) {
 }
 
 // Whether @p statement is the last statement of a statement expression, eg. `size(get());` in
-// `int n = ({ prepare(); size(get()); });`, which is the value of the expression: put in a block
-// of its own, the value would be void.
+// `int n = ({ prepare(); size(get()); });`. It is the expression's value, which in braces would be
+// void.
 bool FuncCallCleanupVisitor::isValueOfStatementExpr(const clang::Stmt* statement) {
     auto parents = m_ctx.getParents(*statement);
     const auto* compound = parents.empty() ? nullptr : parents[0].get<clang::CompoundStmt>();
@@ -329,7 +313,7 @@ bool FuncCallCleanupVisitor::containsLabel(const clang::Stmt* stmt) {
 }
 
 // where the temporary goes, eg. before the return of `return g(f());`, and after the labels of
-// `loop: x = g(f());`, so that a jump to `loop` makes the calls
+// `loop: x = g(f());`, so that a goto to `loop` runs the hoisted calls again
 clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement,
                                                                bool* unbraced) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*call);
@@ -348,7 +332,7 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
         const auto* parent_stmt = parent.get<clang::Stmt>();
         *unbraced = parent_stmt && isUnbracedBody(parent_stmt, last_stmt);
         if (parent.get<clang::CompoundStmt>() != nullptr || *unbraced) {
-            // after the labels of the statement, so that a jump to them makes the calls
+            // after the labels of the statement, so that a goto to them runs the hoisted calls
             while (const auto* label = llvm::dyn_cast<clang::LabelStmt>(last_stmt)) last_stmt = label->getSubStmt();
             *statement = last_stmt;
             return last_stmt->getBeginLoc();

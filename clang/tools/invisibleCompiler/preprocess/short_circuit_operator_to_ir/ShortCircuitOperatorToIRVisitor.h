@@ -39,8 +39,8 @@ class ShortCircuitOperatorToIRVisitor : public LaterPassVisitor<ShortCircuitOper
     clang::PrintingPolicy m_policy;
     // the N of the next `__short_circuit_result_N`, shared with hoist-calls
     size_t& m_current_index;
-    // the statement last rewritten: one operator per statement and iteration, as the text of an
-    // operator nested in another, already rewritten, is gone
+    // the raw location of the statement last rewritten. One operator per statement and iteration:
+    // once an operator is rewritten, the text of an operator inside it is gone.
     size_t m_last_update_loc;
 };
 

@@ -9,12 +9,11 @@ namespace invisible {
 // --- FunctionalCastToCStyleCastVisitor --------------------------------------
 
 // Run by decl-before-def on its AST, see docs/DESIGN.md section 6.4. A function style cast only
-// accepts a simple type name, but once specialized the substituted type may not be one, eg.
-// `T(x)` with `T = unsigned long` is printed as `unsigned long(x)`, which doesn't parse. Such
-// casts are rewritten to the equivalent C style cast in the AST, `(unsigned long)(x)`, so that
-// every printer (including the one for local classes, which ignores the printer helpers)
-// prints them. So are `T{x}` => `(T)(x)`, `T{}` => `(T)0`, and the value initialization of a
-// scalar, `T()` => `((T)0)`.
+// takes a simple type name. In a specialization the type may not be one: `T(x)` with
+// `T = unsigned long` prints as `unsigned long(x)`, which doesn't parse. Such casts become C style
+// casts in the AST, `(unsigned long)(x)`, so every printer gets them right. That includes the one
+// for local classes, which skips the printer helpers. Likewise `T{x}` => `(T)(x)`, `T{}` => `(T)0`
+// and a scalar's `T()` => `((T)0)`.
 class FunctionalCastToCStyleCastVisitor : public clang::RecursiveASTVisitor<FunctionalCastToCStyleCastVisitor> {
   public:
     FunctionalCastToCStyleCastVisitor(clang::ASTContext& ctx, clang::Sema& sema);

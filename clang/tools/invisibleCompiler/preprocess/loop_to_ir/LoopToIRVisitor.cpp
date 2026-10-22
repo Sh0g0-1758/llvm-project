@@ -27,34 +27,11 @@ LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewrit
 }
 
 bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
-    /**
-     * `for (init, cond, inc) body`
-     * is transformed into
-     * for (init;;) {
-     *   if (!(cond)) { break; }
-     *   { body }
-     *   expr
-     * }
-     *
-     * {if cond declares a variable}
-     * `for (init; T v = e; inc) body`
-     * is transformed into
-     * for (init;;) {
-     *   T v = e;
-     *   if (!(v)) { break; }
-     *   { body }
-     *   expr
-     * }
-     *
-     * {if body has a continue}
-     * `for (init, cond, inc) body`
-     * is transformed into
-     * for (init;;) {
-     *   if (!(cond)) { break; }
-     *   { body [continue replaced by goto __loop_continue_#id] }
-     *   __loop_continue_#id: { expr }
-     * }
-     */
+    // for (init; cond; inc) {...}   =>   for (init;;) { if (!(cond)) { break; } {...} inc; }
+    //
+    // Done only when cond or inc calls something. A condition variable, `for (init; T v = e; inc)`,
+    // is declared first in the body: `T v = e; if (!(v)) ...`. A `continue` in the body becomes
+    // `goto __loop_continue_N;`, a label put before the increment: `__loop_continue_N: { inc; }`.
     bool hasCond = for_stmt->getCond() != nullptr;
     bool hasInc  = for_stmt->getInc() != nullptr;
     // `for (init; T v = e; inc)` declares `v` on each iteration, like a while
@@ -94,7 +71,8 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     if(hasCond) cond_wrapped_out << cond_var << "if (!(" << cond << ")) {\nbreak;\n}\n";
     cond_wrapped_out << "{\n";
     cond_wrapped_out.flush();
-    // calls hoisted out of expr stay inside the block, the goto can't jump over them
+    // inc goes in braces after the label, so the temporaries hoisted from it come after the label
+    // and the goto doesn't jump past them
     if(!label.empty()) inc = label + ": {\n" + inc + "\n}\n";
 
     m_rewriter.InsertTextBefore(for_stmt->getBody()->getSourceRange().getBegin().getLocWithOffset(1), cond_wrapped_in_if);
@@ -104,25 +82,10 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
 }
 
 bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
-    /**
-     * {if cond has a function call}
-     * `while (cond) body`
-     * is transformed into
-     * while (1) {
-     *   if (!(cond)) { break; }
-     *   body [stripped of surrounding braces]
-     * }
-     * 
-     * {if init has a function call}
-     * `while (T v = init) body`
-     * is transformed into
-     *   while (1) {
-     *     T v = init;
-     *     if (!(v)) { break; }
-     *     body [stripped of surrounding braces]
-     *   }
-     * 
-     */
+    // while (cond) {...}      =>   while (1) { if (!(cond)) { break; } ... }
+    // while (T v = e) {...}   =>   while (1) { T v = e; if (!(v)) { break; } ... }
+    //
+    // Done only when the condition calls something. The test goes inside the body's braces.
     auto cond_var = while_stmt->getConditionVariable();
     clang::Expr* trigger = cond_var ? cond_var->getInit() : while_stmt->getCond();
     if (!trigger || !containsCall(trigger)) return true;
@@ -167,18 +130,10 @@ bool LoopToIRVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
 
 void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init, clang::DeclStmt* cond_decl,
                                             clang::Expr* cond, clang::SourceLocation lparen, clang::SourceLocation rparen) {
-    /**
-     * {if the init statement, the condition variable or the condition has a function call}
-     * `if (init; T v = e) then else other`
-     * is transformed into
-     *   {
-     *     init;
-     *     T v = e;
-     *     if (v) then else other
-     *   }
-     * and likewise for a switch. The calls can then be hoisted before the statement,
-     * which the variables they use are no longer declared in.
-     */
+    // if (init; T v = e) ...   =>   { init; T v = e; if (v) ... }, and likewise for a switch
+    //
+    // Done when the init statement, the condition variable or the condition calls something. The
+    // calls can then be hoisted: the variables they use are now declared before the if.
     if (!init && !cond_decl) return;
     if (lparen.isInvalid() || rparen.isInvalid()) return;
     const clang::VarDecl* var = cond_decl ? llvm::dyn_cast<clang::VarDecl>(cond_decl->getSingleDecl()) : nullptr;
@@ -214,22 +169,10 @@ void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init
 }
 
 bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
-    /**
-     * `do body while (cond);`
-     * is transformed into
-     * do {
-     *   { body }
-     *   if (!(cond)) { break; }
-     * } while(1);
-     *
-     * {if body has a continue}
-     * `do body while (cond);`
-     * is transformed into
-     * do {
-     *   { body [continue replaced by goto __loop_continue_#id] }
-     *   __loop_continue_#id: { if (!(cond)) { break; } }
-     * } while(1);
-     */
+    // do {...} while (cond);   =>   do { {...} if (!(cond)) { break; } } while (1);
+    //
+    // Done only when cond calls something. A `continue` in the body becomes
+    // `goto __loop_continue_N;`, a label put before the test: `__loop_continue_N: { if ... }`.
     if (!containsCall(do_stmt->getCond())) return true;
 
     std::string cond;

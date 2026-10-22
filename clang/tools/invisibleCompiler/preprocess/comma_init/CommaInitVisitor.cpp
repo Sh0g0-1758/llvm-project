@@ -63,18 +63,18 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
 //                                               int n = f();
 //                                               for (; i < n; ++i)
 //
-// hoist-calls puts a call's temporary before the statement holding it; with `b = f(a)` declared
-// together with `a`, the temporary would be computed before `a` is initialized. A declaration
-// that isn't a statement of a block, eg. a for statement's init, moves before the statement,
-// which compound-stmt-wrapper wrapped in a block of its own, and leaves `;` in its place.
+// hoist-calls puts a call's temporary before the whole statement. In `int a = 1, b = f(a);` the
+// temporary of `f(a)` would be computed before `a` is set. A declaration that isn't a statement of
+// a block, eg. a for's init, moves before that statement and leaves `;` in its place.
+// compound-stmt-wrapper has put the for in braces, so its variables stay scoped to it.
 bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     if (decl_stmt->isSingleDecl()) {
         return true;
     }
 
-    // a class or enumeration the declaration defines, eg. `struct S {...} a, b;`, is
-    // printed once: by itself if it is named, with the first variable otherwise, which
-    // the others are declared by the type of. Other declarations, eg. typedefs, are left.
+    // a class or enumeration the declaration defines, eg. `struct S {...} a, b;`, is printed
+    // once: on its own if named, else with the first variable. A declaration with anything
+    // else, eg. a typedef, is left.
     const clang::TagDecl* tag = nullptr;
     llvm::SmallVector<const clang::VarDecl*, 8> vars;
     for (const clang::Decl* decl : decl_stmt->decls()) {
@@ -86,8 +86,8 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
             return true;
         }
     }
-    // the variables of an unnamed class, `struct {...} a = {1}, b;`, are declared by the type of
-    // the first, `__typeof__(a) b;`, which needs them all of one type and none written `T x(...)`
+    // the variables of an unnamed class, `struct {...} a = {1}, b;`, take the type of the first,
+    // `__typeof__(a) b;`. That needs one type for all, and no `T x(...)` initializer.
     bool anonymous = tag && !tag->getIdentifier();
     if (vars.empty() || (anonymous && llvm::any_of(vars, [&](const clang::VarDecl* var) {
             return var->getType() != vars.front()->getType() || var->getInitStyle() == clang::VarDecl::CallInit;

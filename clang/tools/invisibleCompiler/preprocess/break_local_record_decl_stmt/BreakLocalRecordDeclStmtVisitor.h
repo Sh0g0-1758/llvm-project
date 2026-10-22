@@ -24,10 +24,9 @@ namespace invisible {
 //
 //     template <class T> void f() { struct P { T x; } a, b; }
 //
-// In f<int>'s body clang prints the DeclStmt `struct P {...} a, b;` without the class's
-// definition, as it does for every DeclStmt of several declarations in an instantiation, which
-// leaves `P` undefined in the specialization or copy decl-before-def prints. Split, it prints
-// `struct P { int x; };` and then `P a, b;`.
+// In f<int>'s body clang prints `struct P {...} a, b;` without the class's definition, as for any
+// DeclStmt of several declarations in an instantiation. Split, it prints `struct P { int x; };`
+// and then `P a, b;`.
 class BreakLocalRecordDeclStmtVisitor : public clang::RecursiveASTVisitor<BreakLocalRecordDeclStmtVisitor> {
   public:
     BreakLocalRecordDeclStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
