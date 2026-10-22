@@ -438,6 +438,12 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     // the body is printed with the helper, clang drops the `constexpr` of `if constexpr`
     clang::PrintingPolicy declaration_policy = m_policy;
     declaration_policy.TerseOutput = true;
+    // clang makes the call operator constexpr when its body only has what a constexpr function may,
+    // eg. also `[] { puts("x"); }`, but before C++23 a function declared constexpr that can never
+    // be evaluated at compile time, as that one, doesn't compile
+    llvm::SmallVector<clang::PartialDiagnosticAt, 8> notes;
+    if (!m_ctx.getLangOpts().CPlusPlus23 && call_op->isConstexpr() && !clang::Expr::isPotentialConstantExpr(call_op, notes))
+        call_op->setConstexprKind(clang::ConstexprSpecKind::Unspecified);
     call_op->print(struct_out, declaration_policy);
     LambdaBodyPrinterHelper helper(m_ctx, m_policy, this_field ? "__parent_this__" : "");
     struct_out << " ";
