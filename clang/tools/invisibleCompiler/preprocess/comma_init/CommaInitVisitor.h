@@ -35,6 +35,9 @@ class CommaInitVisitor : public LaterPassVisitor<CommaInitVisitor> {
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
+    // the body of an if or a loop without a block that findInsertionLoc stopped at, which the
+    // split declarations are put in a block with
+    const clang::Stmt* m_unbraced = nullptr;
 };
 
 }  // namespace invisible

@@ -272,6 +272,17 @@ bool isInsideFunction(const clang::Decl* decl) {
     return false;
 }
 
+bool isUnbracedBody(const clang::Stmt* parent, const clang::Stmt* child) {
+    if (!child || llvm::isa<clang::CompoundStmt>(child)) return false;
+    if (const auto* if_stmt = llvm::dyn_cast<clang::IfStmt>(parent))
+        return child == if_stmt->getThen() || child == if_stmt->getElse();
+    if (const auto* for_stmt = llvm::dyn_cast<clang::ForStmt>(parent)) return child == for_stmt->getBody();
+    if (const auto* while_stmt = llvm::dyn_cast<clang::WhileStmt>(parent)) return child == while_stmt->getBody();
+    if (const auto* do_stmt = llvm::dyn_cast<clang::DoStmt>(parent)) return child == do_stmt->getBody();
+    if (const auto* range_for = llvm::dyn_cast<clang::CXXForRangeStmt>(parent)) return child == range_for->getBody();
+    return false;
+}
+
 // a constructor call isn't a CallExpr, eg. `T(x)` doesn't count, and neither does an operator of a
 // built-in type; an overloaded operator, `a + b` of strings, is a CXXOperatorCallExpr and does
 bool containsCall(const clang::Stmt* stmt) {

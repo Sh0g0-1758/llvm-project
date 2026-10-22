@@ -71,8 +71,9 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
     clang::SourceRange m_last_call_loc;
 
     // the start of the statement of the nearest block holding @p call, set in @p statement, after
-    // its labels; invalid where a temporary can't go, eg. a member initializer
-    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement);
+    // its labels; invalid where a temporary can't go, eg. a member initializer. @p unbraced is set
+    // when the statement is the body of an if or a loop without a block, see isUnbracedBody
+    clang::SourceLocation findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement, bool* unbraced);
     // whether @p statement is directly in the block of a switch, `switch (c) { case 1: f(g()); }`
     bool isDirectlyInSwitch(const clang::Stmt* statement);
     // whether @p statement is the last of a statement expression, `({ ...; f(g()); })`, whose value it is

@@ -41,6 +41,12 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
         const auto& parent = parents[0];
         if (parent.get<clang::CompoundStmt>())
             return last_stmt->getBeginLoc();
+        // the body of an if or a loop without a block, eg. the for of `if (c) for (int i = 0, n = f(); ...)`,
+        // gets one, so that the declarations stay inside the if, see isUnbracedBody
+        if (const auto* parent_stmt = parent.get<clang::Stmt>(); parent_stmt && isUnbracedBody(parent_stmt, last_stmt)) {
+            m_unbraced = last_stmt;
+            return last_stmt->getBeginLoc();
+        }
 
         if (const auto* stmt = parent.get<clang::Stmt>())
             last_stmt = stmt;
@@ -110,8 +116,17 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     }
     out.flush();
 
+    m_unbraced = nullptr;
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(decl_stmt);
-    if (nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
+    if (m_unbraced) {
+        const clang::SourceManager& src_mgr = m_ctx.getSourceManager();
+        clang::SourceLocation end = clang::Lexer::findLocationAfterToken(m_unbraced->getEndLoc(), clang::tok::semi, src_mgr,
+                                                                         m_ctx.getLangOpts(), false);
+        if (end.isInvalid()) end = clang::Lexer::getLocForEndOfToken(m_unbraced->getEndLoc(), 0, src_mgr, m_ctx.getLangOpts());
+        m_rewriter.InsertTextBefore(nearest_compound_stmt, "{\n" + replacement);
+        m_rewriter.InsertTextAfter(end, "\n}");
+        m_rewriter.ReplaceText(decl_stmt->getSourceRange(), ";");
+    } else if (nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
         m_rewriter.InsertTextBefore(nearest_compound_stmt, replacement);
         m_rewriter.ReplaceText(decl_stmt->getSourceRange(), ";");
     } else {

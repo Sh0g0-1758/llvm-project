@@ -114,7 +114,8 @@ bool FuncCallCleanupVisitor::VisitCallExpr(clang::CallExpr* call) {
 // A type that can't be named, eg. a lambda's closure type, is declared `auto`.
 void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
     const clang::Stmt* statement = nullptr;
-    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call, &statement);
+    bool unbraced = false;
+    clang::SourceLocation nearest_compound_stmt = findInsertionLoc(call, &statement, &unbraced);
 
     // no statement to put the temporary before, eg. a call in a member initializer, a default
     // member initializer or a default argument: the call is left
@@ -266,8 +267,11 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
     // put in a block of their own. Not a declaration, `int n = f(g());`, whose `n` the code after it
     // uses (and which no jump can cross, as it is initialized too), nor the last statement of a
     // statement expression, whose value it is.
-    if (!llvm::isa<clang::DeclStmt>(statement) && !isValueOfStatementExpr(statement) &&
-        (isDirectlyInSwitch(statement) || isInFunctionWithLabels(statement))) {
+    //
+    // The body of an if or a loop without a block, eg. `if (c) return g(f(x));`, gets one too, so
+    // that its temporaries stay inside the if, see isUnbracedBody.
+    if (unbraced || (!llvm::isa<clang::DeclStmt>(statement) && !isValueOfStatementExpr(statement) &&
+                     (isDirectlyInSwitch(statement) || isInFunctionWithLabels(statement)))) {
         const clang::SourceManager& src_mgr = m_ctx.getSourceManager();
         clang::SourceLocation end = clang::Lexer::findLocationAfterToken(statement->getEndLoc(), clang::tok::semi,
                                                                          src_mgr, m_ctx.getLangOpts(), false);
@@ -326,7 +330,8 @@ bool FuncCallCleanupVisitor::containsLabel(const clang::Stmt* stmt) {
 
 // where the temporary goes, eg. before the return of `return g(f());`, and after the labels of
 // `loop: x = g(f());`, so that a jump to `loop` makes the calls
-clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement) {
+clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement,
+                                                               bool* unbraced) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*call);
     const clang::Stmt* last_stmt = call;
 
@@ -340,7 +345,9 @@ clang::SourceLocation FuncCallCleanupVisitor::findInsertionLoc(const clang::Call
         // into the enclosing function, whose variables aren't visible there.
         if (parent.get<clang::CXXCtorInitializer>() || parent.get<clang::TagDecl>() || parent.get<clang::FunctionDecl>())
             return {};
-        if (parent.get<clang::CompoundStmt>() != nullptr) {
+        const auto* parent_stmt = parent.get<clang::Stmt>();
+        *unbraced = parent_stmt && isUnbracedBody(parent_stmt, last_stmt);
+        if (parent.get<clang::CompoundStmt>() != nullptr || *unbraced) {
             // after the labels of the statement, so that a jump to them makes the calls
             while (const auto* label = llvm::dyn_cast<clang::LabelStmt>(last_stmt)) last_stmt = label->getSubStmt();
             *statement = last_stmt;
