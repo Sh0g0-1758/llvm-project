@@ -678,6 +678,10 @@ outputs of a project define twice, against the originals.
   until the loop ends. disassemble-cxx-for-range-stmt declares the range as `auto&&
   __for_range_N = <range>;`, so a temporary reached through it, the `Box` of `for (int x :
   Box().self())`, is destroyed before the loop runs.
+- **Order of side effects that aren't calls.** comma-init puts the declarations it splits
+  before a `goto` label, so `again: int a = next(), b = 1;` runs `next()` once however often
+  `goto again;` jumps back. hoist-calls keeps calls in their order, but not an operand without a
+  call to their left: `(++i, f(i))` calls `f` before `++i`, and so does `P p{i++, f(i)};`.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
   (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.
