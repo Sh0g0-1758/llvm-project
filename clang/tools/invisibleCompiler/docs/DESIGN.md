@@ -674,6 +674,10 @@ outputs of a project define twice, against the originals.
   derived class may reuse its tail padding. Made public, it is POD and the padding isn't reused,
   eg. `struct B : A { char d; }` of `A { private: int i; char c; }` grows from 8 to 12 bytes. The
   binary agrees with itself, but not with code compiled from the original, eg. a prebuilt library.
+- **C++23 range-for temporaries.** Since C++23 every temporary in a range-for's range lives
+  until the loop ends. disassemble-cxx-for-range-stmt declares the range as `auto&&
+  __for_range_N = <range>;`, so a temporary reached through it, the `Box` of `for (int x :
+  Box().self())`, is destroyed before the loop runs.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
   (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.
