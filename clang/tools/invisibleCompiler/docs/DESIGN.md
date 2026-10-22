@@ -666,7 +666,10 @@ outputs of a project define twice, against the originals.
   only notices when the TU stops compiling (section 5.2); an overload that SFINAE silently chooses
   differently isn't noticed. Two runtime checks of a base's access change too, with no compile
   error to tell: a handler `catch (B&)` catches a `D` whose base `B` was private, and
-  `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds.
+  `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds. So does a trait: with a private copy
+  constructor and a move constructor that isn't `noexcept`, `std::vector<T>` moves its elements
+  when it grows, and once the copy constructor is public it copies them. A C++03-style
+  noncopyable class, its copy constructor private and only declared, then fails to link.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
   (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.
