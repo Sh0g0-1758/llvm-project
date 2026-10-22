@@ -37,7 +37,7 @@ class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLa
     // the types of the members, printed canonically: the struct is outside the function their aliases are in
     clang::PrintingPolicy m_field_policy;
     bool m_changed = false;
-    // the index of the next lambda of a function, by the prefix of its structs' names, see VisitLambdaExpr
+    // the index of the next lambda in each function, keyed by the function's name prefix, see VisitLambdaExpr
     std::map<std::string, unsigned> m_next_index;
     // whether @p node has a lambda in it, which is turned first, innermost first
     bool containsNestedLambda(clang::Stmt* node);

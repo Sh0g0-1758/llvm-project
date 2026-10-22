@@ -41,8 +41,8 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
         const auto& parent = parents[0];
         if (parent.get<clang::CompoundStmt>())
             return last_stmt->getBeginLoc();
-        // the body of an if or a loop without a block, eg. the for of `if (c) for (int i = 0, n = f(); ...)`,
-        // gets one, so that the declarations stay inside the if, see isUnbracedBody
+        // a body without braces, eg. the for in `if (c) for (int i = 0, n = f(); ...)`: the split
+        // declarations go in braces with it, so that they stay inside the if, see isUnbracedBody
         if (const auto* parent_stmt = parent.get<clang::Stmt>(); parent_stmt && isUnbracedBody(parent_stmt, last_stmt)) {
             m_unbraced = last_stmt;
             return last_stmt->getBeginLoc();

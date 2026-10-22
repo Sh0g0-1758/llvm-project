@@ -72,7 +72,7 @@ class FuncCallCleanupVisitor : public LaterPassVisitor<FuncCallCleanupVisitor> {
 
     // the start of the statement of the nearest block holding @p call, set in @p statement, after
     // its labels; invalid where a temporary can't go, eg. a member initializer. @p unbraced is set
-    // when the statement is the body of an if or a loop without a block, see isUnbracedBody
+    // when the statement is a body without braces, see isUnbracedBody
     clang::SourceLocation findInsertionLoc(const clang::CallExpr* call, const clang::Stmt** statement, bool* unbraced);
     // whether @p statement is directly in the block of a switch, `switch (c) { case 1: f(g()); }`
     bool isDirectlyInSwitch(const clang::Stmt* statement);

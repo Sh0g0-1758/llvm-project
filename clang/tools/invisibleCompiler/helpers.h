@@ -87,10 +87,9 @@ bool isInsideFunction(const clang::Decl* decl);
 // `std::vector<(lambda at a.cc:3:9)>` or `View<__invisible_lambda_1a2b3c4d5e_2>` of a local struct.
 bool isNameableAnywhere(clang::QualType type);
 
-// Whether @p child is the body of @p parent, an if, else, for, while or do, without a block of its
-// own, eg. `return g(x);` of `if (c) return g(x);`. What a pass puts before such a body goes in a
-// block with it, or it would run whether or not the body does. insert-braces gives every body a
-// block, but if it fails, the passes after it see the bodies as written.
+// Whether @p child is the body of the if, else or loop @p parent and has no braces, eg.
+// `return g(x);` in `if (c) return g(x);`. Code a pass puts before such a body must go in braces
+// with it, or it runs even when the body doesn't. insert-braces adds the braces, but it can fail.
 bool isUnbracedBody(const clang::Stmt* parent, const clang::Stmt* child);
 
 // Whether @p stmt is or contains a call, eg. `i < v.size()` does, `i < n` doesn't. The passes

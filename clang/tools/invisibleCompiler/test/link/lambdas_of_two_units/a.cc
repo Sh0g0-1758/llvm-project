@@ -1,6 +1,6 @@
-// Two translation units with lambdas, in functions of different names and in static functions of
-// the same name. Their structs are named after the functions, and those of the static functions
-// are in an unnamed namespace, so that the copies of their call operators don't merge at link time.
+// Two TUs with lambdas. run_a and run_b have different names, so their structs do too. Both TUs
+// have a static run, so their structs get the same names, but each sits in an unnamed namespace.
+// The program must print what the original does: no lambda body may replace another at link time.
 extern "C" int printf(const char *, ...);
 int run_b(int);
 int run_c(int);

@@ -238,10 +238,10 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         llvm::any_of(record->fields(), [](const clang::FieldDecl* field) { return !isNameableAnywhere(field->getType()); }))
         return true;
 
-    // the struct's name: 40 bits of the hash of the enclosing function's passKey, and the lambda's
-    // index in it, eg. `__invisible_lambda_1a2b3c4d5e_0`, the same in every TU for an inline function
-    // and different for different functions, as clang names closures when it mangles them. The
-    // index follows those of the structs earlier iterations wrote, found in the source.
+    // The struct's name: a hash of the enclosing function's passKey, then the lambda's index in that
+    // function, eg. `__invisible_lambda_1a2b3c4d5e_0`. Different functions get different names, and
+    // an inline function gets the same names in every TU. The index continues after the structs
+    // that earlier iterations of the pass wrote.
     std::string prefix =
         "__invisible_lambda_" + llvm::utohexstr(llvm::xxh3_64bits(passKey(enclosing_func)) & 0xffffffffffULL, true) + "_";
     auto [next_index, inserted] = m_next_index.try_emplace(prefix, 0);
@@ -255,7 +255,7 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     }
     std::string name = prefix + std::to_string(next_index->second++);
 
-    // its template heads: those of the enclosing function, as the struct can use their parameters
+    // its template heads: those of the enclosing function, whose parameters the struct may use
     std::vector<clang::TemplateParameterList*> param_lists;
     // the template heads of an out-of-line member of a class template
     for (unsigned i = 0; i < enclosing_func->getNumTemplateParameterLists(); ++i)
@@ -438,9 +438,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     // the body is printed with the helper, clang drops the `constexpr` of `if constexpr`
     clang::PrintingPolicy declaration_policy = m_policy;
     declaration_policy.TerseOutput = true;
-    // clang makes the call operator constexpr when its body only has what a constexpr function may,
-    // eg. also `[] { puts("x"); }`, but before C++23 a function declared constexpr that can never
-    // be evaluated at compile time, as that one, doesn't compile
+    // clang marks this call operator constexpr even when it calls a non-constexpr function, eg.
+    // puts. Before C++23 that doesn't compile once written out, so drop constexpr in that case.
     llvm::SmallVector<clang::PartialDiagnosticAt, 8> notes;
     if (!m_ctx.getLangOpts().CPlusPlus23 && call_op->isConstexpr() && !clang::Expr::isPotentialConstantExpr(call_op, notes))
         call_op->setConstexprKind(clang::ConstexprSpecKind::Unspecified);
@@ -465,8 +464,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     struct_out << "\n};\n";
     struct_out.flush();
 
-    // the struct of a function of internal linkage, eg. `static int run(int x)`, which another TU may
-    // define too, gets internal linkage as well, and so do the copies of its call operator
+    // The struct of a static function goes in an unnamed namespace. Another TU may have a static
+    // function of the same name, and its structs would get the same names.
     if (!enclosing_func->isExternallyVisible() && enclosing_func->getLexicalDeclContext()->isFileContext())
         struct_text = "namespace {\n" + struct_text + "}\n";
     m_rewriter.InsertTextBefore(structLoc(enclosing_func), struct_text);

@@ -242,11 +242,10 @@ struct __invisible_lambda_1a2b3c4d5e_0 {
 auto add = __invisible_lambda_1a2b3c4d5e_0{a};
 ```
 
-The struct is named after the enclosing function, by a hash of its mangled name, and the
-lambda's index in it, as clang names closures when it mangles them. An inline function gets the
-same names in every TU, and different functions never share one. The struct of a function of
-internal linkage, such as a `static` one, goes in an unnamed namespace, as another TU may have a
-function of the same name.
+The struct's name is a hash of the enclosing function's mangled name, then the lambda's index
+in that function. Different functions get different names, and an inline function gets the same
+names in every TU. The struct of a `static` function goes in an unnamed namespace, since another
+TU may have a `static` function of the same name.
 
 In a template the struct becomes a template too. Lambdas are processed innermost first, so
 the pass repeats until none is left. It leaves a lambda alone when it can't express it:
@@ -325,9 +324,9 @@ while (clamp(a) > 100) {    =>   while (1) {
 `for`, `do` and condition variables (`while (T v = f())`, `if (init; cond)`) are handled
 alike. The comments of `LoopToIRVisitor.cpp` show each shape.
 
-"IR" refers to the shape the compiler lowers a loop to: in LLVM IR, the condition is a block
-that runs before every iteration and branches out of the loop. The pass writes that shape as
-source, `while (1)` for the loop and `if (!(cond)) break;` for the branch.
+"IR" means the pass writes the loop the way LLVM IR has it: a condition checked at the top of
+every iteration that branches out of the loop. In source that is `while (1)` with
+`if (!(cond)) break;` as its first statement.
 
 ### 5.11 comma-init
 
@@ -340,9 +339,9 @@ int a = 1, b = twice(argc);    =>   int a = 1;
 
 `&&`, `||` and `?:` evaluate an operand only sometimes. When an operand calls something, the
 expression is spelled out as `if`s, so that hoisting the call keeps it conditional.
-"IR" refers to the shape the compiler lowers these operators to: in LLVM IR, `a && f()` is a
-branch around the call of `f` and a phi that merges the result. The pass writes that shape as
-source, nested `if`s for the branches and `__short_circuit_result_N` for the phi.
+"IR" means the pass writes the operator the way LLVM IR has it: `a && f()` is a branch that
+skips the call of `f`, and a phi that picks the result. In source the branches are `if`s and the
+phi is `__short_circuit_result_N`.
 
 ```cpp
 int both = argc > 1 && twice(b) > 4;
@@ -666,22 +665,22 @@ outputs of a project define twice, against the originals.
   only notices when the TU stops compiling (section 5.2); an overload that SFINAE silently chooses
   differently isn't noticed. Two runtime checks of a base's access change too, with no compile
   error to tell: a handler `catch (B&)` catches a `D` whose base `B` was private, and
-  `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds. So does a trait: with a private copy
-  constructor and a move constructor that isn't `noexcept`, `std::vector<T>` moves its elements
-  when it grows, and once the copy constructor is public it copies them. A C++03-style
-  noncopyable class, its copy constructor private and only declared, then fails to link.
-- **Layout.** A class whose data members are all private isn't POD, and under the Itanium ABI a
-  derived class may reuse its tail padding. Made public, it is POD and the padding isn't reused,
-  eg. `struct B : A { char d; }` of `A { private: int i; char c; }` grows from 8 to 12 bytes. The
-  binary agrees with itself, but not with code compiled from the original, eg. a prebuilt library.
-- **C++23 range-for temporaries.** Since C++23 every temporary in a range-for's range lives
-  until the loop ends. disassemble-cxx-for-range-stmt declares the range as `auto&&
-  __for_range_N = <range>;`, so a temporary reached through it, the `Box` of `for (int x :
-  Box().self())`, is destroyed before the loop runs.
-- **Order of side effects that aren't calls.** comma-init puts the declarations it splits
-  before a `goto` label, so `again: int a = next(), b = 1;` runs `next()` once however often
-  `goto again;` jumps back. hoist-calls keeps calls in their order, but not an operand without a
-  call to their left: `(++i, f(i))` calls `f` before `++i`, and so does `P p{i++, f(i)};`.
+  `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds. Traits change too: if `T`
+  has a private copy constructor and a move constructor that isn't `noexcept`, `std::vector<T>`
+  moves its elements when it grows. Once the copy constructor is public, it copies them. If the
+  copy constructor is only declared, as in a C++03-style noncopyable class, linking fails.
+- **Layout.** Under the Itanium ABI, a derived class may put its members in the tail padding of
+  a base whose data members are private. Once they are public, it can't. So `struct B : A { char
+  d; }` with `A { private: int i; char c; }` grows from 8 to 12 bytes. The binary is still
+  consistent, but it no longer matches code built from the original, eg. a prebuilt library.
+- **C++23 range-for temporaries.** Since C++23, every temporary in a range-for's range lives
+  until the loop ends. disassemble-cxx-for-range-stmt turns the range into an ordinary variable,
+  where that rule doesn't hold. So in `for (int x : Box().self())`, the `Box` is destroyed before
+  the loop runs. `for (int x : Box())` is fine.
+- **Order of side effects that aren't calls.** comma-init moves the declarations it splits above
+  a `goto` label, so after `again: int a = next(), b = 1;`, a `goto again;` no longer calls
+  `next()` again. hoist-calls keeps calls in order, but not other side effects: `(++i, f(i))`
+  calls `f` before `++i`, and so does `P p{i++, f(i)};`.
 - **Fallbacks cost coverage.** Every function left as written, and every copy dropped
   (section 4.2, section 4.3), is code the inliner can't inline into. The verbose log (`-v`) reports each
   one.

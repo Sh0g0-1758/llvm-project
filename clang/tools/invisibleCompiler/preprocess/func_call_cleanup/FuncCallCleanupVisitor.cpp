@@ -268,8 +268,8 @@ void FuncCallCleanupVisitor::hoistCall(clang::CallExpr* call) {
     // uses (and which no jump can cross, as it is initialized too), nor the last statement of a
     // statement expression, whose value it is.
     //
-    // The body of an if or a loop without a block, eg. `if (c) return g(f(x));`, gets one too, so
-    // that its temporaries stay inside the if, see isUnbracedBody.
+    // A body without braces, eg. `if (c) return g(f(x));`, gets braces too, so that the
+    // temporaries stay inside the if, see isUnbracedBody.
     if (unbraced || (!llvm::isa<clang::DeclStmt>(statement) && !isValueOfStatementExpr(statement) &&
                      (isDirectlyInSwitch(statement) || isInFunctionWithLabels(statement)))) {
         const clang::SourceManager& src_mgr = m_ctx.getSourceManager();
