@@ -93,9 +93,9 @@ void InlinePrinterHelper::renameFuncParamInType(clang::QualType T) {
     }
 }
 
-// Called for every statement and expression printed. It renames what the printer would print
-// with a parameter's name and lets the printer go on (returns false), or prints the statement
-// itself (returns true), eg. a return.
+// Called for every statement and expression printed. Returns true when it printed the statement
+// itself, eg. a return. Returns false to let the printer print it, after renaming the parameters
+// in it.
 bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {
     // a parameter, `x`, is printed as the variable it is bound to, `__inline_param__3_0`
     if (auto* decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
@@ -114,10 +114,8 @@ bool InlinePrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stre
                     m_func_param_renamer.TraverseStmt(init);
             }
         }
-        // the printer then prints the declaration itself, as it handles `int a, b;` and the init of a
-        // for. The printer doesn't ask the helper about a type or an initializer, so the parameters in
-        // them are renamed in the AST beforehand: a renamed parameter is renamed wherever it is
-        // shared, which is what every use of it in the body needs anyway
+        // the printer prints the declaration itself. It never asks the helper about a type or an
+        // initializer, hence the renaming above.
         return false;
     }
 
@@ -258,11 +256,9 @@ bool InlineVisitor::inCaller(const clang::Stmt* stmt) {
     return false;
 }
 
-// Builds a CallIndex. Every oracle entry of a round is looked up in the same parse, and looking
-// each one up by walking the whole TU would be quadratic, so the TU is walked once and what an
-// entry needs is kept by key:
-//  - the calls on each line, the candidates for the entry's site.
-//  - the mangled names of the constructors and destructors, which aren't inlined. 
+// Builds a CallIndex in one walk of the TU. It records:
+//  - the calls on each line, the candidates for an entry's site;
+//  - the mangled names of the constructors and destructors, which aren't inlined.
 class CallIndexer : public clang::RecursiveASTVisitor<CallIndexer> {
   public:
     CallIndexer(clang::ASTContext& ctx, CallIndex& index) : m_ctx(ctx), m_index(index), m_names(ctx) {}
@@ -294,10 +290,9 @@ CallIndex buildCallIndex(clang::ASTContext& ctx) {
     return index;
 }
 
-// Finds the entry's site and inlines it, see VisitCallExpr. A constructor or destructor isn't
-// inlined, so an entry whose callee is one is told by the name alone and skipped; a destructor has
-// no call written anyway, it runs where a scope ends. Otherwise the calls the index has on the
-// line are tried in turn until one is the site.
+// Finds the entry's site and inlines it, see VisitCallExpr. Constructors and destructors aren't
+// inlined, so they are skipped by name. A destructor has no written call anyway. Otherwise each
+// call on the line is tried until one is the site.
 void InlineVisitor::run(const CallIndex& index) {
     if (index.structors.count(m_callee)) {
         m_matched = true;
@@ -311,9 +306,8 @@ void InlineVisitor::run(const CallIndex& index) {
             clang::FunctionDecl* callee = call->getDirectCallee();
             if (!callee)
                 callee = m_function_decl_map[m_callee];
-            // the call of the callee the oracle names, with a body to inline, written in the caller.
-            // Another call on the line isn't it, eg. `foo` in `foo(bar())` where the oracle names
-            // `bar` because hoist-calls left the line as written
+            // skip a call of another function, of one without a body, or outside the caller. eg.
+            // `foo` in `foo(bar())`, a line hoist-calls left as written, when the oracle names `bar`
             if (!callee || !callee->hasBody() || m_names.getName(callee) != m_callee || !inCaller(call))
                 continue;
             VisitCallExpr(call, callee);
@@ -334,11 +328,9 @@ class StaticLocalFinder : public clang::RecursiveASTVisitor<StaticLocalFinder> {
     bool m_found = false;
 };
 
-// Inlines one call. The callee's body is pasted just before the statement the call is in, and the
-// call is replaced with a variable the body stores its result in. The checks come first, see the
+// Inlines one call. The callee's body is pasted just before the call's statement, and the call is
+// replaced with a variable the body stores its result in. The checks come first, see the
 // declaration. In the names below, N is the index of the oracle entry, so no two sites share a name.
-//
-// The shape:
 //
 // With `int square(int x) { return x * x; }`, the statement `int y = square(a);` becomes
 //
@@ -352,30 +344,18 @@ class StaticLocalFinder : public clang::RecursiveASTVisitor<StaticLocalFinder> {
 //
 // The result:
 //
-// An assignment ends the same way:
-//
-//     y = square(b);                  =>    int __inline_ret__1;  {...}  y = __inline_ret__1;
-//
-// A call returning void has no result, so the block replaces the call itself. The `;` after the
-// call is left behind as an empty statement:
+// A void call has no result. The block replaces the call, and its `;` stays as an empty statement:
 //
 //     log_it(y);                      =>    {int __inline_param__2_0 = y; ... __inline_exit_2: ;};
 //
-// A class is declared first and assigned by the return, so it must be trivially default
+// The result variable is assigned, so it drops a const, and a class must be trivially default
 // constructible and copyable:
-//
-//     Point m = mid(p, q);            =>    Point __inline_ret__3;
-//                                           {... { __inline_ret__3 = {...}; goto __inline_exit_3; } ...}
-//                                           Point m = __inline_ret__3;
-//
-// A const result is kept without the const, as it is assigned:
 //
 //     const int k = limit();          =>    int __inline_ret__N;  {...}  const int k = __inline_ret__N;
 //
-// A reference can't be declared first and assigned later, so a returned reference that is bound is
-// kept by its address. `__inline_ref__` binds the returned expression as the return would, eg.
-// `std::move(x)` to an `int &&`, so that its address can be taken, and the static_cast turns the
-// pointer back into the reference:
+// A reference can't be assigned later, so a bound reference result is kept as a pointer.
+// `__inline_ref__` binds the returned expression as the return would, eg. `std::move(x)` to an
+// `int &&`, and its address is stored. The static_cast turns the pointer back into a reference:
 //
 //     int &r = pick(a, b);            =>    int *__inline_ret__4;
 //                                           {... { int &__inline_ref__ = a > b ? a : b;
@@ -392,7 +372,7 @@ class StaticLocalFinder : public clang::RecursiveASTVisitor<StaticLocalFinder> {
 // The parameters:
 //
 // Each parameter becomes a variable of the block, with the parameter's type. So each argument is
-// evaluated once, before the body, and a reference parameter changes the caller's variable:
+// evaluated once, before the body. A reference parameter still changes the caller's variable:
 //
 //     pick(a, b)                      =>    int &__inline_param__4_0 = a;
 //                                           int &__inline_param__4_1 = b;
@@ -402,39 +382,35 @@ class StaticLocalFinder : public clang::RecursiveASTVisitor<StaticLocalFinder> {
 //     log_it(y)                       =>    int __inline_param__2_0 = y;
 //     void log_it(int x, int y = 7)         int __inline_param__2_1 = 7;
 //
-// A va_list parameter that is an array, as on x86-64, isn't copied, as it is passed as a pointer,
-// which va_arg doesn't take: the body uses the argument itself. A parameter named in a type or an
-// initializer, eg. `n` of `int buf[n];`, is renamed too, see FunctionParamRenamer.
+// A va_list parameter gets no variable when va_list is an array, as on x86-64. The body uses the
+// argument itself, see below.
 //
 // Member functions:
 //
-// The object is bound once, before the arguments, to `__inline_this__N`, and `this` in the body is
+// The object is bound once, before the arguments, to `__inline_this__N`. `this` in the body is
 // replaced with it, eg. `int size() const { return n; }` returns `__inline_this__6->n`:
 //
 //     v.size()                        =>    auto &&__inline_object__6 = v;
-//                                           const Vec *const __inline_this__6 = __builtin_addressof(__inline_object__6);
+//                                           const Vec *const __inline_this__6 =
+//                                               __builtin_addressof(__inline_object__6);
 //     p->size()                       =>    const Vec *const __inline_this__7 = p;
 //
-// `auto &&` keeps an object that is a temporary alive for the block, eg. the one of `make().size()`.
+// `auto &&` keeps a temporary object alive for the block, eg. the one of `make().size()`.
 // A member operator takes its first operand as the object, and the others as its parameters:
 //
 //     v + *p                          =>    auto &&__inline_object__8 = v;
-//                                           const Vec *const __inline_this__8 = __builtin_addressof(__inline_object__8);
+//                                           const Vec *const __inline_this__8 =
+//                                               __builtin_addressof(__inline_object__8);
 //                                           const Vec &__inline_param__8_0 = *p;
 //
-// The body, see InlinePrinterHelper:
-//
-//     return e;                       =>    { __inline_ret__N = e; goto __inline_exit_N; }
-//     return;                         =>    goto __inline_exit_N;
-//     retry: ... goto retry;          =>    __inline_label_N__0: ... goto __inline_label_N__0;    see LabelMaker
-//     __func__                        =>    "name"                    the callee's name, not the caller's
-//     max(a, b)                       =>    ::util::max(a, b)         qualified, as the body is pasted elsewhere
-//     asm("...")                      =>    __asm__("...")            a keyword in every language mode
+// How the body prints: see InlinePrinterHelper. Its labels are renamed per site, see LabelMaker,
+// and its names are qualified from the global namespace, as it is pasted into another function.
 bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* callee) {
     auto& src_mgr = m_ctx.getSourceManager();
 
     // a member function is called on the object a member expression names, or on the
-    // first operand of an operator. A call through a pointer to member has neither.
+    // first operand of an operator. A call through a pointer to member has neither, so it isn't
+    // taken for the site.
     auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(callee);
     auto* member = llvm::dyn_cast<clang::MemberExpr>(call->getCallee()->IgnoreParens());
     auto* op_call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(call);
@@ -456,17 +432,15 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
         return true;
 
     m_matched = true;
-    // the statement the code is pasted before: hoist-calls has made every call it could a statement
-    // of its own, `int x = f();`, `x = f();` or `f();` and their variants, see topLevelStatement. A call it left nested,
-    // eg. in a member initializer, `: base(f())`, has no place for the code
+    // the code is pasted before the call's statement. hoist-calls makes most calls a statement of
+    // their own, see topLevelStatement. A call still nested, eg. `: base(f())`, has nowhere to paste
     const clang::Stmt* stmt = topLevelStatement(m_ctx, call);
     if (!stmt) {
         m_skipped = "the call isn't a statement of its own, which hoist-calls makes every call it can";
         return true;
     }
-    // a static or thread local variable is initialized once, the first time its declaration is
-    // reached, but the code pasted before it would run every time; a constexpr one is initialized
-    // by a constant expression, which the variable holding the result isn't
+    // a static or thread local variable is initialized once, but the pasted code would run every
+    // time. A constexpr variable needs a constant initializer, and the result variable isn't one.
     if (const auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
         if (llvm::any_of(decl_stmt->decls(), [](const clang::Decl* decl) {
                 const auto* var = llvm::dyn_cast<clang::VarDecl>(decl);
@@ -498,9 +472,9 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
         policy.SuppressUnwrittenScope = true;
     }
 
-    // The result is kept in a variable declared before the inlined body, which the call
-    // is replaced with. A returned reference is kept as a pointer, unless the call is
-    // only read, and a class result only when it is trivial, being assigned.
+    // The call is replaced with a result variable declared before the body. A returned reference
+    // is kept as a pointer, unless the call is only read. A class result must be trivial, as it is
+    // assigned.
     std::string index = std::to_string(m_current_index);
     std::string result = "__inline_ret__" + index;
     clang::QualType returned = callee->getReturnType();
@@ -550,7 +524,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
         }
         method->getThisType().withConst().print(OS, policy, this_name);
         OS << " = " << object_text << ";\n";
-        // a body inlined again names the variable its `this` was replaced with as this site's
+        // `this` is replaced in the AST once per body. When the body is inlined again, the
+        // variable that replaced it is renamed for this site.
         clang::VarDecl*& this_var = m_this_vars[callee->getBody()];
         if (this_var) {
             this_var->setDeclName(&m_ctx.Idents.get(this_name));
@@ -577,8 +552,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
             arg->printPretty(stream, nullptr, m_policy);
         stream.flush();
 
-        // a va_list that is an array is passed as a pointer, which va_arg doesn't
-        // take, so the argument itself is used
+        // a va_list that is an array can't be copied with `=`, and its parameter's type, a pointer
+        // to the builtin `__va_list_tag`, can't be spelled. So the body uses the argument itself.
         clang::QualType va_list_type = m_ctx.getBuiltinVaListType();
         if (va_list_type->isArrayType() && m_ctx.hasSameType(param_decl->getOriginalType(), va_list_type)) {
             caller_params[i] = arg_text;
@@ -618,8 +593,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
     OS << raw_body << "\n__inline_exit_" << index << ": ;}";
     OS.flush();
 
-    // the lines the inlined code and the statement after it take in the new text, body included,
-    // where inline_functions looks for the compile errors of this site
+    // where the inlined code and the call's statement land in the new text. inline_functions
+    // blames a compile error in these lines on this site.
     m_inserted_line = src_mgr.getPresumedLineNumber(stmt->getBeginLoc());
     m_inserted_span = std::count(inlined_code.begin(), inlined_code.end(), '\n') + 2 +
                       src_mgr.getPresumedLineNumber(stmt->getEndLoc()) - m_inserted_line;
@@ -643,7 +618,8 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
             replacement = result;
         }
     }
-    // replaced first, a replacement at where text was inserted takes that text with it
+    // replace before inserting: a replacement that starts where text was inserted would remove
+    // that text too
     m_rewriter.ReplaceText(replaced->getSourceRange(), replacement);
     if (!discarded)
         m_rewriter.InsertTextBefore(stmt->getBeginLoc(), inlined_code + "\n");
@@ -652,7 +628,7 @@ bool InlineVisitor::VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* ca
     return true;
 }
 
-// --- what the driver of the rounds is told ---
+// --- results read by inline_functions ---
 
 bool InlineVisitor::matched() const { return m_matched; }
 
@@ -684,10 +660,11 @@ std::map<std::string, clang::FunctionDecl*>& FunctionDeclMapVisitor::get_functio
 
 // --- inline_functions ----------------------------------------------
 
-// Sites are inlined in rounds, each from one parse and checked by one compile. A
-// round takes the sites whose callee no site left is inlined into, so that a body is
-// inlined once what is inlined into it is, and one site of each line. When the round
-// doesn't compile, its halves are inlined on their own. eg. with the oracle
+// Sites are inlined in rounds. A round is one parse, checked by one compile. It takes a site only
+// when nothing is left to inline into its callee, so bodies are inlined bottom up, as LLVM does.
+// It takes one site per line. When the round doesn't compile, the sites with errors are dropped
+// and the rest retried. When an error can't be tied to a site, the round is split in halves. eg.
+// with the oracle
 //
 //     main total 38        total square 28        total at 27
 //
@@ -816,9 +793,7 @@ InlineResult inline_functions(const std::string& source, const std::string& file
         apply(second);
     };
 
-    // the rounds: until every entry is done. LLVM inlines bottom up, so a round takes the entries
-    // whose callee has nothing left to inline into it: `total square 28` before `main total 38`,
-    // so that main gets the body of total that already has square's body in it.
+    // the rounds, until every entry is done
     for (;;) {
         // the entries left, and how many of them inline into each function, by its name
         std::map<std::string, size_t> callers;
@@ -848,10 +823,9 @@ InlineResult inline_functions(const std::string& source, const std::string& file
                 continue;
             round.push_back(i);
         }
-        // every entry left waits for another, eg. `f g 3` and `g f 9`, or `f f 3` and `f f 4`,
-        // and the round would be empty forever: the first entry left is taken alone, which may
-        // free the others. It may not be in the cycle itself, eg. `main f 40` that only waits for
-        // it, which then goes a little out of LLVM's order, but each round finishes an entry
+        // a cycle: every entry left waits for another, eg. `f g 3` and `g f 9`, or `f f 3` and
+        // `f f 4`. The first entry left is taken alone to break it. It may be outside the cycle,
+        // eg. `main f 40`, and go out of LLVM's order, but each round still finishes an entry
         if (round.empty())
             round.push_back(pending.front());
         apply(round);

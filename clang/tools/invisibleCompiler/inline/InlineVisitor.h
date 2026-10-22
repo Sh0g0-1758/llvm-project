@@ -19,8 +19,8 @@
 
 namespace invisible {
 
-// One line of the oracle: LLVM inlined @p callee into @p caller at @p line of the preprocessed
-// file, both named by their mangled names, as `-O2`'s optimization records report them, eg.
+// One line of the oracle: LLVM inlined `callee` into `caller` at `line` of the preprocessed file.
+// Names are mangled, as in `-O2`'s optimization records. eg.
 //
 //     _Z5totalR3VecIiE _Z6squarei 28
 //
@@ -33,11 +33,10 @@ struct InlineEntry {
 
 // --- FunctionParamRenamer -------------------------------------------
 
-// Renames the parameters of a callee in its AST to the variables the inlined body binds them
-// to, eg. `n` to `__inline_param__3_0`, by renaming the ParmVarDecl every DeclRefExpr to one
-// refers to. A PrinterHelper isn't asked to print the initializer of a declaration, nor the
-// size expression of a variably modified type, eg. `int a[n]`, so those names are changed in
-// the AST itself, which is only printed afterwards. @p PR maps a parameter's index to its name.
+// Renames a callee's parameters to their variables in the inlined code, eg. `n` =>
+// `__inline_param__3_0`. It renames the ParmVarDecl itself, so every reference prints the new
+// name. This also reaches what the PrinterHelper is never asked about, such as initializers and
+// the size in `int a[n]`. @p PR maps a parameter's index to its new name.
 struct FunctionParamRenamer : clang::RecursiveASTVisitor<FunctionParamRenamer> {
 public:
     FunctionParamRenamer(clang::ASTContext &C, std::map<int, std::string> &PR);
@@ -49,20 +48,15 @@ private:
 
 // --- InlinePrinterHelper -------------------------------------------
 
-// Prints the body of a callee as the code pasted in place of a call:
-//  - a parameter is printed as the variable it is bound to, see FunctionParamRenamer;
-//  - `return e;` becomes `{ __inline_ret__3 = e; goto __inline_exit_3; }`, an assignment of
-//    the result variable declared before the body and a jump to the label after it, or for a
-//    returned reference `{ T &__inline_ref__ = e; __inline_ret__3 = __builtin_addressof(__inline_ref__); goto ...; }`;
-//  - `__func__` is printed as the callee's name, which it names, not the caller's;
-//  - `asm` is printed `__asm__`, a keyword in every language mode.
-// eg. inlining `int square(int x) { return x * x; }` at `int y = square(a);` prints
-//
-//     int __inline_ret__3;
-//     {int __inline_param__3_0 = a;
-//     { __inline_ret__3 = __inline_param__3_0 * __inline_param__3_0; goto __inline_exit_3; }
-//     __inline_exit_3: ;}
-//     int y = __inline_ret__3;
+// Prints a callee's body as the code pasted for a call:
+//  - a parameter prints as its variable, see FunctionParamRenamer;
+//  - `return e;` => `{ __inline_ret__3 = e; goto __inline_exit_3; }`. It stores the result and
+//    jumps to the label after the body;
+//  - a returned reference => `{ T &__inline_ref__ = e;
+//    __inline_ret__3 = __builtin_addressof(__inline_ref__); goto ...; }`;
+//  - `__func__` => the callee's name, not the caller's;
+//  - `asm` => `__asm__`, a keyword in every language mode.
+// InlineVisitor::VisitCallExpr shows the whole pasted code.
 class InlinePrinterHelper : public clang::PrinterHelper {
   public:
     InlinePrinterHelper(clang::ASTContext& ctx, std::string target_var, std::string bind_type,
@@ -87,9 +81,8 @@ class InlinePrinterHelper : public clang::PrinterHelper {
 
 // --- InlineVisitor -------------------------------------------------
 
-// The calls of a TU by line and the mangled names of its constructors and destructors. A round
-// inlines many sites from one parse, and each site is looked up by its line, so the TU is walked
-// once to build this rather than once per site, see buildCallIndex.
+// The calls of a TU by line, and the mangled names of its constructors and destructors. A round
+// inlines many sites from one parse. This lets it walk the TU once, not once per site.
 struct CallIndex {
     std::map<unsigned, std::vector<clang::CallExpr*>> calls;
     std::set<std::string> structors;
@@ -110,30 +103,27 @@ CallIndex buildCallIndex(clang::ASTContext& ctx);
 //     __inline_exit_0: ;}
 //     int &r = static_cast<int &>(*__inline_ret__0);
 //
-// A site found but not inlined is told by skipped(), eg. a constructor, or a call that isn't a
-// statement of its own.
+// For a site found but not inlined, skipped() says why, eg. it is a constructor.
 class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
   public:
     InlineVisitor(clang::ASTContext& ctx, const std::string& caller, const std::string& callee,
                   std::vector<size_t>& call_sites, size_t& current_index,
                   clang::Rewriter& rewriter, std::map<std::string, clang::FunctionDecl*>& decl_map,
                   std::map<const clang::Stmt*, clang::VarDecl*>& this_vars);
-    // Looks the site up in @p index, and inlines it. A constructor or destructor is matched by its
-    // mangled name alone, and skipped.
+    // Finds the site in @p index and inlines it. A constructor or destructor is skipped by its
+    // mangled name alone.
     void run(const CallIndex& index);
-    // Inlines @p call of @p callee, a call of the oracle's callee on the entry's line in the caller,
-    // see run, when it is the entry's site, or tells why it isn't inlined (skipped). The checks,
-    // in order, each with an example it rejects:
-    //  - a variadic callee, `log(const char *, ...)`, whose `va_arg`s need a real call;
-    //  - the call must be a statement of its own (topLevelStatement), `int x = f();`, `x = f();` or
-    //    `f();`, which hoist-calls makes every call it can, and not initialize a static, thread
-    //    local or constexpr variable;
-    //  - a callee with a static local, `int next() { static int n; return ++n; }`, which each
-    //    pasted copy would duplicate;
-    //  - a result of a class that isn't trivially default constructible and copyable, eg.
-    //    `std::string name()`, which the variable before the body couldn't be declared and then
-    //    assigned.
-    // Temporaries of the call that the inlined code may outlive aren't checked, see the definition.
+    // Inlines @p call, or sets skipped() to say why not. run picks the call. It is skipped when:
+    //  - the callee is variadic, `log(const char *, ...)`: its `va_arg`s need a real call;
+    //  - the call isn't a statement of its own, `int x = f();`, `x = f();` or `f();`
+    //    (topLevelStatement). hoist-calls makes most calls one;
+    //  - the call initializes a static, thread local or constexpr variable;
+    //  - the callee has a static local, `int next() { static int n; return ++n; }`: each pasted
+    //    copy would have its own;
+    //  - it returns a class that isn't trivially default constructible and copyable, eg.
+    //    `std::string name()`: the result variable is declared first and assigned later.
+    // Not checked: an argument that points into a temporary, eg. `__mono_addr(make())`. The
+    // temporary dies once its parameter variable is initialized, before the body uses it.
     bool VisitCallExpr(clang::CallExpr* call, clang::FunctionDecl* callee);
     bool shouldVisitImplicitCode() const;
 
@@ -143,8 +133,8 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     const std::string& skipped() const;
     // The lines the edit added less those it replaced: the oracle lines below it move by as many.
     size_t get_net_change();
-    // The line the inlined code was put at and how many lines it spans, which tell the compile
-    // errors in it, see inline_functions
+    // Where the inlined code starts and how many lines it spans. inline_functions blames a
+    // compile error in these lines on this site.
     size_t m_inserted_line = 0;
     size_t m_inserted_span = 0;
 
@@ -167,8 +157,8 @@ class InlineVisitor : public clang::RecursiveASTVisitor<InlineVisitor> {
     // the definitions by mangled name, for a call through a function pointer, whose callee
     // the AST doesn't know, see FunctionDeclMapVisitor
     std::map<std::string, clang::FunctionDecl*>& m_function_decl_map;
-    // the variable `this` was replaced with in a callee's body, by the body: a body inlined at
-    // several sites of a round is rewritten once, and its variable renamed for each site
+    // body => the variable that replaced `this` in it. A body is rewritten once per round, and
+    // the variable is renamed for each site.
     std::map<const clang::Stmt*, clang::VarDecl*>& m_this_vars;
 };
 
