@@ -126,9 +126,10 @@ clang::FunctionDecl* MaterializeLambdaVisitor::enclosingFunction(const clang::La
     return nullptr;
 }
 
-// Whether @p lambda is used as a function pointer, `void (*fp)(int) = [](int) {};` or `+[] {}`:
-// the struct has no conversion to one. A used conversion operator of the closure tells. In a
-// template only the instantiations use it, so the context of the lambda is checked too.
+// Whether @p lambda is used as a function pointer, eg. `void (*fp)(int) = [](int) {};` or `+[] {}`.
+// The struct can't convert to a function pointer, so such a lambda stays a lambda. Outside a
+// template, clang marks the closure's conversion operator as used. In a template, only the
+// instantiations use it, so the code around the lambda is checked as well.
 bool MaterializeLambdaVisitor::convertsToFunctionPointer(const clang::LambdaExpr* lambda) {
     if (llvm::any_of(lambda->getLambdaClass()->decls(), [](const clang::Decl* decl) {
             const auto* conversion = llvm::dyn_cast_or_null<clang::CXXConversionDecl>(decl->getAsFunction());
