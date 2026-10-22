@@ -84,7 +84,7 @@ bool isInsideFunction(const clang::Decl* decl);
 // Whether @p type can be named anywhere in the TU: it isn't local to a function, unnamed or
 // the closure type of a lambda, nor does it name one, eg. as a template argument. Code printed
 // at the end of the TU, a copy or a hoisted temporary can only spell such a type, eg. not
-// `std::vector<(lambda at a.cc:3:9)>` or `View<__invisible_lambda_2>` of a local struct.
+// `std::vector<(lambda at a.cc:3:9)>` or `View<__invisible_lambda_1a2b3c4d5e_2>` of a local struct.
 bool isNameableAnywhere(clang::QualType type);
 
 // Whether @p child is the body of @p parent, an if, else, for, while or do, without a block of its

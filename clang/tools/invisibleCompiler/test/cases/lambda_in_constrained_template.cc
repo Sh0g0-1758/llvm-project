@@ -1,8 +1,8 @@
 // materialize-lambda turns a lambda in a function template into a struct template of the same
 // parameters, here constrained by a concept, with two lambdas in one function, as libstdc++'s
 // std::__cmp_cust::__fp_weak_ordering has.
-// CHECK: struct __invisible_lambda_0
-// CHECK: struct __invisible_lambda_1
+// CHECK: struct __invisible_lambda_[0-9a-f]+_0
+// CHECK: struct __invisible_lambda_[0-9a-f]+_1
 namespace std {
 template <class T> concept floating_point = __is_same(T, float) || __is_same(T, double);
 namespace cust {

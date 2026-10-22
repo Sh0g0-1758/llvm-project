@@ -185,7 +185,7 @@ bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
 
 // --- keep ---------------------------------------------------------
 
-// eg. `auto View<__invisible_lambda_3>::begin()` can't be declared at the end, where the lambda's
+// eg. `auto View<__invisible_lambda_1a2b3c4d5e_3>::begin()` can't be declared at the end, where the lambda's
 // struct is local to a function
 bool KeepInPlaceVisitor::isNamedAnywhere(const clang::FunctionDecl* function) const {
     const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function);

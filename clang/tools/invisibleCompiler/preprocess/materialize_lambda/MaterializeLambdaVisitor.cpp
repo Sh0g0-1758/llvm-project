@@ -9,6 +9,7 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/xxhash.h"
 #include "clang/AST/TemplateBase.h"
 
 #include <string>
@@ -88,8 +89,6 @@ class LambdaBodyPrinterHelper : public DeclBeforeDefPrinterHelper {
 }  // namespace
 
 // --- MaterializeLambdaVisitor ----------------------------------------------
-
-size_t MaterializeLambdaVisitor::s_counter = 0;
 
 MaterializeLambdaVisitor::MaterializeLambdaVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter), m_policy(codePolicy(ctx)), m_field_policy(codePolicy(ctx)) {
@@ -184,13 +183,13 @@ clang::SourceLocation MaterializeLambdaVisitor::structLoc(const clang::FunctionD
 //
 // becomes
 //
-//     struct __invisible_lambda_0 {
+//     struct __invisible_lambda_1a2b3c4d5e_0 {
 //     int &n;
 //     int operator()(int x) const { return x + n; }
 //     };
-//     int g(int n) { return call(__invisible_lambda_0{n}); }
+//     int g(int n) { return call(__invisible_lambda_1a2b3c4d5e_0{n}); }
 //
-// decl-before-def writes `call<__invisible_lambda_0>` as a specialization, or a copy, which
+// decl-before-def writes `call<__invisible_lambda_1a2b3c4d5e_0>` as a specialization, or a copy, which
 // names the closure type: a lambda's type has no name, so it couldn't be written.
 bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     /**
@@ -239,10 +238,24 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         llvm::any_of(record->fields(), [](const clang::FieldDecl* field) { return !isNameableAnywhere(field->getType()); }))
         return true;
 
-    // the struct's name, and its template heads: those of the enclosing function, as the struct
-    // can use their parameters
-    std::string name = "__invisible_lambda_" + std::to_string(s_counter++);
+    // the struct's name: 40 bits of the hash of the enclosing function's passKey, and the lambda's
+    // index in it, eg. `__invisible_lambda_1a2b3c4d5e_0`, the same in every TU for an inline function
+    // and different for different functions, as clang names closures when it mangles them. The
+    // index follows those of the structs earlier iterations wrote, found in the source.
+    std::string prefix =
+        "__invisible_lambda_" + llvm::utohexstr(llvm::xxh3_64bits(passKey(enclosing_func)) & 0xffffffffffULL, true) + "_";
+    auto [next_index, inserted] = m_next_index.try_emplace(prefix, 0);
+    if (inserted) {
+        llvm::StringRef text = m_ctx.getSourceManager().getBufferData(m_ctx.getSourceManager().getMainFileID());
+        for (size_t at = text.find(prefix); at != llvm::StringRef::npos; at = text.find(prefix, at + 1)) {
+            unsigned index = 0;
+            if (!text.drop_front(at + prefix.size()).take_while(llvm::isDigit).getAsInteger(10, index))
+                next_index->second = std::max(next_index->second, index + 1);
+        }
+    }
+    std::string name = prefix + std::to_string(next_index->second++);
 
+    // its template heads: those of the enclosing function, as the struct can use their parameters
     std::vector<clang::TemplateParameterList*> param_lists;
     // the template heads of an out-of-line member of a class template
     for (unsigned i = 0; i < enclosing_func->getNumTemplateParameterLists(); ++i)
@@ -297,8 +310,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     // In a template, the member's type is a template parameter of the struct, and `type` is the
     // argument given where the lambda was, see capture_type:
     //
-    //     template <class __invisible_capture_0, class T> struct __invisible_lambda_0 { __invisible_capture_0 t; ... };
-    //     __invisible_lambda_0<__remove_reference_t(decltype(t)), T>{t}
+    //     template <class __invisible_capture_0, class T> struct __invisible_lambda_1a2b3c4d5e_0 { __invisible_capture_0 t; ... };
+    //     __invisible_lambda_1a2b3c4d5e_0<__remove_reference_t(decltype(t)), T>{t}
     struct Member {
         std::string name;
         std::string type;
@@ -446,9 +459,13 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     struct_out << "\n};\n";
     struct_out.flush();
 
+    // the struct of a function of internal linkage, eg. `static int run(int x)`, which another TU may
+    // define too, gets internal linkage as well, and so do the copies of its call operator
+    if (!enclosing_func->isExternallyVisible() && enclosing_func->getLexicalDeclContext()->isFileContext())
+        struct_text = "namespace {\n" + struct_text + "}\n";
     m_rewriter.InsertTextBefore(structLoc(enclosing_func), struct_text);
 
-    // the lambda becomes `__invisible_lambda_N<template args>{captures...}`
+    // the lambda becomes `__invisible_lambda_<hash>_N<template args>{captures...}`
     std::string ctor_text;
     llvm::raw_string_ostream ctor_out(ctor_text);
     ctor_out << name;

@@ -26,7 +26,7 @@ namespace invisible {
 class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLambdaVisitor> {
   public:
     MaterializeLambdaVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
-    // `[&n](int x) { return x + n; }` => `__invisible_lambda_0{n}`, the struct put before the function
+    // `[&n](int x) { return x + n; }` => `__invisible_lambda_1a2b3c4d5e_0{n}`, the struct put before the function
     bool VisitLambdaExpr(clang::LambdaExpr* lambda);
     // whether a lambda was turned, so that the pass runs again for the lambdas around it
     bool changed() const { return m_changed; }
@@ -37,8 +37,8 @@ class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLa
     // the types of the members, printed canonically: the struct is outside the function their aliases are in
     clang::PrintingPolicy m_field_policy;
     bool m_changed = false;
-    // the N of the next `__invisible_lambda_N`, unique across the iterations of the pass
-    static size_t s_counter;
+    // the index of the next lambda of a function, by the prefix of its structs' names, see VisitLambdaExpr
+    std::map<std::string, unsigned> m_next_index;
     // whether @p node has a lambda in it, which is turned first, innermost first
     bool containsNestedLambda(clang::Stmt* node);
     // the function the struct is put before

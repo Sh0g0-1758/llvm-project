@@ -235,12 +235,18 @@ its type can be named, by a specialization of a template it's passed to, for exa
 ```cpp
 auto add = [a](int y) { return a + y; };
         =>
-struct __invisible_lambda_0 {
+struct __invisible_lambda_1a2b3c4d5e_0 {
   int a;
   inline constexpr int operator()(int y) const { return a + y; }
 };
-auto add = __invisible_lambda_0{a};
+auto add = __invisible_lambda_1a2b3c4d5e_0{a};
 ```
+
+The struct is named after the enclosing function, by a hash of its mangled name, and the
+lambda's index in it, as clang names closures when it mangles them. An inline function gets the
+same names in every TU, and different functions never share one. The struct of a function of
+internal linkage, such as a `static` one, goes in an unnamed namespace, as another TU may have a
+function of the same name.
 
 In a template the struct becomes a template too. Lambdas are processed innermost first, so
 the pass repeats until none is left. It leaves a lambda alone when it can't express it:
