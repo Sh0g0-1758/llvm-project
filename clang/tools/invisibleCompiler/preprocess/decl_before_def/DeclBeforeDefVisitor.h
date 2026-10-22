@@ -24,10 +24,10 @@ namespace invisible {
 // --- DeclBeforeDefVisitor ----------------------------------------------
 
 // decl-before-def: declares every function before any definition, and writes the definitions
-// the binary has at the end of the TU. An instantiation of a template is given a copy, a free
-// function of its own name, which what is deferred calls, and the template is reduced to a
-// declaration; a constructor, a destructor or a virtual function is written as an explicit
-// specialization instead. See docs/DESIGN.md sections 6 and 7.
+// the binary has at the end of the TU. Each template instantiation gets a copy: a free function
+// with its own name. The deferred code calls the copy, and the template is reduced to a
+// declaration. Constructors, destructors and virtual functions are written as explicit
+// specializations instead. See docs/DESIGN.md sections 6 and 7.
 //
 // The inliner pastes a callee's body into its caller, so every function it inlines must have
 // a body in the text, and every body must be able to call anything. eg.
@@ -39,19 +39,21 @@ namespace invisible {
 //
 //     template <class T> T twice(T x);
 //     int main();
-//     [[gnu::used]] inline int twice__mono1a2b3c4d5e(int x);
 //
-//     int main(){ return twice__mono1a2b3c4d5e(2); }
+//     template <class T> T *__mono_addr(T &&x) { return __builtin_addressof(x); }
+//     int main();
+//     int twice__mono1a2b3c4d5e(int x);
+//
 //     [[gnu::used]] inline int twice__mono1a2b3c4d5e(int x){ return x + x; }
+//     int main(){ return twice__mono1a2b3c4d5e(2); }
 //
 // The driver retries it, leaving as written what it wrote that doesn't compile, see
 // entries(), replaced(), stripped() and copyKeys().
 class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisitor> {
   public:
-    // @p kept_in_place is left as written, see KeepInPlaceVisitor
-    // A template instantiation, and what is left as written, is given a copy, a free function of
-    // its own name, called instead of it by what is
-    // deferred, see monomorphize. @p dropped names by their mangled names the functions not given one.
+    // @p kept_in_place is left as written, see KeepInPlaceVisitor.
+    // @p dropped: the mangled names of the functions that get no copy, see monomorphize.
+    // @p specialized: the instantiations written as explicit specializations rather than copied.
     DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter,
                          const std::set<const clang::FunctionDecl*>& kept_in_place,
                          const std::set<std::string>& dropped = {},
@@ -64,10 +66,9 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     // true: the instantiations of templates are what is specialized or copied.
     bool shouldVisitTemplateInstantiations() const;
 
-    // The lines of getDeferredDefinitions printing a function, named by its mangled name, counted
-    // from 1 at its first line, which is empty
-    // eg. an error on line 12 of the deferred text, inside the entry of `twice<int>`, lines 10 to
-    // 14, leaves `twice` as written on the next attempt, or drops the copy if it is one.
+    // The lines of one function in getDeferredDefinitions, by mangled name. Line 1 is the empty
+    // first line. The driver uses them to blame an error, eg. an error inside the entry of
+    // `twice<int>` leaves `twice` as written on the next attempt, or drops the copy if it is one.
     struct Entry {
         std::string key;
         size_t first_line;
@@ -114,8 +115,8 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     // the name of the copy of each function given one, by canonical declaration, and those functions in order
     std::map<const clang::FunctionDecl*, std::string> m_copies;
     std::vector<clang::FunctionDecl*> m_copied;
-    // the indices in m_copied of the copies written where a definition is, eg. those of every
-    // instance of `template <class T> T twice(T x) {...}` where that definition is
+    // for each definition, the copies written at its place at the end, as indices in m_copied,
+    // eg. every copy of `twice<...>` at the place of `template <class T> T twice(T x) {...}`
     std::map<const clang::FunctionDecl*, std::vector<size_t>> m_copies_at;
     // what is written at the end, in the order of the TU: whether it is a copy, and its index in
     // m_copied or in the deferred definitions
@@ -157,7 +158,7 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
     void getFunctionDeclaration(clang::FunctionDecl* func, std::string& decl);
     void getKRFunctionDeclarations(clang::FunctionDecl* func, std::string& decl, std::string& head);
     void replaceFunctionDeclaration(clang::FunctionDecl* func, std::string& decl);
-    // The ranges clang reports of some declarations miss text that must be replaced with them.
+    // clang's range of some declarations misses their template heads or their `;`. These extend it.
     clang::SourceLocation expandToTemplateHeaders(clang::SourceLocation begin);
     clang::SourceLocation expandToTerminatingSemi(clang::SourceLocation end);
 };
@@ -168,16 +169,14 @@ class DeclBeforeDefVisitor : public clang::RecursiveASTVisitor<DeclBeforeDefVisi
 // Printed as a specialization, or copied, it would be an error, so it is printed without.
 bool printsConstexpr(const clang::FunctionDecl* func);
 
-// Has @p sema instantiate the constructors that moving or copying the results of class
-// type used by value will call once hoist-calls names them. The results are built in place
-// in the input, which can leave those constructors unused, eg. of a member of a class
-// template, and without a definition once DeclBeforeDef deferred the ones used.
+// Instantiates the move or copy constructors hoist-calls will need when it moves a call's
+// result of class type into a variable. The input built that result in place, so clang may
+// never have instantiated the constructor.
 void instantiateConstructorsOfValues(clang::ASTContext& ctx, clang::Sema& sema);
 
-// How many templates of the name of the specialization @p func deduce its type, given its
-// template arguments or not. A specialization is declared for the one it deduces, so its
-// arguments can be left out of the declaration only when exactly one does, eg.
-// `template<> int abs(int)` rather than `template<> int abs<int>(int)`.
+// How many function templates named like the specialization @p func can deduce its type, given
+// its template arguments if @p with_arguments. When exactly one can, the declaration can leave
+// out the arguments, eg. `template<> int abs(int)` rather than `template<> int abs<int>(int)`.
 unsigned countDeducedTemplates(clang::Sema& sema, clang::FunctionDecl* func, bool with_arguments);
 
 // Whether monomorphization can give @p func a copy: a function with a body, outside other

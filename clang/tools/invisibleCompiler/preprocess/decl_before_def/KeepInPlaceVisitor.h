@@ -12,8 +12,8 @@ namespace invisible {
 
 // --- KeepInPlaceVisitor ------------------------
 
-// Finds the functions DeclBeforeDef leaves as written with their specializations, like friends,
-// as what stays in place needs their definitions where it is written:
+// Finds the functions DeclBeforeDef must leave as written, like friends. Their instantiations
+// stay too. Code that stays in place needs their definitions where they are written:
 //  - what is used outside function bodies, and what that uses, eg. `small` in
 //
 //      template <class T> constexpr bool small() { return sizeof(T) < 4; }
@@ -22,19 +22,20 @@ namespace invisible {
 //    which instantiates what it uses before a specialization could be declared;
 //  - what a constant expression calls, eg. in a template argument or a static_assert, also in
 //    a body, which the compiler evaluates where it is written;
-//  - an explicitly instantiated template, a function whose type or class can't be named
-//    elsewhere, eg. of a return type deduced to name a lambda's closure type, and a constexpr
-//    function that isn't a template, which a constant expression
-//    may evaluate through a concept or argument dependent lookup;
+//  - an explicitly instantiated template;
+//  - a function whose type or class can't be named elsewhere, eg. one returning a lambda's
+//    closure type;
+//  - a constexpr function that isn't a template, which a constant expression may evaluate
+//    through a concept or argument dependent lookup;
 //  - the functions of @p names (passKey), which a later pass needs as written.
 // Of what is used outside the bodies and what these use, only the templates and constexpr
 // functions are kept, the others being declared before they are called, eg. `base` of
 // `template <class T> T add(T x, T y = T(base()))`. A function of a deduced return type used
 // outside the bodies is kept too, as its type is only known from its body.
 //
-// Monomorphization reduces the other templates to declarations, so it also keeps what an
-// instantiation that can be neither copied nor specialized uses. An instantiation named where a
-// call can't be redirected, eg. by an implicit member or by its address, is specialized instead.
+// Monomorphization reduces the other templates to declarations. So when an instantiation can be
+// neither copied nor specialized, its template is kept. An instantiation named where a call
+// can't be redirected, eg. by an implicit member or by its address, is specialized instead.
 //
 // It works on offsets in the main file: it collects every use of a function (where a name, a
 // member, a constructor or a destructor is used) and every function body, then keeps what is used
@@ -46,8 +47,8 @@ class KeepInPlaceVisitor : public clang::RecursiveASTVisitor<KeepInPlaceVisitor>
     // invisible.cpp; @p dropped the functions that get no copy, whose templates must then stay.
     explicit KeepInPlaceVisitor(clang::ASTContext& ctx, const std::set<std::string>& names = {},
                                 const std::set<std::string>& dropped = {});
-    // an instantiation is where uses during deduction, eg. in an enable_if, are found, and an
-    // implicit member, eg. a defaulted copy constructor, calls what it calls by name
+    // instantiations hold the uses found during deduction, eg. in an enable_if. Implicit members,
+    // eg. a defaulted copy constructor, call functions too.
     bool shouldVisitTemplateInstantiations() const { return true; }
     bool shouldVisitImplicitCode() const { return true; }
 
@@ -114,7 +115,7 @@ class KeepInPlaceVisitor : public clang::RecursiveASTVisitor<KeepInPlaceVisitor>
     bool m_mono;
     // whether what is traversed is the assertion of a static_assert in a body
     bool m_in_body_assertion = false;
-    // the callees of the calls seen, so that a name that isn't one is told to be an address
+    // the callees of the calls seen. A function name that isn't a callee is a use of its address.
     std::set<const clang::Expr*> m_callees;
     std::set<const clang::FunctionDecl*> m_specialized;
 

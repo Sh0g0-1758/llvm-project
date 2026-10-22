@@ -26,7 +26,7 @@ namespace invisible {
 //
 //     auto [a, b] = pair;          printed by clang as   auto = pair;
 //     if constexpr (sizeof(T) > 4) printed by clang as   if (sizeof(int) > 4)   (both branches compiled)
-//     long double(x)               printed by clang as   long double(x)         (not C++)
+//     ld(x), ld = long double      printed by clang as   long double(x)         (doesn't parse)
 //
 // clang calls handledStmt for every statement it prints; returning true means the statement
 // was printed here, false lets clang print it.
@@ -73,8 +73,8 @@ class MonoPrinterHelper : public DeclBeforeDefPrinterHelper {
     clang::ASTContext& m_ctx;
     clang::PrintingPolicy m_policy;
     const std::map<const clang::FunctionDecl*, std::string>& m_copies;
-    // how many constant expressions are being printed: the calls in one stay calls of the
-    // originals, which the compiler evaluates, and a copy, called at run time, isn't for that
+    // how many constant expressions are being printed. The calls in one keep calling the
+    // originals, as the compiler evaluates them and can't use a copy.
     unsigned m_constant = 0;
 };
 

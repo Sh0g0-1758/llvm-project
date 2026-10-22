@@ -33,8 +33,8 @@ size_t closingAngle(const std::string& text, size_t open) {
 
 // The printer puts a `[[...]]` written after the name of a function, eg.
 // `operator() [[nodiscard]] (int)`, after its type, where it would apply to the
-// type. In front of the declaration it applies to the function. It is dropped
-// when a requires clause of the template head is in the way, these being eg.
+// type. In front of the declaration it applies to the function. When a requires
+// clause follows the template heads, the attributes are dropped. They are eg.
 // `nodiscard` or `deprecated`, which only matter for diagnostics.
 //
 //     template<> int S::operator()(int) [[nodiscard]]     (printed, an error)
@@ -62,10 +62,9 @@ void hoistTrailingAttributes(std::string& decl) {
 
 // Removes the template arguments of the function @p name in the declaration @p decl, those
 // between `name<` and the `>` before its parameters, eg. `get<int>(int)` becomes `get(int)`.
-// A specialization declared with its template arguments has them substituted into every
-// template of its name, which can fail hard; declared without, they are deduced from its type,
-// see VisitFunctionDecl. Only the name followed by `<...>(` is the function's, `vector<get<int>>`
-// in a parameter type isn't.
+// Written arguments are substituted into every template of that name, which can be a hard error.
+// Left out, they are deduced from the type, see VisitFunctionDecl. Only `name<...>(` is matched,
+// not eg. `vector<get<int>>` in a parameter type.
 void stripTemplateArguments(std::string& decl, const std::string& name) {
     auto is_word = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
     for (size_t at = decl.find(name + "<"); at != std::string::npos; at = decl.find(name + "<", at + 1)) {
@@ -79,12 +78,12 @@ void stripTemplateArguments(std::string& decl, const std::string& name) {
     }
 }
 
-// Has the deferred @p text of @p func name what is in an unnamed namespace as written: a
-// type without the namespace, found through it, and the function in the namespace, as a
-// declaration outside of it would be of another function. eg. for `f` in
-// `namespace a { namespace { struct T; void f(T); } }` the deferred
-// `void a::(anonymous namespace)::f(a::(anonymous namespace)::T)` (not C++) becomes
-// `namespace a { namespace { void f(a::T) } }`, where `T` is found through the unnamed namespace.
+// Puts the deferred @p text of @p func, a function in an unnamed namespace, back in that
+// namespace: declared outside it, it would be another function. `(anonymous namespace)::`,
+// which isn't C++, is removed from the names, which are still found through the namespace.
+// eg. for `f` in `namespace a { namespace { struct T; void f(T); } }` the deferred
+// `void a::(anonymous namespace)::f(a::(anonymous namespace)::T)` becomes
+// `namespace a { namespace { void f(a::T) } }`.
 void enterUnnamedNamespace(const clang::FunctionDecl* func, std::string& text) {
     static const std::string unnamed = "(anonymous namespace)::";
     for (size_t pos; (pos = text.find(unnamed)) != std::string::npos;) text.erase(pos, unnamed.size());
@@ -107,9 +106,9 @@ void enterUnnamedNamespace(const clang::FunctionDecl* func, std::string& text) {
 
 // Makes the definition @p decl `inline`, and `used` if @p used, after its `template<>` heads and attributes,
 // eg. `template<> int twice<int>(int x){...}` becomes `template<> [[gnu::used]] inline int twice<int>(int x){...}`.
-// What was implicitly inline in the input, eg. a member defined in its class or an instantiation, may be
-// defined in every TU of a program: `inline` keeps the deferred definitions from being defined twice at link
-// time, and `used` still emits each one, as the optimization records need it.
+// What was implicitly inline, eg. a member defined in its class or an instantiation, may be defined in
+// every TU. `inline` avoids duplicate definitions at link time. `used` still emits each one, for the
+// optimization records.
 void inlineUsed(std::string& decl, bool used) {
     size_t at = 0;
     while (decl.compare(at, 8, "template") == 0) {
@@ -158,10 +157,10 @@ bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func, const std::set<const
 }
 
 // An expression naming @p func, the specialization of a member of a class template,
-// eg. `&S<int>::f` or `(S<int>(static_cast<int (*)()>(nullptr)()))`. It makes clang
-// work out the exception specification of the member before matching a specialization
-// declaring it to it. Unworked out, it doesn't match a computed `noexcept`: the
-// declaration isn't taken as a specialization of the member, or rejected with `requires`.
+// eg. `&S<int>::f` or `(S<int>(static_cast<int (*)()>(nullptr)()))`. Put in the
+// declaration of the specialization, it makes clang compute the member's exception
+// specification first. Otherwise a computed `noexcept` doesn't match: the declaration
+// isn't taken as a specialization of the member, or is rejected when it has `requires`.
 std::string printMemberProbe(clang::ASTContext& ctx, const clang::FunctionDecl* func, const clang::PrintingPolicy& policy) {
     const auto* method = llvm::cast<clang::CXXMethodDecl>(func);
     const clang::CXXRecordDecl* record = method->getParent();
@@ -218,7 +217,7 @@ class ValueTypeCollector : public clang::RecursiveASTVisitor<ValueTypeCollector>
 
 }  // namespace
 
-// only an instantiation can differ from its template, what is written was accepted as written
+// only an instantiation can fail to be constant: written code already compiled as written
 bool printsConstexpr(const clang::FunctionDecl* func) {
     if (!func->isConstexpr() || func->isConsteval() || !isInstantiatedCopy(func)) return func->isConstexpr();
     llvm::SmallVector<clang::PartialDiagnosticAt, 8> notes;
@@ -440,10 +439,9 @@ void DeclBeforeDefVisitor::stripRecordDeclOnlySpecifiers(std::string& s) {
         if (llvm::StringRef(s).ends_with(kw)) s.resize(s.size() - kw.size());
 }
 
-// The member initializer list of a deferred constructor, eg. ` : data_(n), size_(0)` of
-// `Vec(int n) : data_(new int[n]), size_(0) {}`. The printer prints neither it with the terse
-// declaration nor with the body, so it is printed here: the initializers written, of members,
-// bases or the delegated constructor, with their arguments as written, a default argument left out.
+// The member initializer list of a deferred constructor, eg. ` : data_(new int[n]), size_(0)`.
+// The printer prints it with neither the head nor the body, so it is printed here. Only the
+// written initializers are printed, and default arguments are left out.
 std::string DeclBeforeDefVisitor::printCtorInitializers(clang::CXXConstructorDecl* ctor) {
     std::string result;
     llvm::raw_string_ostream out(result);
@@ -559,9 +557,10 @@ void DeclBeforeDefVisitor::recordFunctionDefinition(clang::FunctionDecl* func, s
         if (m_ctx.getLangOpts().CPlusPlus && llvm::isa<clang::CXXMethodDecl>(func)) stripRecordDeclOnlySpecifiers(*head);
     }
 
-    // what was implicitly inline is defined in every TU that uses it, so it stays inline to link,
-    // and used to be emitted all the same, but where the vtable of __cxxabiv1::__fundamental_type_info
-    // is emitted clang defines the typeinfo of every fundamental type, which libstdc++ does
+    // what was implicitly inline may be defined in every TU, so it stays inline to link. It is
+    // also made used so that it is still emitted. Not in __cxxabiv1::__fundamental_type_info:
+    // emitting its vtable makes clang define the typeinfo of every fundamental type, which
+    // libstdc++ already does.
     std::string definition = prefix + definition_head;
     const auto* record = llvm::dyn_cast<clang::CXXRecordDecl>(func->getDeclContext());
     bool fundamental_type_info = record && record->getName() == "__fundamental_type_info" &&
@@ -678,9 +677,9 @@ class ConversionNameSpeller {
 };
 
 // Has @p func printed without `constexpr` while it is in scope, see printsConstexpr. Only a
-// specialization of a function template may differ from its template in `constexpr`, that of a
-// member of a class template redeclares the member. eg. `make_pair<const string, int>` of a
-// `constexpr` template is declared `template<> pair<const string, int> make_pair(...)`.
+// specialization of a function template may drop `constexpr`. A member of a class template is
+// redeclared and must match. eg. `make_pair<const string, int>` of a `constexpr` template is
+// declared `template<> pair<const string, int> make_pair(...)`.
 class ConstexprDropper {
   public:
     explicit ConstexprDropper(clang::FunctionDecl* func) : m_func(func), m_saved(func->getConstexprKind()) {
@@ -706,8 +705,8 @@ void DeclBeforeDefVisitor::getFunctionDeclaration(clang::FunctionDecl* func, std
     // need them: the declaration in the class and the deferred definitions keep them
     if (!func->getDescribedFunctionTemplate() && func->getNumTemplateParameterLists() > 0)
         inplace_policy.PolishForDeclaration = true;
-    // a deduced return type is printed as the type it was deduced to, which is only
-    // spelled from anywhere canonically
+    // a deduced return type is printed as the type it was deduced to, canonically, so that
+    // it can be named outside the function
     if (!func->isTemplated() && func->getReturnType()->getContainedDeducedType())
         inplace_policy.PrintAsCanonical = true;
     InheritedDefaultArgsHider hider(func);
@@ -801,13 +800,14 @@ void DeclBeforeDefVisitor::replaceFunctionDeclaration(clang::FunctionDecl* func,
 // Every function definition, of the input and of every template instantiation (see
 // shouldVisitTemplateInstantiations), goes through here once:
 //  - what stays in place (isKeptByDeclBeforeDef) is left as written;
-//  - an instantiation that gets a copy is only copied, see monomorphize;
+//  - an instantiation that gets a copy is only written as the copy, see monomorphize;
 //  - a declaration without a body is written again, with the parameters renamed;
-//  - a definition is replaced by its declaration where it is written, and, unless it is a
-//    template, recorded to be written at the end, an instantiation as an explicit specialization:
+//  - a definition is replaced by its declaration. Unless it is a template, it is also recorded
+//    for the end of the TU. An instantiation without a copy, eg. a constructor, is written there
+//    as an explicit specialization:
 //
-//        template <class T> T twice(T x) { return x + x; }      =>  template <class T> T twice(T x);
-//        ... at the end of the TU:                                  template<> int twice(int x){ return x + x; }
+//        template <class T> struct Box { Box(T v) {...} };   =>  template <class T> struct Box { Box(T v); };
+//        ... at the end of the TU:                               template<> Box<int>::Box(int v){...}
 //
 // Class templates aren't specialized, only the functions: a class is only a type.
 bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
@@ -816,16 +816,14 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     if (auto copies = m_copies_at.find(func); copies != m_copies_at.end())
         for (size_t i : copies->second) m_written.push_back({true, i});
     if (isKeptByDeclBeforeDef(func, m_kept_in_place)) return true;
-    // the instantiations of templates are given copies, so a template is only left as written when
-    // something still needs it (see KeepInPlaceVisitor), and is otherwise reduced to a declaration.
-    // An instantiation named where a call of it can't be redirected is specialized
+    // an instantiation that isn't specialized is only written as its copy
     if (m_mono && isInstantiatedCopy(func) && !isAlwaysSpecialized(func) && !m_specialized.count(func->getCanonicalDecl()))
         return true;
     // a declaration in a function, eg. a local `void g();`, is printed with the function's body
     if (isInsideFunction(func)) return true;
     if (!func->hasBody() || !func->isThisDeclarationADefinition()) {
-        // a declaration is written again, with its renamed parameters. An instantiation of it, eg.
-        // `foo<int>` of `template <class T> void foo();`, shares its text and isn't
+        // a declaration is written again, with its renamed parameters. An instantiation, eg.
+        // `foo<int>` of `template <class T> void foo();`, shares the template's text and isn't.
         if (!isInstantiatedCopy(func)) {
             std::string decl;
             getFunctionDeclaration(func, decl);
@@ -839,13 +837,11 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     //     template <class S> int spin(S s_in_template = S{});
     //     template <> int spin<int>(int s_in_spec) { return s_in_spec; }
     //     int use() { return spin<int>(); }
-    // leaves `spin<int>` with a parameter named `s_in_template`, referred to as such in
-    // its body. Each pass parses the output of the previous one, so a later pass
-    // printing part of the body, eg. a loop condition, would name a parameter its
-    // untouched parameter list doesn't declare. So a specialization's parameters are named like
-    // its template's from the start. The definition of the template is deferred, so clang
-    // takes the names of its first declaration. A parameter pack of the template names
-    // several parameters, which are left as they are.
+    // leaves `spin<int>` with a parameter named `s_in_template`, and its body uses that name.
+    // Each pass parses the output of the previous one. A later pass printing part of the body,
+    // eg. a loop condition, would name a parameter the parameter list doesn't declare. So the
+    // parameters are named like the template's from the start, from its first declaration, as
+    // its definition is deferred. A parameter pack names several parameters, so it is left alone.
     const clang::FunctionDecl* pattern = func->getTemplateInstantiationPattern(false);
     if (pattern) pattern = pattern->getFirstDecl();
     if (pattern && pattern != func && !func->isDependentContext() && pattern->getNumParams() == func->getNumParams() &&
@@ -964,7 +960,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         }
     }
 
-    // what isn't a template is called in the TU, and so is defined at the end of it
+    // a template has no code of its own. Anything else is defined at the end.
     if (!func->isDependentContext()) recordFunctionDefinition(func, definition_head, declaration_head);
 
     // the definition where it is written becomes its declaration. The instantiations of a template
@@ -973,12 +969,10 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     return true;
 }
 
-// a specialization whose return type is deduced keeps the `auto` of its template and
-// can't be called before it is defined. These are defined first, each after the
-// ones it calls; returns their indices in the deferred definitions. eg. with `template <class T> auto get(T t)` and
-// `int use() { return get(1) + 1; }`, `template<> auto get(int t){...}` is written before `use`,
-// which would otherwise fail with "function 'get<int>' with deduced return type cannot be used
-// before it is defined".
+// The specializations whose return type is deduced, as indices in the deferred definitions, each
+// after the ones it calls. Such a specialization keeps the `auto` of its template, so it can't be
+// called before it is defined, and these are written first. eg. with `template <class T> auto get(T t)`,
+// `template<> auto get(int t){...}` is written before `int use() { return get(1) + 1; }`.
 std::vector<size_t> DeclBeforeDefVisitor::deferredDefinitionOrder() const {
     auto deduced = [](const clang::FunctionDecl* func) {
         const auto* auto_type = func->getReturnType()->getContainedAutoType();
@@ -1014,14 +1008,14 @@ std::vector<size_t> DeclBeforeDefVisitor::deferredDefinitionOrder() const {
 //  1. the helper `__mono_addr` that takes the address of a temporary object, when a copy is called;
 //  2. the declaration of every deferred definition;
 //  3. the declaration of every copy;
-//  4. the deferred definitions and the definitions of the copies, in the order of the TU, a copy
-//     where its function is written: what a definition needs defined before it, eg. the body of
-//     a function a `constexpr` variable's initializer calls, was before it in the input too. The
+//  4. the deferred definitions and the definitions of the copies, in the order of the TU. A copy
+//     goes where its function is written. What a definition needs defined before it, eg. a
+//     function a `constexpr` variable's initializer calls, was before it in the input too. The
 //     specializations whose return type is deduced come first, see deferredDefinitionOrder.
-// Declaring everything first lets any definition call any function, and keeps a specialization
-// from being declared after a definition instantiated it, eg. `template<> int bar<int>()` after
-// `int zed() { return foo<int>(); }` where `foo<T>` calls `bar<T>`. Each entry's lines are recorded, see
-// entries(), so the driver can blame an error on the function it is in.
+// Declaring everything first lets any definition call any function. It also keeps a
+// specialization from being declared after a definition instantiated it, eg. `template<> int
+// bar<int>()` after `int zed() { return foo<int>(); }` where `foo<T>` calls `bar<T>`. The lines
+// of each entry are recorded, see entries(), so the driver can blame an error on its function.
 std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
     // the lines of what is added, counted from 1 at the first line of the result
     std::string result = "\n";
@@ -1095,9 +1089,8 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 
 namespace {
 
-// Whether @p stmt declares a static local that isn't constant, which a copy would have one of its own of,
-// eg. `int next() { static int n; return ++n; }`: the copy and the original, still called by what stays
-// in place, would count separately.
+// Whether @p stmt declares a static local that isn't constant, eg. `static int n; return ++n;`.
+// A copy would get its own `n`, and count apart from the original that code left in place still calls.
 bool hasStaticLocal(const clang::Stmt* stmt) {
     if (!stmt) return false;
     if (const auto* decls = llvm::dyn_cast<clang::DeclStmt>(stmt))
@@ -1156,10 +1149,9 @@ class CopiedCollector : public clang::RecursiveASTVisitor<CopiedCollector> {
 
 }  // namespace
 
-// Gives what DeclBeforeDef doesn't move, the instantiations of templates and what is left
-// as written, a copy at the end: a free function of a name of its own, which takes the
-// object of a member function as its first parameter. What is deferred and the copies
-// call the copies, so that each function they call has a body at the end to inline.
+// Picks the functions that get a copy, see CopiedCollector, and names the copies. A copy is a
+// free function at the end that takes the object of a member function first. What is deferred
+// and the copies call the copies, so that each function they call has a body at the end to inline.
 void DeclBeforeDefVisitor::monomorphize() {
     CopiedCollector collector(m_kept_in_place);
     collector.TraverseDecl(m_ctx.getTranslationUnitDecl());
@@ -1266,7 +1258,7 @@ void DeclBeforeDefVisitor::redirectCalls(clang::Stmt*& node) {
                                        m_ctx.getPointerType(object->getType()), clang::VK_PRValue));
     for (unsigned i = first; i < call->getNumArgs(); ++i) {
         clang::Expr* arg = call->getArg(i);
-        // a default argument is written where the function is declared
+        // a default argument is written where the function is declared, so its names are qualified
         if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg)) {
             clang::Stmt* value = default_arg->getExpr();
             qualifyNonLocalNames(value, m_ctx);

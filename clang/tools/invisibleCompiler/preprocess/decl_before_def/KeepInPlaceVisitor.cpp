@@ -95,9 +95,9 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     // an explicit instantiation definition, eg. `template void Data::reserve<true>(int);`, needs
     // the template's definition where it is written, and can't be followed by a specialization
     if (function->getTemplateSpecializationKind() == clang::TSK_ExplicitInstantiationDefinition) keep(function, true, true);
-    // and a constexpr function that isn't a template, which a constant
-    // expression anywhere may evaluate, also through a concept or argument dependent lookup, which
-    // can't all be seen; it is given a copy for what is deferred to call
+    // and a constexpr function that isn't a template: any constant expression may evaluate it,
+    // also through a concept or argument dependent lookup, which can't all be seen. What is
+    // deferred calls its copy.
     if (m_mono && function->isConstexpr() && !function->isTemplated() && !isInstantiatedCopy(function) &&
         function->doesThisDeclarationHaveABody())
         keep(function, true, true);
@@ -116,7 +116,8 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
             if (m_dropped.count(key)) keep(function, true);
             else if (!isCopyable(function)) specialize(function);
         }
-        // an implicit member calls what it calls by name
+        // the calls in the body clang made for an implicit member can't be redirected, so their
+        // callees are specialized
         if ((function->isImplicit() || function->isDefaulted()) && function->doesThisDeclarationHaveABody()) {
             specializeUsedIn(function->getBody());
             if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(function))
@@ -130,7 +131,7 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
         // a virtual function is instantiated where its vtable is, eg. at a constructor, not used there
         if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function); !method || !method->isVirtual())
             addUse(function->getPointOfInstantiation(), function);
-        // nor the exception specification an instantiation evaluated
+        // the traversal doesn't reach the noexcept expression an instantiation computed
         if (const auto* proto = function->getType()->getAs<clang::FunctionProtoType>();
             proto && clang::isComputedNoexcept(proto->getExceptionSpecType()))
             TraverseStmt(proto->getNoexceptExpr());
@@ -147,7 +148,8 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     return true;
 }
 
-// an assertion in a body isn't printed with what is deferred, and stays with a body that stays
+// what a static_assert in a body calls isn't kept: a deferred body prints the assertion as `;`,
+// and a body left in place keeps it
 bool KeepInPlaceVisitor::TraverseStaticAssertDecl(clang::StaticAssertDecl* assertion) {
     bool outer = m_in_body_assertion;
     m_in_body_assertion = isInsideFunction(assertion);
@@ -163,7 +165,8 @@ bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
         keepUsedIn(constant->getSubExpr());
     if (m_mono) {
         if (auto* call = llvm::dyn_cast<clang::CallExpr>(stmt)) m_callees.insert(call->getCallee()->IgnoreParenImpCasts());
-        // a member function whose address is taken is named, not called, that of another function is the copy's
+        // a member function named but not called, eg. its address taken, can't be redirected to a
+        // copy, so it is specialized. The address of a free function becomes that of its copy.
         if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt); ref && !m_callees.count(ref))
             if (auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(ref->getDecl()); method && method->isInstance())
                 specialize(method);
@@ -171,7 +174,7 @@ bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
     if (auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
         addUse(ref->getLocation(), llvm::dyn_cast<clang::FunctionDecl>(ref->getDecl()));
     } else if (auto* member = llvm::dyn_cast<clang::MemberExpr>(stmt)) {
-        // an implicit conversion is called on its object
+        // an implicit conversion has no member name written, so the use is at its object
         clang::SourceLocation loc = member->getMemberLoc().isValid() ? member->getMemberLoc() : member->getBase()->getBeginLoc();
         addUse(loc, llvm::dyn_cast<clang::FunctionDecl>(member->getMemberDecl()));
     // a constructor and a destructor are used with no name written, eg. `Pt p{1, 2};` and `}`
@@ -198,8 +201,7 @@ const clang::FunctionDecl* KeepInPlaceVisitor::patternOf(const clang::FunctionDe
     return function->getCanonicalDecl();
 }
 
-// a defaulted, deleted or implicit function has no text to keep, nor one of a header the TU
-// didn't include in the main file
+// a defaulted, deleted or implicit function has no text to keep, nor one defined outside the main file
 bool KeepInPlaceVisitor::isDefinedHere(const clang::FunctionDecl* pattern) const {
     const clang::FunctionDecl* definition = nullptr;
     unsigned offset;
@@ -215,8 +217,8 @@ bool KeepInPlaceVisitor::isDefinedHere(const clang::FunctionDecl* pattern) const
 void KeepInPlaceVisitor::keep(const clang::FunctionDecl* function, bool templates, bool seed) {
     const clang::FunctionDecl* pattern = patternOf(function);
     if (templates && !seed && !pattern->isTemplated() && !pattern->isConstexpr()) return;
-    // monomorphization specializes a constructor, a destructor or a virtual function, which is then
-    // defined; one used before it can be specialized is told by the error and kept then
+    // monomorphization specializes a constructor, a destructor or a virtual function, so its template
+    // isn't kept. If one is used before its specialization, the driver keeps it on the next attempt.
     if (m_mono && !seed && isInstantiatedCopy(function) && isAlwaysSpecialized(function)) return;
     if (!m_kept.insert(pattern).second || !isDefinedHere(pattern)) return;
     for (const clang::FunctionDecl* redecl : pattern->redecls()) {
@@ -265,7 +267,8 @@ std::set<const clang::FunctionDecl*> KeepInPlaceVisitor::run() {
                                    [](unsigned at, const Range& body) { return at < body.first; });
         return it != bodies.begin() && offset < std::prev(it)->second;
     };
-    // eg. `decltype(f())` of `auto f()` needs the body of `f`
+    // a use outside the bodies keeps templates and constexpr functions, and any function with a
+    // deduced return type, eg. `decltype(f())` of `auto f()` needs the body of `f`
     for (const Use& use : m_uses)
         if (!in_body(use.offset))
             keep(use.function, !use.function->getDeclaredReturnType()->getContainedDeducedType());

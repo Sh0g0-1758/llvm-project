@@ -249,9 +249,8 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 // copies are printed.
 
 // `a != b` is `!(a == b)`, `a < b` is `(a <=> b) < 0`, and reversed, `b < a` is `0 < (a <=> b)`.
-// Once a call in it is redirected, the comparison can't be printed as written, as clang prints it
-// from the rewritten form it no longer recognizes, so the rewritten form is printed instead. Its
-// `!` has no parentheses around its operand, which `!a == b` would need.
+// Once a call in it is redirected, clang can't print the comparison as written, so the rewritten
+// form is printed instead. Parentheses are added after its `!`, or it would print as `!a == b`.
 clang::Expr* rewrittenForm(clang::ASTContext& ctx, clang::CXXRewrittenBinaryOperator* comparison,
                            const std::map<const clang::FunctionDecl*, std::string>& copies) {
     std::function<bool(const clang::Stmt*)> calls_copied = [&](const clang::Stmt* stmt) {
@@ -282,7 +281,7 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
     // a constant expression is evaluated by the compiler, which needs the definition
     // of what it calls before it
     if (auto* constant = llvm::dyn_cast<clang::ConstantExpr>(stmt)) {
-        // a condition is printed as its value, the names in it may not be found where it is printed
+        // a boolean constant is printed as its value: the names in it may not be found here
         if (constant->getResultStorageKind() != clang::ConstantResultStorageKind::None && constant->getType()->isBooleanType()) {
             stream << (constant->getResultAsAPSInt().getBoolValue() ? "true" : "false");
             return true;
@@ -346,7 +345,7 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
     }
     for (unsigned i = first; i < call->getNumArgs(); ++i) {
         clang::Stmt* arg = call->getArg(i);
-        // a default argument is written where the function is declared
+        // a default argument is written where the function is declared, so its names are qualified
         if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg)) {
             arg = default_arg->getExpr();
             qualifyNonLocalNames(arg, m_ctx);
