@@ -141,10 +141,11 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
     }
 
     // A function style cast to a type of several words, eg. `long double(x)`, doesn't parse, so it is
-    // printed as a C style cast, `((long double)(x))`. FunctionalCastToCStyleCast rewrites these in
-    // the AST, but doesn't reach a constructor's member initializers, which are printed here. A space
-    // inside template arguments doesn't count, eg. `cd(x)` of `typedef std::pair<int, int> cd` is
-    // kept. The whole cast is parenthesized, as `(T)(x).m` would cast `(x).m`.
+    // printed as a C style cast, `((long double)(x))`. FunctionalCastToCStyleCastVisitor already
+    // rewrites these in the AST, but not in a constructor's member initializers, so they are fixed
+    // here. A space inside template arguments doesn't count, eg. `cd(x)` of
+    // `typedef std::pair<int, int> cd` is kept. The whole cast is parenthesized, as `(T)(x).m`
+    // would cast `(x).m`.
     if (auto* cast = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(stmt);
         cast && !cast->isListInitialization() && !cast->getType()->isDependentType()) {
         auto several_words = [](const std::string& name) {
@@ -244,13 +245,13 @@ bool DeclBeforeDefPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostrea
 
 // --- MonoPrinterHelper ----------------------------------------------
 //
-// What is deferred calls the copies, see MonoPrinterHelper in the header: the AST still calls
-// the instantiations, which are only declared at the end, so the calls are respelled as the
-// copies are printed.
+// The AST still calls the instantiations, which are only declared at the end of the TU. This
+// printer prints those calls as calls of the copies, see MonoPrinterHelper in the header.
 
-// `a != b` is `!(a == b)`, `a < b` is `(a <=> b) < 0`, and reversed, `b < a` is `0 < (a <=> b)`.
-// Once a call in it is redirected, clang can't print the comparison as written, so the rewritten
-// form is printed instead. Parentheses are added after its `!`, or it would print as `!a == b`.
+// In C++20 clang rewrites some comparisons: `a != b` into `!(a == b)`, `a < b` into
+// `(a <=> b) < 0`, and with reversed operands `b < a` into `0 < (a <=> b)`. clang prints the
+// comparison as written, but the call to redirect is only in the rewritten form, so that form is
+// printed instead. Parentheses are added after its `!`, or it would print as `!a == b`.
 clang::Expr* rewrittenForm(clang::ASTContext& ctx, clang::CXXRewrittenBinaryOperator* comparison,
                            const std::map<const clang::FunctionDecl*, std::string>& copies) {
     std::function<bool(const clang::Stmt*)> calls_copied = [&](const clang::Stmt* stmt) {
@@ -268,7 +269,7 @@ clang::Expr* rewrittenForm(clang::ASTContext& ctx, clang::CXXRewrittenBinaryOper
     return semantic;
 }
 
-// the same policy as the base printer, kept here for the calls of copies it prints itself
+// keeps the same policy as the base printer, for the calls of copies it prints itself
 MonoPrinterHelper::MonoPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy,
                                      const std::map<const clang::FunctionDecl*, std::string>& copies)
     : DeclBeforeDefPrinterHelper(ctx, policy), m_ctx(ctx), m_policy(policy), m_copies(copies) {
@@ -278,10 +279,11 @@ MonoPrinterHelper::MonoPrinterHelper(clang::ASTContext& ctx, clang::PrintingPoli
 }
 
 bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream) {
-    // a constant expression is evaluated by the compiler, which needs the definition
-    // of what it calls before it
+    // the compiler evaluates a constant expression where it is written, so its calls keep calling
+    // the originals, see m_constant
     if (auto* constant = llvm::dyn_cast<clang::ConstantExpr>(stmt)) {
-        // a boolean constant is printed as its value: the names in it may not be found here
+        // a boolean constant is printed as its value: the names in it may not be found at the end
+        // of the TU
         if (constant->getResultStorageKind() != clang::ConstantResultStorageKind::None && constant->getType()->isBooleanType()) {
             stream << (constant->getResultAsAPSInt().getBoolValue() ? "true" : "false");
             return true;
@@ -291,7 +293,8 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
         --m_constant;
         return true;
     }
-    // the static_asserts of an instantiation held when it was instantiated, so they are left out
+    // a statement of only static_asserts is printed as `;`: they already passed when the input
+    // compiled
     if (auto* decl_stmt = llvm::dyn_cast<clang::DeclStmt>(stmt);
         decl_stmt && llvm::all_of(decl_stmt->decls(), [](const clang::Decl* decl) { return llvm::isa<clang::StaticAssertDecl>(decl); })) {
         stream << ";";
@@ -329,9 +332,9 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
     }
 
     // `obj.f(a)` becomes `f__mono...(__builtin_addressof(obj), a)` and `ptr->f(a)` becomes
-    // `f__mono...(ptr, a)`. A temporary has no address of its own: `make().f()` becomes
-    // `f__mono...(__mono_addr(make()))`, a helper returning the address of its argument, which
-    // lives until the end of the full expression.
+    // `f__mono...(ptr, a)`. `__builtin_addressof` can't take the address of a temporary, so
+    // `make().f()` becomes `f__mono...(__mono_addr(make()))`. `__mono_addr` returns the address of
+    // its argument, and the temporary lives until the end of the full expression.
     stream << found->second << "(";
     const char* separator = "";
     if (object) {
@@ -345,7 +348,8 @@ bool MonoPrinterHelper::handledStmt(clang::Stmt* stmt, llvm::raw_ostream& stream
     }
     for (unsigned i = first; i < call->getNumArgs(); ++i) {
         clang::Stmt* arg = call->getArg(i);
-        // a default argument is written where the function is declared, so its names are qualified
+        // a default argument's names were looked up where the function is declared, so they are
+        // qualified from the global namespace to be found here too
         if (auto* default_arg = llvm::dyn_cast<clang::CXXDefaultArgExpr>(arg)) {
             arg = default_arg->getExpr();
             qualifyNonLocalNames(arg, m_ctx);

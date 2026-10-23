@@ -30,7 +30,7 @@ KeepInPlaceVisitor::KeepInPlaceVisitor(clang::ASTContext& ctx, const std::set<st
     m_text = src_mgr.getBufferData(src_mgr.getMainFileID());
 }
 
-// eg. a use in a macro's expansion is at the macro's name, where it is written in the file
+// eg. a use inside a macro's expansion is at the macro's name, where the file uses the macro
 bool KeepInPlaceVisitor::offsetOf(clang::SourceLocation loc, unsigned& offset) const {
     const auto& src_mgr = m_ctx.getSourceManager();
     loc = src_mgr.getExpansionLoc(loc);
@@ -47,13 +47,15 @@ bool KeepInPlaceVisitor::rangeOf(clang::SourceRange range, Range& out) const {
     return offsetOf(range.getBegin(), out.first) && offsetOf(end, out.second) && out.first < out.second;
 }
 
-// The uses inside a kept declaration, eg. those of its default arguments or noexcept, are kept too,
-// so its whole text counts; clang's ranges miss some of it, which is added back below.
+// What a kept declaration uses, eg. in its default arguments or noexcept, is kept too, so the
+// range must cover the whole text. clang's ranges miss some of it, which is added back below.
 bool KeepInPlaceVisitor::declRange(const clang::FunctionDecl* redecl, Range& out) const {
-    // deduction declares a specialization at its template before it is explicitly specialized
+    // a declaration of a specialization that clang made during deduction is located at its
+    // template. It isn't written, so it has no range.
     const clang::FunctionTemplateDecl* primary = redecl->getPrimaryTemplate();
     if (primary && redecl->getBeginLoc() == primary->getTemplatedDecl()->getBeginLoc()) return false;
-    // and a member of a class template specialization is declared at its template
+    // likewise a member clang declared for an instantiated class is located at the member of the
+    // class template
     const clang::FunctionDecl* member = redecl->getInstantiatedFromMemberFunction();
     if (member && redecl->getBeginLoc() == member->getBeginLoc()) return false;
     const clang::Decl* decl = redecl;
@@ -83,8 +85,9 @@ void KeepInPlaceVisitor::addUse(clang::SourceLocation loc, const clang::Function
 
 // --- collection ---------------------------------------------------
 
-// The seeds: what must stay as written whatever uses it. And the bodies, inside which a use doesn't
-// count, since a body is moved to the end with what it calls declared before it.
+// Keeps the seeds: the functions that must stay as written wherever they are used. Also records
+// the range of every body. Outside a constant expression, a use inside a body keeps nothing, as
+// the body moves to the end, after the declarations of everything it calls.
 bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     // what a constant expression calls is evaluated where it is written, also in a body
     if (const auto* var = llvm::dyn_cast<clang::VarDecl>(decl); var && var->isConstexpr()) keepUsedIn(var->getInit());
@@ -95,9 +98,9 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     // an explicit instantiation definition, eg. `template void Data::reserve<true>(int);`, needs
     // the template's definition where it is written, and can't be followed by a specialization
     if (function->getTemplateSpecializationKind() == clang::TSK_ExplicitInstantiationDefinition) keep(function, true, true);
-    // and a constexpr function that isn't a template: any constant expression may evaluate it,
-    // also through a concept or argument dependent lookup, which can't all be seen. What is
-    // deferred calls its copy.
+    // and a constexpr function that isn't a template: any constant expression may call it, also
+    // through a concept or argument dependent lookup, and these calls can't all be found. The
+    // moved code calls its copy instead.
     if (m_mono && function->isConstexpr() && !function->isTemplated() && !isInstantiatedCopy(function) &&
         function->doesThisDeclarationHaveABody())
         keep(function, true, true);
@@ -106,9 +109,10 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     if (!function->isDependentContext() && function->doesThisDeclarationHaveABody() && !isNamedAnywhere(function))
         keep(function, true, true);
     if (m_mono && !llvm::isa<clang::CXXDeductionGuideDecl>(function)) {
-        // what the driver learned must stay, see laterUnmoved. A used instantiation without a copy
-        // keeps its template when its copy didn't compile, and is specialized when it can't be
-        // copied, eg. one returning a local class
+        // the functions the driver found must stay as written, see laterUnmoved. A used
+        // instantiation whose copy didn't compile keeps its template. One that can't be copied is
+        // specialized, or keeps its template if it can't be specialized either, eg. one returning
+        // a local class
         std::string key = passKey(function);
         if (m_names.count(key)) {
             keep(function, true, true);
@@ -116,8 +120,9 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
             if (m_dropped.count(key)) keep(function, true);
             else if (!isCopyable(function)) specialize(function);
         }
-        // the calls in the body clang made for an implicit member can't be redirected, so their
-        // callees are specialized
+        // clang generates the body of an implicit or defaulted member, eg. a defaulted copy
+        // constructor. That body isn't in the text, so its calls can't be redirected to copies,
+        // and their callees are specialized instead
         if ((function->isImplicit() || function->isDefaulted()) && function->doesThisDeclarationHaveABody()) {
             specializeUsedIn(function->getBody());
             if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(function))
@@ -128,7 +133,8 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     if (clang::Expr* explicit_expr = clang::ExplicitSpecifier::getFromDecl(function).getExpr())
         TraverseStmt(explicit_expr);
     if (function->isTemplateInstantiation()) {
-        // a virtual function is instantiated where its vtable is, eg. at a constructor, not used there
+        // a virtual function is instantiated where its vtable is needed, eg. at a constructor,
+        // which isn't a use of the function
         if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function); !method || !method->isVirtual())
             addUse(function->getPointOfInstantiation(), function);
         // the traversal doesn't reach the noexcept expression an instantiation computed
@@ -136,7 +142,8 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
             proto && clang::isComputedNoexcept(proto->getExceptionSpecType()))
             TraverseStmt(proto->getNoexceptExpr());
     }
-    // the body, from the member initializers of a constructor, eg. `: data(alloc(n))`, on
+    // the range of the body, starting at a constructor's written member initializers, eg.
+    // `: data(alloc(n))`
     unsigned begin, end;
     if (function->doesThisDeclarationHaveABody() && offsetOf(function->getBody()->getBeginLoc(), begin) &&
         offsetOf(function->getBody()->getEndLoc(), end)) {
@@ -148,8 +155,8 @@ bool KeepInPlaceVisitor::VisitDecl(clang::Decl* decl) {
     return true;
 }
 
-// what a static_assert in a body calls isn't kept: a deferred body prints the assertion as `;`,
-// and a body left in place keeps it
+// What a static_assert inside a body calls isn't kept as a seed. A moved body prints the
+// assertion as `;`. A body left in place is scanned by run(), which keeps what it uses.
 bool KeepInPlaceVisitor::TraverseStaticAssertDecl(clang::StaticAssertDecl* assertion) {
     bool outer = m_in_body_assertion;
     m_in_body_assertion = isInsideFunction(assertion);
@@ -158,8 +165,9 @@ bool KeepInPlaceVisitor::TraverseStaticAssertDecl(clang::StaticAssertDecl* asser
     return result;
 }
 
-// eg. in `std::array<int, size(xs)> a;` the template argument is a ConstantExpr, and `size` must be
-// defined there; every reference to a function is a use, kept if it is outside a body
+// Keeps what a constant expression calls, eg. `size` in `std::array<int, size(xs)> a;` must be
+// defined there. Also records every reference to a function as a use; run() keeps the uses
+// outside the bodies.
 bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
     if (auto* constant = llvm::dyn_cast<clang::ConstantExpr>(stmt); constant && !m_in_body_assertion)
         keepUsedIn(constant->getSubExpr());
@@ -188,8 +196,8 @@ bool KeepInPlaceVisitor::VisitStmt(clang::Stmt* stmt) {
 
 // --- keep ---------------------------------------------------------
 
-// eg. `auto View<__invisible_lambda_1a2b3c4d5e_3>::begin()` can't be declared at the end, where the lambda's
-// struct is local to a function
+// eg. `auto View<__invisible_lambda_1a2b3c4d5e_3>::begin()` can't be declared at the end of the TU:
+// the lambda's struct is local to a function, so it can't be named there
 bool KeepInPlaceVisitor::isNamedAnywhere(const clang::FunctionDecl* function) const {
     const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(function);
     return isNameableAnywhere(function->getType()) &&
@@ -212,8 +220,9 @@ bool KeepInPlaceVisitor::isDefinedHere(const clang::FunctionDecl* pattern) const
            !pattern->isImplicit() && offsetOf(definition->getLocation(), offset);
 }
 
-// Keeping is by pattern: `twice<int>` used outside a body keeps `template <class T> T twice(T)`,
-// all of its declarations, each of whose text is then scanned for further uses in run().
+// Keeps the template, not the instantiation: `twice<int>` used outside a body keeps
+// `template <class T> T twice(T)`. The text of each of its declarations is queued, and run()
+// keeps what that text uses.
 void KeepInPlaceVisitor::keep(const clang::FunctionDecl* function, bool templates, bool seed) {
     const clang::FunctionDecl* pattern = patternOf(function);
     if (templates && !seed && !pattern->isTemplated() && !pattern->isConstexpr()) return;
@@ -227,23 +236,25 @@ void KeepInPlaceVisitor::keep(const clang::FunctionDecl* function, bool template
     }
 }
 
-// eg. `&Vec<int>::size` stays the member's address, so `Vec<int>::size` is written as an explicit
-// specialization rather than given a copy `size__mono...`, which the address wouldn't be
+// eg. `&Vec<int>::size` must stay a pointer to member, which a free function `size__mono...` can't
+// be. So `Vec<int>::size` is written as an explicit specialization instead of a copy.
 void KeepInPlaceVisitor::specialize(const clang::FunctionDecl* function) {
     if (!isInstantiatedCopy(function)) return;
     if (isCopyable(function, true)) m_specialized.insert(function->getCanonicalDecl());
     else keep(function, true);
 }
 
-// eg. a defaulted `bool operator==(const Box&) const = default;` calls the members' own, eg.
-// `Item<int>::operator==`, in a body clang made, which no redirection to a copy reaches
+// eg. a defaulted `bool operator==(const Box&) const = default;` calls the `operator==` of each
+// member, eg. `Item<int>::operator==`, in a body clang generates. That body isn't in the text, so
+// the call can't be redirected to a copy.
 void KeepInPlaceVisitor::specializeUsedIn(const clang::Stmt* stmt) {
     if (!stmt) return;
     if (const clang::FunctionDecl* function = namedFunction(stmt)) specialize(function);
     for (const clang::Stmt* child : stmt->children()) specializeUsedIn(child);
 }
 
-// what a constant expression uses is evaluated by the compiler
+// the compiler evaluates a constant expression where it is written, so what it uses must be
+// defined there
 void KeepInPlaceVisitor::keepUsedIn(const clang::Stmt* stmt) {
     if (!stmt) return;
     if (const clang::FunctionDecl* function = namedFunction(stmt)) keep(function, true);
@@ -251,8 +262,9 @@ void KeepInPlaceVisitor::keepUsedIn(const clang::Stmt* stmt) {
     for (const clang::Stmt* child : stmt->children()) keepUsedIn(child);
 }
 
-// collect, then keep what is used outside the bodies (merged so that a nested body, eg. a local
-// class's member, doesn't split one), then what the kept text uses, until nothing new is queued
+// Collects the uses and the bodies, keeps what is used outside the bodies, then keeps what the
+// kept text uses, until nothing new is queued. A nested body, eg. of a member of a local class, is
+// merged into the body around it, so the bodies don't overlap and can be binary searched.
 std::set<const clang::FunctionDecl*> KeepInPlaceVisitor::run() {
     TraverseDecl(m_ctx.getTranslationUnitDecl());
     std::sort(m_uses.begin(), m_uses.end(), [](const Use& a, const Use& b) { return a.offset < b.offset; });

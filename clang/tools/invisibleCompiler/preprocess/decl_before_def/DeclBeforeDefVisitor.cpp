@@ -31,11 +31,11 @@ size_t closingAngle(const std::string& text, size_t open) {
     return std::string::npos;
 }
 
-// The printer puts a `[[...]]` written after the name of a function, eg.
-// `operator() [[nodiscard]] (int)`, after its type, where it would apply to the
-// type. In front of the declaration it applies to the function. When a requires
-// clause follows the template heads, the attributes are dropped. They are eg.
-// `nodiscard` or `deprecated`, which only matter for diagnostics.
+// Moves a `[[...]]` at the end of @p decl to its front, after the template heads. clang's printer
+// puts an attribute written after a function's name, eg. `operator() [[nodiscard]] (int)`, at
+// the end of the declaration, where it would apply to the function's type. At the front it
+// applies to the function. When a requires clause follows the template heads, the attributes are
+// dropped instead. They are eg. `nodiscard` or `deprecated`, which only matter for diagnostics.
 //
 //     template<> int S::operator()(int) [[nodiscard]]     (printed, an error)
 //     template<> [[nodiscard]] int S::operator()(int)     (after the template heads)
@@ -62,9 +62,9 @@ void hoistTrailingAttributes(std::string& decl) {
 
 // Removes the template arguments of the function @p name in the declaration @p decl, those
 // between `name<` and the `>` before its parameters, eg. `get<int>(int)` becomes `get(int)`.
-// Written arguments are substituted into every template of that name, which can be a hard error.
-// Left out, they are deduced from the type, see VisitFunctionDecl. Only `name<...>(` is matched,
-// not eg. `vector<get<int>>` in a parameter type.
+// clang substitutes written arguments into every template of that name, which can be a hard
+// error. Left out, they are deduced from the function's type, see VisitFunctionDecl. Only
+// `name<...>(` is matched, not eg. `vector<get<int>>` in a parameter type.
 void stripTemplateArguments(std::string& decl, const std::string& name) {
     auto is_word = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
     for (size_t at = decl.find(name + "<"); at != std::string::npos; at = decl.find(name + "<", at + 1)) {
@@ -78,10 +78,11 @@ void stripTemplateArguments(std::string& decl, const std::string& name) {
     }
 }
 
-// Puts the deferred @p text of @p func, a function in an unnamed namespace, back in that
-// namespace: declared outside it, it would be another function. `(anonymous namespace)::`,
-// which isn't C++, is removed from the names, which are still found through the namespace.
-// eg. for `f` in `namespace a { namespace { struct T; void f(T); } }` the deferred
+// Wraps @p text, the moved declaration or definition of @p func, in the namespaces of @p func
+// when one of them is unnamed. Declared outside the unnamed namespace, it would be a different
+// function. clang prints such names with `(anonymous namespace)::`, which isn't C++, so that is
+// removed. The names are still found, as the text is now inside the namespace. eg. for `f` in
+// `namespace a { namespace { struct T; void f(T); } }` the moved
 // `void a::(anonymous namespace)::f(a::(anonymous namespace)::T)` becomes
 // `namespace a { namespace { void f(a::T) } }`.
 void enterUnnamedNamespace(const clang::FunctionDecl* func, std::string& text) {
@@ -131,11 +132,11 @@ void inlineUsed(std::string& decl, bool used) {
     decl.insert(at, "inline ");
 }
 
-// Whether DeclBeforeDef leaves @p func where it is written, with its
-// instantiations: a defaulted or deleted function, one used by what stays in
-// place, a friend, and a template specialized for the closure type of a lambda,
-// eg. `template <class F> void call(F f)` called as `call([]{})`: `call<(lambda)>` has no
-// name a specialization could be declared with, so `call` keeps its body where it is.
+// Whether DeclBeforeDef leaves @p func where it is written, with its instantiations: a
+// defaulted, deleted or consteval function, one in @p kept_in_place, a friend, or a template with
+// an instantiation for the closure type of a lambda, eg. `template <class F> void call(F f)`
+// called as `call([]{})`: `call<(lambda)>` has no name a specialization could be declared with,
+// so `call` keeps its body where it is.
 bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func, const std::set<const clang::FunctionDecl*>& kept_in_place) {
     // a consteval function is only evaluated by the compiler, which needs its definition before it is used
     if (func->isDefaulted() || func->isDeleted() || func->isConsteval()) return true;
@@ -156,18 +157,20 @@ bool isKeptByDeclBeforeDef(const clang::FunctionDecl* func, const std::set<const
     });
 }
 
-// An expression naming @p func, the specialization of a member of a class template,
-// eg. `&S<int>::f` or `(S<int>(static_cast<int (*)()>(nullptr)()))`. Put in the
-// declaration of the specialization, it makes clang compute the member's exception
-// specification first. Otherwise a computed `noexcept` doesn't match: the declaration
-// isn't taken as a specialization of the member, or is rejected when it has `requires`.
+// An expression that names @p func, a member of an instantiated class template, eg. `&S<int>::f`,
+// or for a constructor `(S<int>(static_cast<int (*)()>(nullptr)()))`. It goes in the `noexcept`
+// of the specialization's declaration. Naming the member there makes clang compute the member's
+// exception specification before it compares it with the declaration's. Otherwise the two don't
+// match: clang doesn't take the declaration as a specialization of the member, or rejects it when
+// it has `requires`.
 std::string printMemberProbe(clang::ASTContext& ctx, const clang::FunctionDecl* func, const clang::PrintingPolicy& policy) {
     const auto* method = llvm::cast<clang::CXXMethodDecl>(func);
     const clang::CXXRecordDecl* record = method->getParent();
     std::string cls;
     llvm::raw_string_ostream cls_out(cls);
     record->getNameForDiagnostic(cls_out, policy, true);
-    // a value of the exact type of each parameter, without constructing any
+    // a constructor is called with a value of the exact type of each parameter, made by calling
+    // a null function pointer. It is never evaluated, as the probe goes in a `sizeof`.
     if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(method)) {
         std::string probe = "(" + cls + "(";
         for (unsigned i = 0; i < ctor->getNumParams(); ++i) {
@@ -217,7 +220,7 @@ class ValueTypeCollector : public clang::RecursiveASTVisitor<ValueTypeCollector>
 
 }  // namespace
 
-// only an instantiation can fail to be constant: written code already compiled as written
+// only an instantiation needs checking: clang already accepted any other function as written
 bool printsConstexpr(const clang::FunctionDecl* func) {
     if (!func->isConstexpr() || func->isConsteval() || !isInstantiatedCopy(func)) return func->isConstexpr();
     llvm::SmallVector<clang::PartialDiagnosticAt, 8> notes;
@@ -228,8 +231,8 @@ bool printsConstexpr(const clang::FunctionDecl* func) {
 // which calls `Box<int>(Box<int>&&)`: an instantiated move constructor the input never needed.
 void instantiateConstructorsOfValues(clang::ASTContext& ctx, clang::Sema& sema) {
     if (!ctx.getLangOpts().CPlusPlus) return;
-    // looking the constructors up declares the implicit ones, which isn't done while
-    // traversing the classes they are declared in
+    // looking up a constructor declares the implicit ones, which adds members to the class. That
+    // isn't done during the traversal, so the types are collected first.
     ValueTypeCollector collector(ctx);
     collector.TraverseDecl(ctx.getTranslationUnitDecl());
     for (const auto& [loc, type] : collector.m_values) {
@@ -266,7 +269,7 @@ unsigned countDeducedTemplates(clang::Sema& sema, clang::FunctionDecl* func, boo
 
 // --- DeclBeforeDefVisitor ----------------------------------------------
 
-// the instantiations are what is deferred as specializations, or copied
+// the instantiations are what the pass writes at the end, as specializations or copies
 bool DeclBeforeDefVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
 DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Sema& sema, clang::Rewriter& rewriter,
@@ -287,7 +290,7 @@ DeclBeforeDefVisitor::DeclBeforeDefVisitor(clang::ASTContext& ctx, clang::Sema& 
       m_dropped(dropped),
       m_mono(ctx.getLangOpts().CPlusPlus),
       m_custom_printer(ctx, m_policy, m_copies) {
-    // the bodies of what is deferred, as written
+    // the bodies of the moved definitions, in C++ spelling and with the classes they define
     if (m_ctx.getLangOpts().CPlusPlus) m_policy.adjustForCPlusPlus();
     m_policy.IncludeTagDefinition = true;
 
@@ -470,8 +473,9 @@ std::string DeclBeforeDefVisitor::printCtorInitializers(clang::CXXConstructorDec
             clang::Expr** args = nullptr;
             unsigned num_args = 0;
 
-            // `m(a, b)` is a constructor call or, in a template, a list of expressions; their
-            // arguments are printed rather than the construction, `m(T(a, b))` would convert
+            // `m(a, b)` is a CXXConstructExpr, or in a template a ParenListExpr. Only the
+            // arguments are printed: printing the construction would give `m(T(a, b))`, an extra
+            // conversion
             if (auto* paren_list = llvm::dyn_cast<clang::ParenListExpr>(expr)) {
                 args = paren_list->getExprs();
                 num_args = paren_list->getNumExprs();
@@ -519,7 +523,8 @@ void DeclBeforeDefVisitor::recordFunctionDefinition(clang::FunctionDecl* func, s
     // specialization of it after that declaration is an error
     if (func->getTemplateSpecializationKind() == clang::TSK_ExplicitInstantiationDeclaration) return;
 
-    // the body isn't fully qualified like the head, which would break eg. a function redeclared in a block
+    // the body isn't printed fully qualified like the head: that would break eg. a call of a
+    // function redeclared in a block
     std::string body;
     llvm::raw_string_ostream body_out(body);
     // the body calls the copies, see redirectCalls
@@ -533,13 +538,15 @@ void DeclBeforeDefVisitor::recordFunctionDefinition(clang::FunctionDecl* func, s
     std::string prefix;
     for (unsigned levels = countEnclosingTemplateLevels(func); levels > 0; --levels) prefix += "template<> ";
 
-    // the printer prints neither the member initializers with the head nor with the body
+    // clang's printer prints the member initializers with neither the head nor the body, so they
+    // are printed separately
     std::string ctor_init;
     if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func)) ctor_init = printCtorInitializers(ctor);
 
     for (std::string* head : {&definition_head, &declaration_head}) {
-        // a constructor template's arguments are always deduced and can't be written, which also
-        // covers parameter packs; another template's pack is printed `<>`, see fixParameterPack
+        // the template arguments of a constructor template can't be written, they are always
+        // deduced, so they are removed, packs included. For any other template with a pack, the
+        // printer writes a wrong argument list, eg. `<>`, which is replaced, see fixParameterPack
         if (auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(func); ctor && ctor->getPrimaryTemplate())
             stripConstructorTemplateArgs(*head, ctor);
         else if (const clang::FunctionTemplateDecl* primary = func->getPrimaryTemplate();
@@ -650,11 +657,12 @@ class InheritedDefaultArgsHider {
     std::vector<std::function<void()>> m_restores;
 };
 
-// clang prints the name of a conversion without the scope of its type, eg. `operator
-// basic_string_view` or `operator unique_ptr<T>`, which is not a type once the class is a
-// template specialization or out of its scope. The conversion is named after its type while printed.
-// The destructor of a member class template is named with the template arguments of
-// both classes, eg. `~_Impl<A...>::_Impl<B...>`, and is named `~_Impl` instead.
+// Renames @p func while this object lives, so that it prints right. clang prints the name of a
+// conversion with its type as written in the class, eg. `operator basic_string_view` or
+// `operator unique_ptr<T>`. Outside the class, or in a specialization, that isn't a valid type, so
+// the conversion is named after its type printed with @p policy. The destructor of a member class
+// template is printed with the template arguments of both classes, eg.
+// `~_Impl<A...>::_Impl<B...>`, so it is named `~_Impl` instead.
 class ConversionNameSpeller {
   public:
     ConversionNameSpeller(clang::FunctionDecl* func, const clang::PrintingPolicy& policy)
@@ -676,10 +684,11 @@ class ConversionNameSpeller {
     clang::DeclarationName m_saved;
 };
 
-// Has @p func printed without `constexpr` while it is in scope, see printsConstexpr. Only a
-// specialization of a function template may drop `constexpr`. A member of a class template is
-// redeclared and must match. eg. `make_pair<const string, int>` of a `constexpr` template is
-// declared `template<> pair<const string, int> make_pair(...)`.
+// While this object lives, @p func prints without `constexpr` when printsConstexpr says so. Only
+// a specialization of a function template may drop `constexpr`. A member of a class template is
+// redeclared, and must keep it to match its declaration in the class. eg.
+// `make_pair<const string, int>` of a `constexpr` template is declared
+// `template<> pair<const string, int> make_pair(...)`.
 class ConstexprDropper {
   public:
     explicit ConstexprDropper(clang::FunctionDecl* func) : m_func(func), m_saved(func->getConstexprKind()) {
@@ -772,9 +781,9 @@ clang::SourceLocation DeclBeforeDefVisitor::expandToTerminatingSemi(clang::Sourc
 }
 
 // Writes the declaration @p decl of @p func where @p func is written, replacing its definition,
-// eg. `int f(int x) { return x; }` becomes `int f(int x);`, and tells the driver's retries what
-// it wrote there: the first line of a replaced definition (replaced()) or of a template reduced to
-// a declaration (stripped()), so that an error on that line can be blamed on it.
+// eg. `int f(int x) { return x; }` becomes `int f(int x);`. It records the first line it writes,
+// in replaced() for a definition or in stripped() for a template reduced to a declaration. When
+// the output doesn't compile, the driver uses it to find the function an error on that line is in.
 void DeclBeforeDefVisitor::replaceFunctionDeclaration(clang::FunctionDecl* func, std::string& decl) {
     respellDecayedVaList(decl);
     hoistTrailingAttributes(decl);
@@ -884,8 +893,8 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
             hoistTrailingAttributes(definition_head);
             declaration_head = definition_head;
 
-            // the `noexcept(expr)` of a specialization is spelled by its value, the
-            // expression may call what is only defined later, eg. with a deduced return type:
+            // the `noexcept(expr)` of a specialization is printed as its value, as the expression
+            // may call a function only defined later, eg. one with a deduced return type:
             // `noexcept(noexcept(swap(a, b)))` of `T = int` becomes `noexcept`
             const auto* proto = func->getType()->getAs<clang::FunctionProtoType>();
             if (func->isTemplateInstantiation() && proto && clang::isComputedNoexcept(proto->getExceptionSpecType()) &&
@@ -960,7 +969,7 @@ bool DeclBeforeDefVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
         }
     }
 
-    // a template has no code of its own. Anything else is defined at the end.
+    // a template produces no code, so it isn't defined at the end. Anything else is.
     if (!func->isDependentContext()) recordFunctionDefinition(func, definition_head, declaration_head);
 
     // the definition where it is written becomes its declaration. The instantiations of a template
@@ -1028,7 +1037,7 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
         m_entries.push_back({key, first, lines, copy});
     };
 
-    // a copy's object, a temporary, has its address taken while it is alive
+    // `__mono_addr` passes a temporary object to a copy by address, eg. `make()` of `make().get()`
     if (m_mono && !m_copied.empty())
         add("template <class T> T *__mono_addr(T &&x) { return __builtin_addressof(x); }", "", false);
     for (size_t i = 0; i < m_deferred_declarations.size(); ++i)
@@ -1090,7 +1099,8 @@ std::string DeclBeforeDefVisitor::getDeferredDefinitions() {
 namespace {
 
 // Whether @p stmt declares a static local that isn't constant, eg. `static int n; return ++n;`.
-// A copy would get its own `n`, and count apart from the original that code left in place still calls.
+// A copy would have a separate `n`. Code left in place still calls the original, so the two would
+// count separately.
 bool hasStaticLocal(const clang::Stmt* stmt) {
     if (!stmt) return false;
     if (const auto* decls = llvm::dyn_cast<clang::DeclStmt>(stmt))
@@ -1127,10 +1137,11 @@ bool isAlwaysSpecialized(const clang::FunctionDecl* func) {
 
 namespace {
 
-// The functions given a copy, see DeclBeforeDefVisitor::monomorphize: the copyable template
-// instantiations, `constexpr` functions, which stay in place for the compiler to evaluate, and
-// what DeclBeforeDef leaves as written. A virtual function isn't copied: its specialization is
-// written for the vtable anyway, and its calls call that.
+// Collects the functions to give a copy, see DeclBeforeDefVisitor::monomorphize. These are the
+// copyable template instantiations, and the copyable functions whose definition stays in place:
+// `constexpr` functions, which the compiler evaluates there, and those isKeptByDeclBeforeDef
+// accepts. A virtual function isn't copied: its specialization is written for the vtable anyway, and its
+// calls go to that.
 class CopiedCollector : public clang::RecursiveASTVisitor<CopiedCollector> {
   public:
     CopiedCollector(const std::set<const clang::FunctionDecl*>& kept) : m_kept(kept) {}
@@ -1181,9 +1192,10 @@ clang::FunctionDecl* DeclBeforeDefVisitor::printedFunction(const std::string& na
     return func;
 }
 
-// Has the calls in @p node of what is given a copy call the copy, in the AST, as a call
-// in a declaration isn't printed with a PrinterHelper. A copy takes the object of a
-// member function first, eg.
+// Changes the AST in @p node so that the calls of functions that have a copy call the copy.
+// MonoPrinterHelper does the same while printing, but clang doesn't use the PrinterHelper for
+// a declaration inside a statement, eg. a variable's initializer, so the AST is changed too. A
+// copy takes the object of a member function first, eg.
 //
 //     v.push_back(x)            =>  push_back__mono...(__builtin_addressof(v), x)
 //     it->second.size()         =>  size__mono...(__builtin_addressof(it->second))
@@ -1222,7 +1234,8 @@ void DeclBeforeDefVisitor::redirectCalls(clang::Stmt*& node) {
                         for (clang::CXXCtorInitializer* init : ctor->inits())
                             if (clang::Stmt* value = init->getInit()) redirectCalls(value);
                 }
-    // braces print their syntactic form, a separate list of the same elements
+    // clang prints an init list from its syntactic form, a separate InitListExpr with the same
+    // elements, so that one is changed too
     if (auto* list = llvm::dyn_cast<clang::InitListExpr>(node); list && list->getSyntacticForm())
         for (clang::Stmt*& child : list->getSyntacticForm()->children()) redirectCalls(child);
     auto* call = llvm::dyn_cast<clang::CallExpr>(node);
@@ -1296,7 +1309,8 @@ std::string DeclBeforeDefVisitor::copyHeader(clang::FunctionDecl* func, const st
     }
     const auto* proto = func->getType()->getAs<clang::FunctionProtoType>();
     if (proto && proto->isVariadic()) params_out << separator << "...";
-    // the copies of a function of internal linkage in other TUs are other functions
+    // a function with internal linkage is a different function in each TU, so its copy must be
+    // `static` too, or the copies of different TUs would merge at link time
     std::string header = func->isExternallyVisible() ? "" : "static ";
     if (printsConstexpr(func)) header += "constexpr ";
     llvm::raw_string_ostream header_out(header);
