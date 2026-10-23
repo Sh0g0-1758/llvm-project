@@ -37,9 +37,10 @@ bool ConstantFoldVisitor::TraverseParmVarDecl(clang::ParmVarDecl* param) {
     return true;
 }
 
-// the exception specification of a function is left as written. The one of the
-// specialization of a member of a class template names the member to have clang
-// work out the exception specification of the member, see DeclBeforeDef.
+// records the `noexcept(...)` of @p func, which VisitExpr leaves as written. decl-before-def puts
+// an expression naming the member, eg. `&S<int>::f`, in the `noexcept` of a member's
+// specialization, so that clang computes the member's exception specification first. Folded,
+// that expression would be gone.
 bool ConstantFoldVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     clang::SourceRange spec = func->getExceptionSpecSourceRange();
     if (spec.isValid()) m_exception_specs.push_back(spec);
@@ -78,6 +79,18 @@ bool ConstantFoldVisitor::isConstantLiteral(clang::Expr* inner) {
     return false;
 }
 
+// Replaces an expression with its value when clang can compute it at compile time, eg.
+// `2 * 8 + 1` => `17`. The value comes from clang's Expr::EvaluateAsRValue, which does more than
+// fold literals but less than constant propagation. It can read:
+//  - literals and the operators on them, eg. `2 * 8 + 1` => `17`;
+//  - `const` and `constexpr` variables with a constant initializer, also an element or member of
+//    one, eg. `k * 2` => `10` after `const int k = 5;`, or `ps[1].b` => `4` of a const array `ps`;
+//  - calls of `constexpr` functions, eg. `sq(3)` => `9`.
+// It doesn't read a variable that isn't const, even one only ever set to a constant, eg.
+// `local * 2` after `int local = 4;` stays. Nor does it call a function that isn't constexpr, or
+// fold what depends on a parameter, eg. `n * 0`.
+// Only an integer or floating point value is written back. The checks below leave everything else
+// as written, each with its reason.
 bool ConstantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (expr->getSourceRange().isInvalid()) return true;
     if ((expr->getSourceRange().getBegin() >= m_last_update_loc_begin) && (expr->getSourceRange().getEnd() <= m_last_update_loc_end)) return true;
@@ -95,22 +108,17 @@ bool ConstantFoldVisitor::VisitExpr(clang::Expr* expr) {
     if (exprTy.isNull() || exprTy->isDependentType() || exprTy->isUndeducedType() || exprTy->isVoidType())
         return true;
 
-    // Don't fold enums into their underlying type. Note that we don't care if
-    // the underlying type is enum as we should use enum vals to do arith ops
-    // if the final type of the expr is an arith type
+    // an enum value is left as written. Folded, it would become a number of the underlying type,
+    // eg. `Color::red` => `0`, which isn't a `Color`.
     if (exprTy->isEnumeralType())
         return true;
 
-    // only a number is folded, see below, and what else is constant needn't be evaluated
+    // only an integer or a floating point value is folded, see below, so other types aren't evaluated
     if (!exprTy->isIntegerType() && !exprTy->isRealFloatingType())
         return true;
 
-    // -2 -> negop (numeric literal)
-    // The Pass will loop indefinitely if it sees a negation literal followed by a
-    // numeric expression. This is because C grammar parses it as a unop. It will then
-    // emit it as a unop only. We match on this and exit early if that is the case. 
-    // We don't need to worry about parentheses and implicit casts as they will get removed
-    // by themselves as the pass goes to deeper expressions.
+    // `-2` isn't a literal: it is the unary `-` applied to the literal `2`. Folding it would write
+    // `-2` again, and the pass would never stop.
     if (auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr->IgnoreParenImpCasts()))
         if (unary->getOpcode() == clang::UO_Minus)
             if (llvm::isa<clang::IntegerLiteral>(unary->getSubExpr()) ||
@@ -135,40 +143,24 @@ bool ConstantFoldVisitor::VisitExpr(clang::Expr* expr) {
         if (bin_op->getOpcode() == clang::BO_Comma)
             return true;
 
-    // Don't fold builtin calls (e.g. __builtin_nanf, __builtin_inf, etc.)
-    // as they resolve to something that is internal to the compiler and will thus
-    // not be valid when sent into compilation by replacing it. For instance, 
-    // __builtin_nanf ("") resolves to nan, which clang sees as a reference to the
-    // function nan. 
+    // a builtin call, eg. `__builtin_nanf("")`, is left as written. Its value may have no literal:
+    // the NaN would be printed as `nan`, which clang reads as the function `nan`.
     if (auto* call = llvm::dyn_cast<clang::CallExpr>(expr->IgnoreParenImpCasts()))
         if (auto* fn = llvm::dyn_cast_or_null<clang::FunctionDecl>(call->getCalleeDecl()))
             if (fn->getBuiltinID() != 0)
                 return true;
     
-    // Don't fold expressions whose job is to convert an rvalue to an xvalue.
-    // for instance, an rvalue arg to a function that takes an rvalue reference.
+    // a temporary bound to a reference, eg. the argument of `f(int &&)` in `f(2 + 3)`, is left as
+    // written. The expression inside it, `2 + 3`, is folded instead.
     if (llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expr)) {
         return true;
     }
 
-    // Don't fold expressions that have typeof as their immediate parent. 
-    // This is because it can convert a valid expression __typeof__(0) into
-    // something invalid, eg. __typeof__0 ie. stripping the parens. 
-    // Don't fold expressions that have MemberExpr as their immediate parent. 
-    // This is because it can convert an expression that should result in an 
-    // lvalue into an initializer list. for instance consider : 
-    // struct a ...
-    // struct b ... {uses struct a}
-    // const struct b store[2] = {{{.....}}}
-    // ... function foo begins
-    // Type result = store[1].<b_member>.<a_member>
-    // ...
-    // This can be converted to : 
-    // Type result = {...}.<a_member>
-    // without this check. This is because the lvalue to rvalue cast is 
-    // after the access to the a member. Thus before it, it does not have
-    // access to the information as to whether or not its an lvalue or not
-    // and if it can replace it, it does. 
+    // the operand of `__typeof__(...)` and the object of a member access are left as written:
+    //  - folding the operand of `__typeof__(0)` can drop its parentheses, `__typeof__0`, which
+    //    doesn't compile;
+    //  - with a const array `store` of structs, the object `store[1].b` of `store[1].b.a` is a
+    //    constant too. Folded, it would be a braced list, `{...}.a`, which doesn't compile.
     if (skipIfBadParent(expr)) {
         return true;
     }
@@ -212,7 +204,8 @@ bool ConstantFoldVisitor::VisitExpr(clang::Expr* expr) {
         OS << digits << suffix;
     } else if (value.isInt() && value.getInt().isSigned() && value.getInt().isMinSignedValue() &&
                value.getInt().getBitWidth() > 1 && !expr->getType()->isBooleanType() && !promotes) {
-        // the literal of the minimum is the negation of a value the type doesn't hold
+        // the minimum of a signed type has no literal: `-2147483648` is `-` applied to `2147483648`,
+        // which doesn't fit in an int. So it is written `(-2147483647 - 1)`.
         llvm::APSInt above(value.getInt() + 1, false);
         OS << "(" << above << integerSuffix(m_ctx, above, expr->getType()) << " - 1)";
     } else if (value.isInt() && expr->getType()->isBooleanType() && !m_ctx.getLangOpts().CPlusPlus) {

@@ -25,14 +25,14 @@ class ConstantFoldVisitor : public LaterPassVisitor<ConstantFoldVisitor> {
 private:
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
-    // the expression last folded: what is inside it isn't folded in the same iteration, as its
-    // text is replaced already, eg. `1 + 1` of `(1 + 1) * 3`
+    // the range of the expression folded last. The expressions inside it are skipped for the rest
+    // of the iteration, as its text is already replaced, eg. `1 + 1` in `(1 + 1) * 3`.
     clang::SourceLocation m_last_update_loc_begin;
     clang::SourceLocation m_last_update_loc_end;
     // the `noexcept(...)` of the functions visited so far
     std::vector<clang::SourceRange> m_exception_specs;
-    // whether @p expr is the operand of `__typeof__(...)` or the object of a member access, eg.
-    // `store[1].b` of a const array, where its value isn't what is written
+    // whether @p expr is the operand of `__typeof__(...)` or the object of a member access, where
+    // folding it gives code that doesn't compile, see VisitExpr
     bool skipIfBadParent(clang::Expr* expr);
     // whether @p inner is a literal already, eg. `5`, `'a'` or `"s"`, which needn't be folded
     bool isConstantLiteral(clang::Expr* inner);
@@ -41,7 +41,7 @@ public:
     ConstantFoldVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
     // `2 * 8 + 1` => `17`, see the definition
     virtual bool VisitExpr(clang::Expr* expr);
-    // notes the exception specification of @p func, which isn't folded
+    // records the `noexcept(...)` of @p func, which isn't folded
     bool VisitFunctionDecl(clang::FunctionDecl* func);
     // a default argument is folded where it is written, not where it is inherited
     bool TraverseParmVarDecl(clang::ParmVarDecl* param);
