@@ -23,9 +23,9 @@ InformationCollectorVisitor::InformationCollectorVisitor(clang::ASTContext& ctx,
 
 bool InformationCollectorVisitor::shouldVisitTemplateInstantiations() const { return true; }
 
-// prints what clang knows of @p func, eg. the facts of `id` and of `id<int>` for
-// `template <class T> T id(T)` called with an int. They tell why decl-before-def treats a
-// function as it does.
+// Prints what clang knows about @p func, eg. whether it has a body or is a template instantiation.
+// For `template <class T> T id(T)` called with an int, both `id` and `id<int>` are printed. The
+// facts help explain why decl-before-def treats a function as it does.
 bool InformationCollectorVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
     std::string function_name = func->getNameAsString();
     llvm::outs() << "=====\nStats for function : [" << function_name << "]\n";

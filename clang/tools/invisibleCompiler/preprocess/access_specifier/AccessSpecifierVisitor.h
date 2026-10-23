@@ -20,10 +20,10 @@ namespace invisible {
 // --- AccessSpecifierVisitor --------------------------------------
 
 // access-specifier: makes every member and base of a class public, see docs/DESIGN.md section
-// 5.2. The code DeclBeforeDef moves out of a class, a copy of a member and an inlined body use
-// them from outside it. With @p keep_observable_access, the bases and the constructors,
-// destructors and assignment operators keep the access they are written with, which type traits
-// can tell, eg. `is_destructible` and `is_convertible<D*, B*>`.
+// 5.2. Later passes use members from outside their class: in the definitions DeclBeforeDef moves
+// out of it, in the copy of a member function and in an inlined body. With
+// @p keep_observable_access, the bases, constructors, destructors and assignment operators keep
+// their access, because type traits can test it, eg. `is_destructible` and `is_convertible<D*, B*>`.
 class AccessSpecifierVisitor : public clang::RecursiveASTVisitor<AccessSpecifierVisitor> {
   public:
     AccessSpecifierVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter, bool keep_observable_access = false);

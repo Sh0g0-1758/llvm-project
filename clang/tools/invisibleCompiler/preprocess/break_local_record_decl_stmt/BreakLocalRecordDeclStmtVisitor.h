@@ -19,14 +19,13 @@ namespace invisible {
 
 // --- BreakLocalRecordDeclStmtVisitor --------------------------------------
 
-// Run by decl-before-def on its AST, see docs/DESIGN.md section 6.4: splits the declaration of a
-// local class together with variables, in an instantiation, into the class and the variables, eg.
+// Run by decl-before-def on its AST, see docs/DESIGN.md section 6.4. In an instantiation, it
+// splits a declaration of a local class together with variables into two DeclStmts, eg.
 //
 //     template <class T> void f() { struct P { T x; } a, b; }
 //
-// In f<int>'s body clang prints `struct P {...} a, b;` without the class's definition, as for any
-// DeclStmt of several declarations in an instantiation. Split, it prints `struct P { int x; };`
-// and then `P a, b;`.
+// When printing f<int>'s body, clang's printer writes the variables but not the class's
+// definition. Split, it prints `struct P { int x; };` and then `P a, b;`.
 class BreakLocalRecordDeclStmtVisitor : public clang::RecursiveASTVisitor<BreakLocalRecordDeclStmtVisitor> {
   public:
     BreakLocalRecordDeclStmtVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);

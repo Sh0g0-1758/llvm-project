@@ -26,11 +26,12 @@ MarkSwitchCaseVisitor::MarkSwitchCaseVisitor(clang::ASTContext&, clang::Rewriter
 //     case 1: g(f());          =>     case 1: ;
 //                                     g(f());
 //
-// hoist-calls inserts a call's temporary before the statement holding the call. Without the empty
-// statement that statement is the label's, and `int __func_hoist_ret__0 = f();` would land above
-// `case 1:`, where the jump to the label skips it. After `;` it is the next statement of the block.
-// compound-stmt-wrapper has put the body of every switch in a block, where the statement can be
-// added. Nested labels, `case 0: case 1: f();`, are marked once, at the innermost label's statement.
+// hoist-calls puts a call's temporary before the statement that holds the call. Without the `;`,
+// that statement is `case 1: g(f());`, label included, so `int __func_hoist_ret__0 = f();` would
+// land above `case 1:`, and the jump to the label would skip it. With the `;`, `g(f());` is a
+// separate statement of the block, and the temporary goes right before it. compound-stmt-wrapper
+// has put every switch body in a block, so `g(f());` stays in the switch. Nested labels,
+// `case 0: case 1: f();`, get one `;`, after the innermost label.
 bool MarkSwitchCaseVisitor::VisitSwitchCase(clang::SwitchCase* label) {
     if (!llvm::isa<clang::SwitchCase>(label->getSubStmt()))
         m_rewriter.InsertTextBefore(label->getSubStmt()->getBeginLoc(), ";\n");

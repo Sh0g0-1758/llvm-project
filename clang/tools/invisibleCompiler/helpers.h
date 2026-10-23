@@ -1,8 +1,8 @@
 #pragma once
 
-// The helpers every pass shares: running clang on a string, checking that what a pass wrote
-// compiles, the names functions are left as written by, and the small AST and text utilities
-// that let a pass rewrite an expression or print code elsewhere, eg. at the end of the TU.
+// The helpers the passes share: running clang on a string, checking that what a pass wrote
+// compiles, keeping track of the functions a pass must leave as written, and small AST and text
+// utilities to rewrite an expression or print code elsewhere, eg. at the end of the TU.
 
 #include <set>
 
@@ -33,10 +33,10 @@ llvm::raw_ostream& verbose();
 // checkAsCompiled takes back when the input compiles without it.
 void addPipelineFlags(std::vector<std::string>& args);
 
-// Makes @p args, given addPipelineFlags, check the output of the passes as strictly as a
-// compiler building it: the warnings clang makes errors by default stay errors, eg. a
-// `constexpr` specialization that can never be a constant expression before C++23. Only an
-// input, @p source, that compiles so is held to it; one that needs every warning silenced, eg.
+// Takes `-Wno-everything` out of @p args when @p source compiles without it, so that the output
+// of the passes is checked as strictly as a compiler would check it. The warnings that clang
+// makes errors by default then stay errors, eg. a `constexpr` specialization that can never be a
+// constant expression before C++23. An input that only compiles with every warning silenced, eg.
 // C passing incompatible pointers, keeps them silenced.
 void checkAsCompiled(std::vector<std::string>& args, const std::string& source, const std::string& filename);
 
@@ -51,13 +51,13 @@ struct CompileFailure {
 };
 const CompileFailure& lastCompileFailure();
 
-// Callback invoked once the AST of an in-memory source file is ready, with the Sema that built
-// it, which some passes ask to instantiate or look up what the source doesn't, eg. a move
-// constructor that a hoisted temporary will call.
+// Called once the AST of an in-memory source is ready, with the Sema that built it. Some passes
+// use the Sema to instantiate or look up what the source doesn't, eg. a move constructor that a
+// hoisted temporary will call.
 using TUCallback = std::function<void(clang::ASTContext&, clang::Sema&)>;
 
-// The source as @p rewriter left it, or @p original when it changed nothing, as it then has no
-// buffer for the file.
+// The source as @p rewriter left it, or @p original when it changed nothing: the rewriter only
+// has a buffer for a file it edited.
 std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& original);
 
 // Runs @p callback on the AST of @p source, parsed in memory with @p args as if it were the file
@@ -70,21 +70,22 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 std::string runInMemory(const std::string& source, const std::string& filename, std::vector<std::string>& args, TUCallback callback,
                         clang::Rewriter& rewriter);
 
-// Whether @p source compiles, as `clang -fsyntax-only` with @p compiler_flags would tell. The
-// driver checks every iteration of every pass with it, so that a pass that writes code that
-// doesn't compile is caught at once, eg. hoist-calls naming a type that isn't visible where
-// the temporary is declared. Diagnostics aren't printed; when the source doesn't compile, it is
-// recorded with them in lastCompileFailure().
+// Whether `clang -fsyntax-only` with @p compiler_flags accepts @p source. The driver checks every
+// iteration of every pass with it, so that a pass that writes code that doesn't compile is caught
+// at once, eg. hoist-calls naming a type that isn't visible where the temporary is declared.
+// Diagnostics aren't printed. When the source doesn't compile, it is recorded with its
+// diagnostics in lastCompileFailure().
 bool isCompilable(const std::string& source, const std::string& filename, const std::vector<std::string>& compiler_flags);
 
 // Whether @p decl is written inside a function or block, eg. a local class `struct Node` in
 // `void f() { struct Node {...}; }`, which nothing outside the function can name.
 bool isInsideFunction(const clang::Decl* decl);
 
-// Whether @p type can be named anywhere in the TU: it isn't local to a function, unnamed or
-// the closure type of a lambda, nor does it name one, eg. as a template argument. Code printed
-// at the end of the TU, a copy or a hoisted temporary can only spell such a type, eg. not
-// `std::vector<(lambda at a.cc:3:9)>` or `View<__invisible_lambda_1a2b3c4d5e_2>` of a local struct.
+// Whether @p type can be named anywhere in the TU. It can't when it is, or uses, eg. as a template
+// argument, a class local to a function, an unnamed class or the closure type of a lambda. Code
+// printed at the end of the TU, a copy or a hoisted temporary can only spell types that can be
+// named anywhere, eg. not `std::vector<(lambda at a.cc:3:9)>` or
+// `View<__invisible_lambda_1a2b3c4d5e_2>` of a local struct.
 bool isNameableAnywhere(clang::QualType type);
 
 // Whether @p child is the body of the if, else or loop @p parent and has no braces, eg.
@@ -96,10 +97,9 @@ bool isUnbracedBody(const clang::Stmt* parent, const clang::Stmt* child);
 // that make room for hoisting, eg. loop-to-ir and short-circuit-to-ir, only rewrite what does.
 bool containsCall(const clang::Stmt* stmt);
 
-// The characters of the expression @p range. An expression ending a template argument list
-// ends with a single `>`, also when the lexer saw it as part of a `>>` closing two lists, eg.
-// `idx<int>` in `in_place<idx<int>>`, of which a token range would take both, and replacing it
-// would eat the `>` of `in_place<...>`.
+// The characters of the expression @p range. They differ from its token range when the
+// expression ends with half of a `>>`, eg. `idx<int>` in `in_place<idx<int>>`. A token range
+// would take the whole `>>`, and replacing it would also remove the `>` of `in_place<...>`.
 clang::CharSourceRange exprCharRange(clang::SourceRange range, const clang::SourceManager& sm, const clang::LangOptions& lang_opts);
 
 // Replaces the text of the expression @p range with @p text, apart from the words around it:
@@ -112,9 +112,9 @@ void replaceExpr(clang::Rewriter& rewriter, clang::SourceRange range, const std:
 // compile. An integer gets the suffix of its type, eg. `array<int, 3UL>`.
 clang::PrintingPolicy codePolicy(const clang::ASTContext& ctx);
 
-// The suffix an integer literal of @p value needs to be of @p type, for constant-fold: an
-// unsuffixed one is of the first of int, long and long long its magnitude fits
-// in. eg. `std::min(__diffmax, n)` with a size_t `__diffmax` folds to
+// The suffix an integer literal of @p value needs to have type @p type, for constant-fold. An
+// unsuffixed literal has the first of int, long and long long that its magnitude fits in, eg.
+// `std::min(__diffmax, n)` with a size_t `__diffmax` folds to
 // `std::min(2305843009213693951UL, n)`, which still deduces `size_t`.
 std::string integerSuffix(const clang::ASTContext& ctx, const llvm::APSInt& value, clang::QualType type);
 
@@ -124,29 +124,32 @@ std::string copyName(llvm::StringRef base, llvm::StringRef key);
 // Whether @p func is a monomorphized copy, by its name, see copyName.
 bool isCopy(const clang::FunctionDecl* func);
 
-// The functions, by passKey, the pass being run leaves as written: what it made of them didn't
-// compile, see the per-function fallback, docs/DESIGN.md section 4.3. eg. when hoist-calls
-// writes `auto __func_hoist_ret__3 = ...` that doesn't compile in `f`, the pass runs again with
-// `f`'s key here and leaves `f` alone. The driver clears it before each pass.
+// The passKeys of the functions the running pass must leave as written, because its output for
+// them didn't compile, see the per-function fallback, docs/DESIGN.md section 4.3. eg. when
+// hoist-calls writes `auto __func_hoist_ret__3 = ...` that doesn't compile in `f`, the pass runs
+// again with `f`'s key here and leaves `f` alone. The driver clears it before each pass.
 std::set<std::string>& passSkips();
 // Whether @p func is one of passSkips.
 bool isSkippedByPass(const clang::FunctionDecl* func);
-// The name a function is left as written by: its mangled name, eg. `_ZN3Vec4sizeEv`, or for a
+// The key of a function in passSkips: its mangled name, eg. `_ZN3Vec4sizeEv`, or for a
 // template, which can't be mangled, its qualified name and number of parameters, eg.
 // `template std::vector::push_back/1`. It is stable across the runs of a pass, which each parse
 // the source again and so have other Decl pointers.
 std::string passKey(const clang::FunctionDecl* func);
 
-// Whether the passes after DeclBeforeDef leave @p decl as written: a template or anything in one,
-// whose text all its instantiations share, a friend, which stays exactly as written, what the
-// pass's fallback skips, and a constexpr function left in place, which the
-// compiler may evaluate, eg. `constexpr int sq(int x) { return x * x; }` stays `return x * x;`.
+// Whether the passes after DeclBeforeDef leave @p decl as written. That is:
+//  - a template or anything in one, as all its instantiations share its text;
+//  - a friend function, which stays exactly as written;
+//  - a function in passSkips;
+//  - a constexpr function left in place, as the compiler may evaluate it, eg.
+//    `constexpr int sq(int x) { return x * x; }` stays `return x * x;`.
 bool isLeftAsWritten(const clang::Decl* decl);
 
-// The visitor of a pass after DeclBeforeDef: it doesn't traverse what isLeftAsWritten, nor the
-// body of a generic lambda, a template that a lambda expression, eg. of a global's initializer,
-// would otherwise traverse, eg. `auto print = [](auto x) { log(fmt(x)); };`, whose `fmt(x)` is
-// dependent and can't be hoisted. A pass derives from it instead of RecursiveASTVisitor:
+// The base of the visitor of a pass after DeclBeforeDef. It skips what isLeftAsWritten, and the
+// body of a generic lambda, eg. `auto print = [](auto x) { log(fmt(x)); };`. That body is a
+// template, but RecursiveASTVisitor would still traverse it through the lambda expression, eg. in
+// a global's initializer. Its `fmt(x)` is dependent and can't be hoisted. A pass derives from it
+// instead of RecursiveASTVisitor:
 //
 //     class LoopToIRVisitor : public LaterPassVisitor<LoopToIRVisitor> { ... };
 template <class Derived> class LaterPassVisitor : public clang::RecursiveASTVisitor<Derived> {
@@ -159,10 +162,10 @@ template <class Derived> class LaterPassVisitor : public clang::RecursiveASTVisi
     }
 };
 
-// Whether @p func is a copy clang made while instantiating, whose text is the template's: an
-// instantiation, eg. `vector<int>::size`, but also a declaration of an instantiated class that
-// isn't marked as one, eg. a member specialized later, a member template or a friend. A pass
-// mustn't rewrite the template's text through it.
+// Whether clang made @p func while instantiating, so that its source text is the template's. That
+// is an instantiation, eg. `vector<int>::size`, but also any declaration in an instantiated class,
+// eg. a member specialized later, a member template or a friend, which clang doesn't mark as an
+// instantiation. A pass mustn't rewrite the template's text through it.
 bool isInstantiatedCopy(const clang::FunctionDecl* func);
 
 // Respells `__va_list_tag` in @p text as `__builtin_va_list`. Where a va_list is an array, eg.
@@ -176,8 +179,8 @@ void respellDecayedVaList(std::string& text);
 // `std::__cxx11`, an inline namespace.
 clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clang::DeclContext* dc);
 
-// Names the functions, variables and enumerators in @p node that aren't local to
-// a function from the global namespace, so that @p node can be printed elsewhere, eg. the body
+// Qualifies the functions, variables and enumerators used in @p node that aren't local to a
+// function, from the global namespace, so that @p node can be printed elsewhere, eg. the body
 // of a copy printed at the end of the TU outside every namespace: `return npos;` in a member of
 // `std::string` becomes `return ::std::basic_string<char>::npos;`.
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
@@ -188,15 +191,15 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx);
 void replaceThis(clang::Stmt* node, clang::Expr* replacement);
 
 // Whether the prvalue @p expr initializes an object, eg. a parameter taken by value or the
-// returned value, rather than being bound to a reference or having a member accessed,
-// which materializes it as a temporary. hoist-calls asks it to know whether the temporary it
-// writes must be moved into place, eg. `take(make())` becoming
-// `T tmp = make(); take(static_cast<T &&>(tmp));`, and decl-before-def to have the move
-// constructor that will do it instantiated, see instantiateConstructorsOfValues.
+// returned value. It doesn't when it is bound to a reference or a member of it is accessed: clang
+// then materializes it as a temporary. hoist-calls uses this to know whether its temporary must
+// be moved into place, eg. `take(make())` becoming `T tmp = make(); take(static_cast<T &&>(tmp));`.
+// decl-before-def uses it to instantiate the move constructor that will do it, see
+// instantiateConstructorsOfValues.
 bool isUsedByValue(clang::ASTContext& ctx, const clang::Expr* expr);
 
-// The statement @p call is all of already, directly in a block: the DeclStmt of `int x = f();`, the
-// assignment of `x = f();` or `a = f();`, or the call of `f();` returning void; null otherwise.
+// The statement, directly in a block, that is nothing but @p call: the DeclStmt of `int x = f();`,
+// the assignment of `x = f();` or `a = f();`, or the call of `f();` returning void; null otherwise.
 // hoist-calls leaves such a call as it is, and the inliner pastes inlined code before the statement.
 const clang::Stmt* topLevelStatement(clang::ASTContext& ctx, const clang::CallExpr* call);
 

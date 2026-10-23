@@ -12,9 +12,9 @@ DisassembleCXXForRangeStmtVisitor::DisassembleCXXForRangeStmtVisitor(clang::ASTC
     m_policy.adjustForCPlusPlus();
 }
 
-// A range-based for hides its calls: `begin()`, `end()`, `operator!=`, `operator++` and
-// `operator*` are made by the compiler, with no text that hoist-calls or the inliner could reach.
-// It is written out as the loop it stands for, where each of them is a call in the text, eg.
+// A range-based for calls `begin()`, `end()`, `operator!=`, `operator++` and `operator*`, but none
+// of these calls is in the source text, so hoist-calls and the inliner can't rewrite them. So the
+// loop is written out as the iterator loop it stands for, where each call is in the text, eg.
 //
 //     for (auto& x : make()) use(x);   =>   {
 //                                           auto &&__for_range_0 = make();
@@ -27,17 +27,19 @@ DisassembleCXXForRangeStmtVisitor::DisassembleCXXForRangeStmtVisitor(clang::ASTC
 //                                           }
 //
 // The init statement of `for (init; x : r)` comes first in the block. A range that names a
-// variable, `for (auto& x : v)`, isn't bound again: the loop uses `v` itself. The range keeps
-// its lifetime: bound to `auto &&`, a temporary lives as long as the loop, as in the original.
+// variable, `for (auto& x : v)`, isn't bound again: the loop uses `v` itself. A temporary range,
+// eg. `make()`, is bound to `auto &&`, so it lives as long as the loop, as in the original.
 bool DisassembleCXXForRangeStmtVisitor::VisitCXXForRangeStmt(clang::CXXForRangeStmt* for_stmt) {
-    // a range that depends on a template has its begin and end only in the instantiations
+    // in a template, clang only builds the begin and end of a dependent range in the
+    // instantiations, not in the template
     if (for_stmt->getBeginStmt() == nullptr) return true;
     auto& src_mgr = m_ctx.getSourceManager();
     const auto& lang_opts = m_ctx.getLangOpts();
 
-    // the implicit variables are renamed, so that the printed begin and end expressions, condition
-    // and increment refer to the declared ones. For a range that names a variable, `for (x : v)`,
-    // the implicit range variable is renamed to `v`, so that `v.begin()` is printed.
+    // clang's implicit variables, `__range1`, `__begin1` and `__end1`, get the names declared
+    // below, so that the printed begin and end expressions, condition and increment use them. For
+    // a range that names a variable, `for (x : v)`, the range variable is renamed to `v`, so that
+    // `v.begin()` is printed.
     std::string index = std::to_string(m_current_index++);
     std::string range_init = sourceText(clang::CharSourceRange::getTokenRange(for_stmt->getRangeInit()->getSourceRange()));
     bool names_variable = llvm::isa<clang::DeclRefExpr>(for_stmt->getRangeInit()->IgnoreParenImpCasts());
@@ -78,7 +80,8 @@ bool DisassembleCXXForRangeStmtVisitor::VisitCXXForRangeStmt(clang::CXXForRangeS
     return true;
 }
 
-// the begin and end expressions, condition and increment, eg. `__for_range_0.begin()`
+// Prints the begin or end expression, the condition or the increment, eg. `__for_range_0.begin()`.
+// Names that aren't local are qualified, eg. `::std::begin(v)`.
 std::string DisassembleCXXForRangeStmtVisitor::print(clang::Stmt* stmt) {
     std::string text;
     llvm::raw_string_ostream out(text);

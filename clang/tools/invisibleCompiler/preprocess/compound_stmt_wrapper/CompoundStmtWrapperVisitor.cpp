@@ -18,9 +18,10 @@ namespace invisible {
 
 namespace {
 
-// Past the end of @p stmt. clang's range of a statement ending with an expression, a jump or a
-// do-while stops before its `;`, eg. at the `)` of `case 0: f();`
+// The location just past @p stmt, its `;` included. clang's source range of an expression
+// statement, a jump or a do-while ends before the `;`, eg. at the `)` of `case 0: f();`.
 clang::SourceLocation endOf(const clang::Stmt* stmt, const clang::ASTContext& ctx) {
+    // the statement @p stmt ends with, eg. `f();` of `case 0: f();`
     const clang::Stmt* last = stmt;
     for (;;) {
         if (const auto* label = llvm::dyn_cast<clang::SwitchCase>(last)) last = label->getSubStmt();
@@ -50,9 +51,9 @@ CompoundStmtWrapperVisitor::CompoundStmtWrapperVisitor(clang::ASTContext& ctx, c
 //                                                            for (int i = 0, n = size(); i < n; ++i) f(i);
 //                                                          }
 //
-// loop-to-ir and comma-init move the init statement's declarations before the loop, and
-// hoist-calls puts temporaries there; the block keeps them scoped to the loop, as in the source.
-// An empty body, `for (;;);`, becomes `{}`, a block that statements can be added to.
+// comma-init moves the init statement's declarations before the loop, and hoist-calls puts
+// temporaries there. The block keeps them scoped to the loop, as in the source. An empty body,
+// `for (;;);`, becomes `{}`, so that loop-to-ir can put statements in it.
 bool CompoundStmtWrapperVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getBegin(), "{\n");
     m_rewriter.InsertTextBefore(for_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
@@ -73,9 +74,10 @@ bool CompoundStmtWrapperVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     return true;
 }
 
-// Wraps an if statement in a block, eg. `if (auto p = find()) use(p);` => `{ if (...) use(p); }`:
-// loop-to-ir moves the condition's declaration, `auto p = find();`, before the if, and the
-// block keeps it out of the scope of what follows, where another `p` may be declared.
+// Wraps an if statement in a block, eg. `if (auto p = find()) use(p);` => `{ if (...) use(p); }`.
+// Later passes put code before the if: loop-to-ir the condition's declaration, `auto p = find();`,
+// and hoist-calls the temporaries of the condition's calls. The block keeps them out of the scope
+// of what follows, where another `p` may be declared.
 bool CompoundStmtWrapperVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
     m_rewriter.InsertTextBefore(if_stmt->getSourceRange().getBegin(), "{\n");
     m_rewriter.InsertTextBefore(if_stmt->getSourceRange().getEnd().getLocWithOffset(1), "\n}");
@@ -84,8 +86,9 @@ bool CompoundStmtWrapperVisitor::VisitIfStmt(clang::IfStmt* if_stmt) {
 
 // Wraps a switch statement in a block, for the declaration of its condition or init statement,
 // eg. `switch (int c = next()) {...}`, as for if. A body that isn't a block becomes one, eg.
-// `switch (x) case 0: default: f();` gives `switch (x) { case 0: default: f(); }`, so that
-// mark-switch-case finds every label in a block.
+// `switch (x) case 0: default: f();` gives `switch (x) { case 0: default: f(); }`.
+// mark-switch-case puts `;` after a label, and without the block, `f();` would then be outside
+// the switch.
 bool CompoundStmtWrapperVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
     clang::SourceLocation end = endOf(switch_stmt->getBody(), m_ctx);
     m_rewriter.InsertTextBefore(switch_stmt->getBeginLoc(), "{\n");

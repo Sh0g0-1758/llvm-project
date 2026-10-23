@@ -14,9 +14,9 @@ FunctionalCastToCStyleCastVisitor::FunctionalCastToCStyleCastVisitor(clang::ASTC
         m_policy.adjustForCPlusPlus();
 }
 
-// A cast is replaced through its parent's pointer to it, so a statement's children are replaced
-// after they are traversed. An InitListExpr has a second list of the same children, its syntactic
-// form, which is the one printed.
+// Replaces the casts among the children of @p stmt once they are traversed. A cast can only be
+// replaced through its parent's pointer to it, so the parent does it. An InitListExpr has a second
+// list of children, its syntactic form, which is the one the printer prints, so it is done there too.
 bool FunctionalCastToCStyleCastVisitor::TraverseStmt(clang::Stmt* stmt) {
     if (!stmt) return true;
     if (!clang::RecursiveASTVisitor<FunctionalCastToCStyleCastVisitor>::TraverseStmt(stmt)) return false;
@@ -32,6 +32,7 @@ bool FunctionalCastToCStyleCastVisitor::TraverseStmt(clang::Stmt* stmt) {
 // one: `size_type(n)` parses, but `unsigned long(n)` doesn't.
 bool FunctionalCastToCStyleCastVisitor::isSimpleTypeName(clang::QualType type) {
     std::string name = type.getAsString(m_policy) + "," + type.getCanonicalType().getAsString(m_policy);
+    // a space, `*`, `&` or `[` outside `<...>` and `(...)` means more than a name
     int depth = 0;
     for (char c : name) {
         if (c == '<' || c == '(') depth++;
@@ -44,7 +45,8 @@ bool FunctionalCastToCStyleCastVisitor::isSimpleTypeName(clang::QualType type) {
     return true;
 }
 
-// the operand of `T(a - b)` is parenthesized, `(T)a - b` casts `a`
+// @p operand, parenthesized when it is a binary or conditional operator: `T(a - b)` must become
+// `(T)(a - b)`, as `(T)a - b` only casts `a`
 clang::Expr* FunctionalCastToCStyleCastVisitor::parenthesized(clang::Expr* operand) {
     clang::Expr* inner = operand->IgnoreImpCasts();
     const auto* call = llvm::dyn_cast<clang::CXXOperatorCallExpr>(inner);
@@ -54,13 +56,13 @@ clang::Expr* FunctionalCastToCStyleCastVisitor::parenthesized(clang::Expr* opera
 }
 
 // decl-before-def prints instantiations, where a function style cast `T(x)` names the type T was
-// given: `unsigned long(x)` for `T = unsigned long`, which doesn't parse. Such casts are written the
-// C way, which takes any type:
+// given, eg. `unsigned long(x)` for `T = unsigned long`, which doesn't parse. Such casts become C
+// style casts, which take any type:
 //
 //     T(x)  =>  (T)(x)        T{x}  =>  (T)(x)        T{}  =>  (T)0        T()  =>  ((T)0)
 //
-// A cast to a type that is a simple name either way is left, and so is one to a type that depends
-// on a template or is deduced, eg. `auto(x)`.
+// A cast is left when its type prints as a simple name, depends on a template or is deduced, eg.
+// `auto(x)`.
 void FunctionalCastToCStyleCastVisitor::replaceInChildren(clang::Stmt* stmt) {
     if (!stmt) return;
     for (clang::Stmt*& child : stmt->children()) {

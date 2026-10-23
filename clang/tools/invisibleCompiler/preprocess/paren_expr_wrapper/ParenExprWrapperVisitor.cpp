@@ -21,10 +21,10 @@ namespace invisible {
 ParenExprWrapperVisitor::ParenExprWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter)
     : m_ctx(ctx), m_rewriter(rewriter) {}
 
-// Parenthesizes a comma operator that isn't already, eg. `x = a(), b();` => `x = (a(), b());`.
-// Later passes edit operands as text, eg. replace `b()` with a temporary, or put text before or
-// after an operand. The parentheses keep the comma from grouping with the text around it, eg. in
-// a for statement's increment.
+// Parenthesizes a comma operator that isn't already, eg. `a(), b();` => `(a(), b());`. Later
+// passes edit operands as text, eg. replace `b()` with a temporary, or put text before or after an
+// operand. The parentheses keep the comma from grouping with that text, eg. in a for statement's
+// increment.
 bool ParenExprWrapperVisitor::VisitBinaryOperator(clang::BinaryOperator* bin_op) {
     if(bin_op->getOpcode() == clang::BinaryOperator::Opcode::BO_Comma) {
         if (isWrappedWithParenExpr(bin_op)) return true;

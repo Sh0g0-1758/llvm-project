@@ -28,7 +28,7 @@ class CommaInitVisitor : public LaterPassVisitor<CommaInitVisitor> {
 
     // `int a, b = f();` => `int a;` and `int b = f();`
     bool VisitDeclStmt(clang::DeclStmt* decl_stmt);
-    // the start of the statement of the nearest block that holds @p decl_stmt
+    // the start of the statement that holds @p decl_stmt and is directly in a block
     clang::SourceLocation findInsertionLoc(clang::DeclStmt* decl_stmt);
 
   private:

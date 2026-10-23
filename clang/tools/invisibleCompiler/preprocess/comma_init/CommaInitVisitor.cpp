@@ -26,9 +26,9 @@ CommaInitVisitor::CommaInitVisitor(clang::ASTContext& ctx, clang::Rewriter& rewr
     m_policy.IncludeTagDefinition = true;
 }
 
-// Where the split declarations go: before the statement of the nearest block that holds the
-// declaration, eg. the for statement of `for (int i = 0, n = f(); i < n; ++i)`, or the
-// declaration itself when it is a statement of the block.
+// Where the split declarations go: the start of the statement that holds @p decl_stmt and is
+// directly in a block, eg. the for statement of `for (int i = 0, n = f(); i < n; ++i)`. When
+// @p decl_stmt is directly in a block, that is @p decl_stmt itself.
 clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_stmt) {
     clang::DynTypedNode current = clang::DynTypedNode::create(*decl_stmt);
     const clang::Stmt* last_stmt = decl_stmt;
@@ -41,8 +41,8 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
         const auto& parent = parents[0];
         if (parent.get<clang::CompoundStmt>())
             return last_stmt->getBeginLoc();
-        // a body without braces, eg. the for in `if (c) for (int i = 0, n = f(); ...)`: the split
-        // declarations go in braces with it, so that they stay inside the if, see isUnbracedBody
+        // a body without braces, eg. the for in `if (c) for (int i = 0, n = f(); ...)`: new braces
+        // hold the declarations and the for, so that they stay inside the if, see isUnbracedBody
         if (const auto* parent_stmt = parent.get<clang::Stmt>(); parent_stmt && isUnbracedBody(parent_stmt, last_stmt)) {
             m_unbraced = last_stmt;
             return last_stmt->getBeginLoc();
@@ -64,17 +64,15 @@ clang::SourceLocation CommaInitVisitor::findInsertionLoc(clang::DeclStmt* decl_s
 //                                               for (; i < n; ++i)
 //
 // hoist-calls puts a call's temporary before the whole statement. In `int a = 1, b = f(a);` the
-// temporary of `f(a)` would be computed before `a` is set. A declaration that isn't a statement of
-// a block, eg. a for's init, moves before that statement and leaves `;` in its place.
-// compound-stmt-wrapper has put the for in braces, so its variables stay scoped to it.
+// temporary of `f(a)` would then be computed before `a` is set.
 bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     if (decl_stmt->isSingleDecl()) {
         return true;
     }
 
     // a class or enumeration the declaration defines, eg. `struct S {...} a, b;`, is printed
-    // once: on its own if named, else with the first variable. A declaration with anything
-    // else, eg. a typedef, is left.
+    // once: as a separate declaration if it is named, else with the first variable. A
+    // declaration with anything else in it, eg. a typedef, is left as it is.
     const clang::TagDecl* tag = nullptr;
     llvm::SmallVector<const clang::VarDecl*, 8> vars;
     for (const clang::Decl* decl : decl_stmt->decls()) {
@@ -86,8 +84,9 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
             return true;
         }
     }
-    // the variables of an unnamed class, `struct {...} a = {1}, b;`, take the type of the first,
-    // `__typeof__(a) b;`. That needs one type for all, and no `T x(...)` initializer.
+    // an unnamed class has no name to declare the other variables with, so they take the first
+    // one's type: `struct {...} a = {1}, b;` => `struct {...} a = {1};` and `__typeof__(a) b;`.
+    // That is only done when all have the same type and none is initialized as `x(...)`.
     bool anonymous = tag && !tag->getIdentifier();
     if (vars.empty() || (anonymous && llvm::any_of(vars, [&](const clang::VarDecl* var) {
             return var->getType() != vars.front()->getType() || var->getInitStyle() == clang::VarDecl::CallInit;
@@ -119,6 +118,7 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
     m_unbraced = nullptr;
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(decl_stmt);
     if (m_unbraced) {
+        // new braces around the declarations and the unbraced body
         const clang::SourceManager& src_mgr = m_ctx.getSourceManager();
         clang::SourceLocation end = clang::Lexer::findLocationAfterToken(m_unbraced->getEndLoc(), clang::tok::semi, src_mgr,
                                                                          m_ctx.getLangOpts(), false);
@@ -127,6 +127,9 @@ bool CommaInitVisitor::VisitDeclStmt(clang::DeclStmt* decl_stmt) {
         m_rewriter.InsertTextAfter(end, "\n}");
         m_rewriter.ReplaceText(decl_stmt->getSourceRange(), ";");
     } else if (nearest_compound_stmt != decl_stmt->getSourceRange().getBegin()) {
+        // not directly in a block, eg. a for's init: the declarations go before the for, and `;`
+        // is left in the init. compound-stmt-wrapper has put the for in braces, so the variables
+        // stay scoped to it.
         m_rewriter.InsertTextBefore(nearest_compound_stmt, replacement);
         m_rewriter.ReplaceText(decl_stmt->getSourceRange(), ";");
     } else {

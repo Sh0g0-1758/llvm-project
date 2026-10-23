@@ -18,8 +18,8 @@ namespace invisible {
 
 namespace {
 
-// Whether @p expr is a constant expression, which is left as written: it may have to
-// be one, eg. initializing a constexpr variable, and has the same value either way.
+// Whether @p expr is a constant expression. Such an expression is left as written: the code may
+// need it to stay constant, eg. when it initializes a constexpr variable, and its value is known.
 bool isConstant(const clang::Expr* expr, const clang::ASTContext& ctx) {
     if (expr->isValueDependent() || expr->isTypeDependent()) return false;
     // C has integer constant expressions only
@@ -43,21 +43,24 @@ bool ShortCircuitOperatorToIRVisitor::didConvertToIR() {
     return m_last_update_loc != 0;
 }
 
+// Writes a `&&` or `||` whose operands call something as ifs. hoist-calls puts a call's temporary
+// before its statement, so `b()` of `a() && b()` would otherwise run even when `a()` is false:
+//
+//     a() && b()   =>   bool __short_circuit_result_N = false;
+//                       if (a()) {
+//                           if (b()) {
+//                               __short_circuit_result_N = true;
+//                           }
+//                       }
+//                       ... __short_circuit_result_N ...
+//
+// `||` starts from true, tests `!(a())` and `!(b())`, and sets false. The result has the type of
+// the expression: bool in C++, so that `show(a && b)` picks the same overload, and int, 1 or 0,
+// in C.
 bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator* binary_op) {
     if (!binary_op->isLogicalOp()) return true;
     if (!containsCall(binary_op->getLHS()) && !containsCall(binary_op->getRHS())) return true;
     if (isConstant(binary_op, m_ctx)) return true;
-    // a() && b()   =>   bool __short_circuit_result_N = false;
-    //                   if (a()) {
-    //                       if (b()) {
-    //                           __short_circuit_result_N = true;
-    //                       }
-    //                   }
-    //                   ... __short_circuit_result_N ...
-    //
-    // `||` starts from true, tests `!(a())` and `!(b())`, and sets false. The result has the type
-    // of the expression: bool in C++, so that `show(a && b)` picks the same overload, and int, 1
-    // or 0, in C.
     // one operator per statement and iteration, see m_last_update_loc
     clang::SourceLocation nearest_compound_stmt = findInsertionLoc(binary_op);
     if(nearest_compound_stmt.isInvalid() || nearest_compound_stmt.getRawEncoding() == m_last_update_loc) return true;
@@ -93,21 +96,24 @@ bool ShortCircuitOperatorToIRVisitor::VisitBinaryOperator(clang::BinaryOperator*
     return true;
 }
 
+// Writes a `?:` whose branches call something as an if, for the same reason as `&&`: hoisted out
+// of `c ? f() : g()`, both calls would run.
+//
+//     c ? f() : g()   =>   T __short_circuit_result_N;
+//                          if (c) {
+//                              __short_circuit_result_N = f();
+//                          } else {
+//                              __short_circuit_result_N = g();
+//                          }
+//                          ... __short_circuit_result_N ...
+//
+// T is the type of the whole expression, eg. double for `c ? f() : 2.5`. A void expression
+// becomes the if alone. When the expression names an object, eg. `(c ? a : b) = 5`, the result
+// is a `T *` set to `__builtin_addressof(a)` or `__builtin_addressof(b)`. It is used as
+// `(*__short_circuit_result_N)`, so that the assignment still writes to `a` or `b`.
 bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::ConditionalOperator* conditional_op) {
     if (!containsCall(conditional_op->getLHS()) && !containsCall(conditional_op->getRHS())) return true;
     if (isConstant(conditional_op, m_ctx)) return true;
-    // c ? f() : g()   =>   T __short_circuit_result_N;
-    //                      if (c) {
-    //                          __short_circuit_result_N = f();
-    //                      } else {
-    //                          __short_circuit_result_N = g();
-    //                      }
-    //                      ... __short_circuit_result_N ...
-    //
-    // T is the type of the whole expression, eg. double for `c ? f() : 2.5`. A void expression
-    // becomes the if alone. When the expression names an object, eg. `(c ? a : b) = 5`, the result
-    // is a `T *` set to `__builtin_addressof(a)` or `__builtin_addressof(b)`. It is used as
-    // `(*__short_circuit_result_N)`, so that the assignment still writes to `a` or `b`.
     clang::QualType type = conditional_op->getType();
     bool by_address = conditional_op->isGLValue() && m_ctx.getLangOpts().CPlusPlus;
     // a bit-field has no address
@@ -144,7 +150,7 @@ bool ShortCircuitOperatorToIRVisitor::VisitConditionalOperator(clang::Conditiona
         std::string type_name = type.getAsString(m_policy);
         if (conditional_op->isXValue()) short_circuit_result = "static_cast<" + type_name + " &&>(*" + result + ")";
         else if (by_address) short_circuit_result = "(*" + result + ")";
-        // a prvalue result is moved out, as hoist-calls does
+        // a prvalue result is moved, not copied, into where it is used, as hoist-calls does
         else if (m_ctx.getLangOpts().CPlusPlus) short_circuit_result = "static_cast<" + type_name + " &&>(" + result + ")";
         else short_circuit_result = result;
     }

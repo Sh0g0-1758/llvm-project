@@ -25,20 +25,19 @@ bool BreakLocalRecordDeclStmtVisitor::shouldVisitTemplateInstantiations() const 
     return true;
 }
 
-// decl-before-def writes the body of an instantiation, eg. `f<int>`, with clang's printer. When a
+// decl-before-def prints the body of an instantiation, eg. `f<int>`, with clang's printer. When a
 // local class is declared together with variables,
 //
 //     template <class T> void f() { struct P { T x; } a, b; }
 //
 // the printer writes the variables of `f<int>` but not the class's definition, so the printed body
-// uses `P` without defining it. The fix is to move the class into a declaration of its own, which
-// the printer writes in full, just before the variables:
+// uses `P` without defining it. So the class is moved into its own DeclStmt just before the
+// variables, and the printer writes it in full:
 //
 //     struct P { int x; };
 //     P a, b;
 //
-// This is only done when the declaration is a statement of a block, eg. not in a for's init. The
-// block is rebuilt with the new statement added, and put where the old one was.
+// This is only done when the declaration is directly in a block, eg. not in a for's init.
 bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* record_decl) {
     clang::FunctionDecl* enclosing_func = record_decl->isLocalClass();
     if (!enclosing_func) {
@@ -80,14 +79,15 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
     if (enclosing_func->getBody() != compound) {
         auto parents = m_ctx.getParents(*compound);
         holder = parents.empty() ? nullptr : const_cast<clang::Stmt*>(parents[0].get<clang::Stmt>());
-        // the parent map is from before any block was rebuilt. A block already rebuilt for another
-        // class is no longer in its holder, so it is left.
+        // clang's parent map was built before any block was rebuilt. If this block was already
+        // replaced for another class, it is no longer among its holder's children, and this class
+        // is left unsplit.
         if (!holder || !llvm::is_contained(holder->children(), compound)) {
             return true;
         }
     }
 
-    // the variables stay in the DeclStmt, the class gets one of its own before it
+    // the variables stay in the DeclStmt, and the class gets a new DeclStmt before it
     llvm::SmallVector<clang::Decl*, 4> remaining_decls;
     for (clang::Decl* d : decl_stmt->getDeclGroup()) {
         if (d != record_decl) {
@@ -100,6 +100,7 @@ bool BreakLocalRecordDeclStmtVisitor::VisitCXXRecordDecl(clang::CXXRecordDecl* r
     clang::DeclStmt* record_stmt = new (m_ctx) clang::DeclStmt(
         record_group, record_decl->getBeginLoc(), record_decl->getEndLoc());
 
+    // a CompoundStmt can't grow, so the block is rebuilt with the new DeclStmt added
     llvm::SmallVector<clang::Stmt*, 16> new_stmts;
     for (clang::Stmt* s : compound->body()) {
         if (s == decl_stmt) {

@@ -31,10 +31,11 @@ bool CanonicalizeVarDeclVisitor::VisitVarDecl(clang::VarDecl* decl) {
     // a global keeps its name, also one declared inside a function, eg. `extern int count;` in
     // `void f() { extern int count; ++count; }`, which refers to the global `count`
     if (!decl->isLocalVarDeclOrParm() || decl->isLocalExternDecl()) return true;
-    // a structured binding, `auto [a, b] = p;`, is a declaration without a name. Given one, it
+    // a structured binding, `auto [a, b] = p;`, is a declaration without a name. If renamed, it
     // would be printed as an ordinary variable, `auto ___var__N = p;`, and `a` and `b` would be lost
     if (llvm::isa<clang::DecompositionDecl>(decl)) return true;
-    // a parameter of a requires expression, `t` of `requires (T t) { t.size(); }`, is only used inside it
+    // a parameter of a requires expression, `t` of `requires (T t) { t.size(); }`, is only used
+    // inside it, so it can't clash
     if (llvm::isa<clang::RequiresExprBodyDecl>(decl->getDeclContext())) return true;
 
     std::string canonicalizedName = "___var__" + std::to_string(m_next_index++);

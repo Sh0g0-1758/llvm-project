@@ -20,8 +20,9 @@ namespace invisible {
 // --- NameTemplateTypeParmVisitor --------------------------------------
 
 // name-template-type-parm: names the unnamed template parameters, eg. `template <class = void>`
-// becomes `template <class __type_param__0 = void>`, which the declarations decl-before-def prints
-// for the template's members can then refer to, see docs/DESIGN.md section 5.3.
+// becomes `template <class __type_param__0 = void>`. The declarations decl-before-def prints for
+// the template's members then use that name, not `type-parameter-0-0`, see docs/DESIGN.md
+// section 5.3.
 class NameTemplateTypeParmVisitor : public clang::RecursiveASTVisitor<NameTemplateTypeParmVisitor> {
   public:
     NameTemplateTypeParmVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);

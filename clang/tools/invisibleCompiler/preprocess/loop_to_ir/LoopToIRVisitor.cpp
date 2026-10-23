@@ -26,12 +26,14 @@ LoopToIRVisitor::LoopToIRVisitor(clang::ASTContext& ctx, clang::Rewriter& rewrit
     m_policy.IncludeTagDefinition = true;
 }
 
+// Writes the condition and increment of a for as statements of its body, so that hoist-calls can
+// put the temporaries of their calls before them, where they run on every iteration:
+//
+//     for (init; cond; inc) {...}   =>   for (init;;) { if (!(cond)) { break; } {...} inc; }
+//
+// This is only done when cond or inc calls something. A condition variable,
+// `for (init; T v = e; inc)`, is declared first in the body: `T v = e; if (!(v)) ...`.
 bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
-    // for (init; cond; inc) {...}   =>   for (init;;) { if (!(cond)) { break; } {...} inc; }
-    //
-    // Done only when cond or inc calls something. A condition variable, `for (init; T v = e; inc)`,
-    // is declared first in the body: `T v = e; if (!(v)) ...`. A `continue` in the body becomes
-    // `goto __loop_continue_N;`, a label put before the increment: `__loop_continue_N: { inc; }`.
     bool hasCond = for_stmt->getCond() != nullptr;
     bool hasInc  = for_stmt->getInc() != nullptr;
     // `for (init; T v = e; inc)` declares `v` on each iteration, like a while
@@ -59,6 +61,7 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     }
     inc_out.flush();
 
+    // `continue` => `goto __loop_continue_N;`, to a label before the increment, see jumpContinuesToLabel
     std::string label = hasInc ? jumpContinuesToLabel(for_stmt->getBody()) : "";
 
     // the header keeps only its init statement, `for (init;;)`
@@ -81,11 +84,14 @@ bool LoopToIRVisitor::VisitForStmt(clang::ForStmt* for_stmt) {
     return true;
 }
 
+// Writes the condition of a while as the first statement of its body, so that hoist-calls can put
+// the temporaries of its calls before it, where they run on every iteration:
+//
+//     while (cond) {...}      =>   while (1) { if (!(cond)) { break; } ... }
+//     while (T v = e) {...}   =>   while (1) { T v = e; if (!(v)) { break; } ... }
+//
+// This is only done when the condition calls something.
 bool LoopToIRVisitor::VisitWhileStmt(clang::WhileStmt* while_stmt) {
-    // while (cond) {...}      =>   while (1) { if (!(cond)) { break; } ... }
-    // while (T v = e) {...}   =>   while (1) { T v = e; if (!(v)) { break; } ... }
-    //
-    // Done only when the condition calls something. The test goes inside the body's braces.
     auto cond_var = while_stmt->getConditionVariable();
     clang::Expr* trigger = cond_var ? cond_var->getInit() : while_stmt->getCond();
     if (!trigger || !containsCall(trigger)) return true;
@@ -128,15 +134,19 @@ bool LoopToIRVisitor::VisitSwitchStmt(clang::SwitchStmt* switch_stmt) {
     return true;
 }
 
+// Moves the init statement and condition variable of an if or switch before it:
+//
+//     if (init; T v = e) ...   =>   { init; T v = e; if (v) ... }
+//
+// This is only done when the init statement, the condition variable or the condition calls
+// something. hoist-calls puts a call's temporaries before the if. A call that uses `v` or a
+// variable of init could not go there while those are declared inside the parentheses.
 void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init, clang::DeclStmt* cond_decl,
                                             clang::Expr* cond, clang::SourceLocation lparen, clang::SourceLocation rparen) {
-    // if (init; T v = e) ...   =>   { init; T v = e; if (v) ... }, and likewise for a switch
-    //
-    // Done when the init statement, the condition variable or the condition calls something. The
-    // calls can then be hoisted: the variables they use are now declared before the if.
     if (!init && !cond_decl) return;
     if (lparen.isInvalid() || rparen.isInvalid()) return;
     const clang::VarDecl* var = cond_decl ? llvm::dyn_cast<clang::VarDecl>(cond_decl->getSingleDecl()) : nullptr;
+    // a structured binding, `if (auto [a, b] = f())`, has no name to test
     if (cond_decl && (!var || llvm::isa<clang::DecompositionDecl>(var))) return;
     auto has_call = [&](clang::Stmt* part) {
         if (auto* expr = llvm::dyn_cast_or_null<clang::Expr>(part)) return containsCall(expr);
@@ -168,11 +178,13 @@ void LoopToIRVisitor::moveConditionDeclsOut(clang::Stmt* stmt, clang::Stmt* init
     m_rewriter.InsertTextAfter(end, "\n}");
 }
 
+// Writes the condition of a do-while as the last statement of its body, so that hoist-calls can
+// put the temporaries of its calls before it, where they run on every iteration:
+//
+//     do {...} while (cond);   =>   do { {...} if (!(cond)) { break; } } while (1);
+//
+// This is only done when cond calls something.
 bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
-    // do {...} while (cond);   =>   do { {...} if (!(cond)) { break; } } while (1);
-    //
-    // Done only when cond calls something. A `continue` in the body becomes
-    // `goto __loop_continue_N;`, a label put before the test: `__loop_continue_N: { if ... }`.
     if (!containsCall(do_stmt->getCond())) return true;
 
     std::string cond;
@@ -187,6 +199,7 @@ bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     cond_wrapped_out << "if (!(" << cond << ")) {\nbreak;\n}\n";
     cond_wrapped_out.flush();
 
+    // `continue` => `goto __loop_continue_N;`, to a label before the test: `__loop_continue_N: { if ... }`
     std::string label = jumpContinuesToLabel(do_stmt->getBody());
     if (!label.empty()) cond_wrapped_in_if = label + ": {\n" + cond_wrapped_in_if + "}\n";
 
@@ -196,7 +209,8 @@ bool LoopToIRVisitor::VisitDoStmt(clang::DoStmt* do_stmt) {
     return true;
 }
 
-// continues of the loop whose body is stmt, nested loops own theirs
+// Collects the `continue`s of the loop whose body is @p stmt. A `continue` in a nested loop
+// belongs to that loop, so nested loops are skipped.
 void LoopToIRVisitor::collectContinues(clang::Stmt* stmt, std::vector<clang::ContinueStmt*>& continues) {
     if (!stmt) return;
     if (auto* cont = llvm::dyn_cast<clang::ContinueStmt>(stmt)) {
@@ -208,9 +222,10 @@ void LoopToIRVisitor::collectContinues(clang::Stmt* stmt, std::vector<clang::Con
         collectContinues(child, continues);
 }
 
-// turns the continues of the loop into gotos to a new label, empty if there are none: once the
-// increment or condition is a statement at the end of the body, `continue` would skip it, eg.
-// `for (; i < n; ++i) { if (skip(i)) continue; f(i); }` would loop forever on a skipped `i`
+// Turns the `continue`s of the loop into `goto`s to a new label, and returns the label, or "" when
+// there are none. Once the increment or condition is a statement at the end of the body, a
+// `continue` would skip it, eg. `for (; i < n; ++i) { if (skip(i)) continue; f(i); }` would loop
+// forever on a skipped `i`.
 std::string LoopToIRVisitor::jumpContinuesToLabel(clang::Stmt* body) {
     std::vector<clang::ContinueStmt*> continues;
     collectContinues(body, continues);

@@ -44,21 +44,23 @@ void addPipelineFlags(std::vector<std::string>& args) {
 // `-Wno-everything` also silences the warnings that are errors by default, eg. `-Winvalid-constexpr`:
 // a pass that prints a `constexpr` specialization that can never be constant would be accepted,
 // and the real build would then fail. So the input is checked once without it, and when it
-// compiles so, so must the output of every pass.
+// compiles that way, the output of every pass must too.
 void checkAsCompiled(std::vector<std::string>& args, const std::string& source, const std::string& filename) {
     auto lenient = std::find(args.begin(), args.end(), "-Wno-everything");
     if (lenient == args.end()) return;
     std::vector<std::string> strict(args.begin(), lenient);
     strict.insert(strict.end(), lenient + 1, args.end());
-    // the member redeclarations DeclBeforeDef writes outside their class are accepted. The
-    // warnings aren't printed, see ErrorPrinter; `-w` would silence `-Werror=` ones too.
+    // the member redeclarations DeclBeforeDef writes outside their class are accepted. Other
+    // warnings aren't printed either, see ErrorPrinter. `-w` isn't used, as it would also silence
+    // the warnings that `-Werror=` makes errors.
     strict.push_back("-Wno-out-of-line-declaration");
     // the driver's warnings about the flags, eg. `-c` unused by a syntax check, are printed directly
     strict.push_back("-Wno-unused-command-line-argument");
     if (isCompilable(source, filename, strict)) args = std::move(strict);
 }
 
-// the one place isCompilable reports a failure, read back by the driver's error blaming
+// where isCompilable records its last failure. The driver reads it to find the functions the
+// errors are in.
 static CompileFailure last_compile_failure;
 
 const CompileFailure& lastCompileFailure() {
@@ -77,10 +79,9 @@ std::string getRewrittenSource(clang::Rewriter& rewriter, const std::string& ori
 
 namespace {
 
-// Prints the errors, and their notes, of a run checked as a compiler builds it, which
-// leaves warnings on, see checkAsCompiled. A note belongs to the diagnostic before it, so a
-// note after a warning is dropped with it. The driver parses these lines, eg. `a.cc:12:3: error:`,
-// and warnings in between would only be noise to it.
+// Prints only the errors and their notes. After checkAsCompiled, warnings are on, but the driver
+// parses these lines, eg. `a.cc:12:3: error:`, and warnings would only be noise to it. A note
+// belongs to the diagnostic before it, so a note after a warning is dropped too.
 class ErrorPrinter : public clang::TextDiagnosticPrinter {
   public:
     using TextDiagnosticPrinter::TextDiagnosticPrinter;
@@ -141,9 +142,9 @@ class InvisibleAction : public clang::ASTFrontendAction {
 
 namespace {
 
-// The name generator passKey made for the AST being visited. It refers to the AST, so it is
-// dropped with it: a new AST can be allocated where the last one was, and a generator kept by the
-// address of its AST would then name with the freed one.
+// The name generator passKey uses for the current AST. The generator refers to the AST, so it is
+// reset when the AST is freed. Otherwise a new AST allocated at the same address would be taken
+// for the old one, and the generator would use freed memory.
 struct PassKeyNames {
     const clang::ASTContext* context = nullptr;
     std::unique_ptr<clang::ASTNameGenerator> generator;
@@ -160,12 +161,12 @@ std::string runInMemory(const std::string& source, const std::string& filename, 
                         clang::Rewriter& rewriter) {
     std::string diagnostics;
     llvm::raw_string_ostream diagnostics_out(diagnostics);
-    // the rewrites are read in the run, the rewriter's SourceManager is freed with it
+    // the rewritten source is read inside the run, as the rewriter's SourceManager is freed when it ends
     std::string rewritten = source;
     auto capture = [&](clang::ASTContext& ctx, clang::Sema& sema) {
         callback(ctx, sema);
         rewritten = getRewrittenSource(rewriter, source);
-        // what refers to the AST, which is freed with the run
+        // reset what refers to the AST, which is freed when the run ends
         passKeyNames() = {};
     };
     auto action = std::make_unique<InvisibleAction>(capture, diagnostics_out);
@@ -209,8 +210,9 @@ bool isCompilable(const std::string& source, const std::string& filename,
 
 namespace {
 
-// Whether the template argument @p arg can be named anywhere, see isNameableAnywhere: a type,
-// each element of a pack, and a declaration, eg. the address `&local_fn` can't be of a local.
+// Whether the template argument @p arg can be named anywhere, see isNameableAnywhere. A type, each
+// element of a pack and a declaration are checked, eg. the address of a static local variable
+// can't be named outside its function.
 bool isNameableArgument(const clang::TemplateArgument& arg) {
     switch (arg.getKind()) {
     case clang::TemplateArgument::Type:
@@ -291,7 +293,7 @@ bool containsCall(const clang::Stmt* stmt) {
 }
 
 clang::CharSourceRange exprCharRange(clang::SourceRange range, const clang::SourceManager& sm, const clang::LangOptions& lang_opts) {
-    // the half of a split `>>` is a location of its own, expanded from the `>>`
+    // clang gives each half of a split `>>` a location expanded from the `>>`, as for a macro
     clang::SourceLocation begin = sm.getExpansionLoc(range.getBegin());
     clang::SourceLocation end = sm.getExpansionLoc(range.getEnd());
     if (*sm.getCharacterData(end) == '>') return clang::CharSourceRange::getCharRange(begin, end.getLocWithOffset(1));
@@ -346,7 +348,7 @@ std::string copyName(llvm::StringRef base, llvm::StringRef key) {
     return (base + "__mono" + llvm::utohexstr(llvm::xxh3_64bits(key) & 0xffffffffffULL, true)).str();
 }
 
-// told by the name copyName gives it: `__mono` and hexadecimal digits at its end
+// a copy's name ends with `__mono` and hexadecimal digits, see copyName
 bool isCopy(const clang::FunctionDecl* func) {
     if (!func->getIdentifier()) return false;
     llvm::StringRef name = func->getName();
@@ -361,7 +363,7 @@ std::set<std::string>& passSkips() {
 }
 
 std::string passKey(const clang::FunctionDecl* func) {
-    // a template can't be mangled, it is told by its name and number of parameters
+    // a template can't be mangled, so its key is its qualified name and number of parameters
     if (func->isDependentContext() || llvm::isa<clang::CXXDeductionGuideDecl>(func))
         return "template " + func->getQualifiedNameAsString() + "/" + std::to_string(func->getNumParams());
     // a name generator per AST: a pass parses the source anew every run, see PassKeyNames
@@ -458,9 +460,10 @@ clang::NestedNameSpecifier buildQualifierForContext(clang::ASTContext& ctx, clan
 void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
     if (!node) return;
     for (clang::Stmt*& child : node->children()) qualifyNonLocalNames(child, ctx);
-    // the printer prints the syntactic form of braces, whose elements an instantiation leaves
-    // unresolved, eg. the overload set `&impl<P>` of `{&impl<P>}`. It prints the resolved ones
-    // of the semantic form instead, unless they are told apart by designators or brace elision.
+    // clang's printer prints the syntactic form of braces. In an instantiation, clang leaves the
+    // elements of that form unresolved, eg. the overload set `&impl<P>` of `{&impl<P>}`. So the
+    // resolved elements of the semantic form are put in it, unless designators or brace elision
+    // make the two forms differ.
     if (auto* list = llvm::dyn_cast<clang::InitListExpr>(node); list && list->getSyntacticForm()) {
         clang::InitListExpr* written = list->getSyntacticForm();
         bool same_elements = written->getNumInits() == list->getNumInits() &&
@@ -473,7 +476,8 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
     }
 
     // a value-initialization, eg. `value_type()` of a default argument, would print the typedef
-    // as written, so it becomes `((unsigned long)0)`, of the canonical type, found anywhere
+    // as written, which may not be visible elsewhere. So it becomes a cast of 0 to the canonical
+    // type, eg. `((unsigned long)0)`.
     if (auto* init = llvm::dyn_cast<clang::CXXScalarValueInitExpr>(node); init && !init->getType()->isDependentType()) {
         clang::QualType type = init->getType().getCanonicalType();
         node = clang::CStyleCastExpr::Create(
@@ -497,7 +501,8 @@ void qualifyNonLocalNames(clang::Stmt*& node, clang::ASTContext& ctx) {
     auto* ref = llvm::dyn_cast<clang::DeclRefExpr>(node);
     clang::ValueDecl* decl = ref ? ref->getDecl() : nullptr;
 
-    // a hidden friend is only found by its arguments, which it still is
+    // only non-local functions, variables and enumerators are qualified. A hidden friend isn't:
+    // it can only be found through its arguments, and it still is
     if (!llvm::isa_and_nonnull<clang::FunctionDecl, clang::VarDecl, clang::EnumConstantDecl>(decl) ||
         !decl->isDefinedOutsideFunctionOrMethod() ||
         llvm::all_of(decl->redecls(), [](const clang::Decl* redecl) {
@@ -596,8 +601,8 @@ bool isTransparentParent(const clang::Stmt* s, bool isExplicitCoversionOperator)
 
 }  // namespace
 
-// The statement @p call is all of already, directly in a block, or null. hoist-calls leaves such a
-// call as it is, and the inliner pastes the inlined code before the statement:
+// The statement, directly in a block, that is nothing but @p call, or null. hoist-calls leaves
+// such a call as it is, and the inliner pastes the inlined code before the statement:
 //  - a declaration, `int x = f();`, gives its DeclStmt;
 //  - an assignment, `x = f();`, also `a = f();` of a class, whose `=` is a call itself, gives the
 //    assignment;

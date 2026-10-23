@@ -21,8 +21,8 @@ namespace invisible {
 // --- CompoundStmtWrapperVisitor --------------------------------------
 
 // compound-stmt-wrapper: wraps every for, if and switch statement in braces, so that what later
-// passes put before it, eg. its declarations or hoisted calls, stays in its scope. It also puts a
-// switch body and an empty loop body in braces, see docs/DESIGN.md section 5.6.
+// passes put before it, eg. its declarations or hoisted calls, isn't visible after it. It also puts
+// a switch body and an empty loop body in braces, see docs/DESIGN.md section 5.6.
 class CompoundStmtWrapperVisitor : public LaterPassVisitor<CompoundStmtWrapperVisitor> {
   public:
     CompoundStmtWrapperVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
