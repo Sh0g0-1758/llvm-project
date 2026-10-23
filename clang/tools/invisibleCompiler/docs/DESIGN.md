@@ -5,8 +5,8 @@ optimizing compiler performs can be replayed in source code. This document expla
 tool produces, the rules every pass follows, and what each pass does, with the tool's actual
 output as examples. Read it before the code: every file maps to a section here.
 
-It describes monomorphization as of v17 (12 October 2026) with the fixes ported onto it, built
-standalone against a production LLVM (section 12).
+The tool builds standalone against a production LLVM, with no change to clang itself
+(section 12).
 
 Contents
 
@@ -91,14 +91,15 @@ These hold after **every** pass, not just at the end. The driver checks them, an
 regression tests check the final output.
 
 1. **It compiles, as a compiler builds it.** The driver compiles each pass's output and
-   rejects it if it doesn't compile. The check is as strict as `clang -c -w
-   -Wno-out-of-line-declaration`: warnings that clang makes errors by default, such as
-   `-Winvalid-constexpr`, stay errors (`checkAsCompiled`). An input that compiles only with
-   every warning silenced, such as C that passes incompatible pointers, is checked leniently.
-   `-Wno-out-of-line-declaration` is needed because decl-before-def redeclares members
-   outside their class (`int Vec::size();`), which is otherwise a default error.
-   `-Wno-unused-command-line-argument` keeps the driver from warning that a syntax check
-   doesn't use `-c`.
+   rejects it if it doesn't compile. The check reports the errors a plain `clang -c` would.
+   This includes the warnings that clang turns into errors by default, such as
+   `-Winvalid-constexpr` (`checkAsCompiled`).
+   - Some inputs compile only with every warning silenced, such as C that passes incompatible
+     pointers. Their outputs are checked with every warning silenced too.
+   - `-Wno-out-of-line-declaration` is added. decl-before-def redeclares members outside
+     their class (`int Vec::size();`), and by default clang makes that an error.
+   - `-Wno-unused-command-line-argument` is added. The check only parses, so without it clang
+     warns that `-c` is unused.
 2. **It links where the input links.** The output must define everything the input defines,
    and it must not define anything twice across the TUs of a program. Definitions that came
    from implicitly inline functions (in-class members, instantiations) are printed
@@ -106,9 +107,9 @@ regression tests check the final output.
    still emitted for the optimization records.
 3. **It means the same.** A program prints and returns what the original does. The only
    accepted differences are the object lifetimes that hoisting changes (section 10).
-4. **Templates and friends stay as written** where they are needed as written. A
-   dependent context is never rewritten by a pass after decl-before-def
-   (`isLeftAsWritten`), and friends are left exactly as written.
+4. **Templates and friends stay as written** where they are needed as written. The passes
+   after decl-before-def never rewrite code inside a template (`isLeftAsWritten`). Friends are
+   left exactly as written.
 
 ## 4. The driver: running, checking and recovering
 
@@ -135,19 +136,22 @@ When a pass's errors show that (`neededAsWritten`), the driver adds what's neede
   declares it.
 
 After the last pass, the driver also looks for instantiations that the output **uses but
-doesn't define** whose template was stripped (`strippedTemplatesUsedIn`). This happens, for
-example, when hoist-calls writes `bool b(ptr);` for the variable of `if (auto ptr = ...)`,
-which calls a conversion that was copied away. This is an AST check, not a diagnostic.
-clang reports only the first missing template definition, and only while no other error
-has occurred, so `-Werror=undefined-func-template` can miss all but one.
+doesn't define**, whose template was stripped (`strippedTemplatesUsedIn`). For example,
+hoist-calls writes `bool b(ptr);` for the variable of `if (auto ptr = ...)`. That calls the
+conversion to `bool` of `ptr`'s class. decl-before-def saw no such call, as the call it saw
+went to a copy, so it stripped the conversion's template.
+
+This is a check of the AST, not of clang's errors. clang reports only the first missing
+template definition, and only while no other error has occurred. So
+`-Werror=undefined-func-template` would miss all but one.
 
 At most 100 functions are left as written this way.
 
 ### 4.2 Retries inside decl-before-def
 
 decl-before-def prints a lot of code. When some of it doesn't compile, the pass itself
-retries (up to 20 attempts), attributing each error to the deferred definition or copy whose
-lines it falls in:
+retries, up to 20 times. Each error is blamed on the deferred definition or copy whose lines
+it is on. Then, before the next attempt:
 
 - a deferred **specialization** that doesn't compile is left as written instead (`unmoved`);
 - a **copy** (section 7) that doesn't compile is dropped (`dropped`), and its callers call the
@@ -155,8 +159,8 @@ lines it falls in:
 - an instantiation the output uses without a definition, whose template was stripped, has its
   template left as written (`strippedTemplatesUsedIn`, as in section 4.1).
 
-Both are fallbacks: they keep the TU compiling at the cost of a function that the inliner
-can't inline into. The verbose log reports them as `attempt N left X as written and Y
+All three are fallbacks. They keep the TU compiling, but each costs a function that the
+inliner can't inline into. The verbose log reports them as `attempt N left X as written and Y
 copies out`.
 
 ### 4.3 Per-function fallback
@@ -187,12 +191,16 @@ if (x < 0) return 0;        =>   if (x < 0) {
 ```
 
 It also drops the **explicit instantiation declarations**. `extern template class
-basic_string<char>;` keeps every member of `basic_string<char>` from being instantiated in
-the TU, so they couldn't be specialized either. A declaration is kept when the TU can't
-instantiate what it names, for example `extern template ostream &__ostream_insert(...)`
-when `basic_ostream` is only forward-declared (doctest). Those are the declarations whose
-names appear in the instantiation notes of the errors that dropping them causes
-(`dropInstantiableExternTemplates`).
+basic_string<char>;` says the members of `basic_string<char>` are instantiated in another TU,
+eg. `libstdc++.so`. So clang gives this TU no instantiation of its own that decl-before-def
+could write out. A member that isn't inline isn't instantiated at all. An inline one gets a
+body for the optimizer only, and LLVM inlines it, but it has no text the inliner could paste.
+
+Some of these declarations must stay: the TU can't instantiate what they name. For example,
+libstdc++'s `extern template ostream &__ostream_insert(...)` must stay in a TU where
+`basic_ostream` is only forward-declared, as in doctest. To find them, the pass drops them all and compiles. The errors' instantiation notes name
+what clang failed to instantiate. A declaration that names one of those is put back, and the
+pass compiles again (`dropInstantiableExternTemplates`).
 
 ### 5.2 access-specifier
 
@@ -209,13 +217,18 @@ public:                                int n = 0;
                                      };
 ```
 
-Type traits can observe access: `static_assert(!std::is_destructible<buffer<int>>())` holds
-only while the destructor is protected, and `static_assert(!std::is_convertible_v<D*, B*>)`
-only while `B` is a private base. When the all-public version doesn't compile, the pass is
-redone with the bases, and the constructors, destructors and assignment operators, **keeping
-their access** (`protected: ~buffer() = default; public:`). Everything else is still made
-public. A copy of a member that converts to a base left private doesn't compile then, and is
-dropped by decl-before-def (section 4.2): its callers call the original.
+Making everything public can break code, because type traits can see access. For example,
+`static_assert(!std::is_destructible<buffer<int>>())` holds only while the destructor is
+protected. `static_assert(!std::is_convertible_v<D*, B*>)` holds only while `B` is a private
+base.
+
+So when the all-public version doesn't compile, the pass is redone. This time the bases, the
+constructors, the destructors and the assignment operators **keep their access**
+(`protected: ~buffer() = default; public:`). Everything else is still made public.
+
+A copy of a member (section 7) is a free function. If it converts to a base that stayed
+private, it doesn't compile. decl-before-def then drops the copy (section 4.2), and its
+callers call the original member.
 
 ### 5.3 name-template-type-parm
 
@@ -407,14 +420,15 @@ return static_cast<int &&>(__func_hoist_ret__3);
   hoisted out of its statement.
 - **Constant expressions.** Calls in template arguments, `case` labels and `if constexpr`
   conditions are made by the compiler and aren't hoisted.
-- **Explicit conversions.** A conversion applied implicitly, as `if (obj)` does, is
-  direct-initialized: `bool __func_hoist_ret__0(obj);`, which also calls an `explicit`
-  conversion.
-- **Unnameable types.** A temporary of a type that can't be named, such as one specialized for
-  a lambda's closure type, is declared `auto`, and cast with `decltype(tmp)`.
-- **Labels.** The temporaries of a labeled statement go after its labels, so that a jump to a
-  label still makes the calls. In a function with labels, the temporaries of a statement go
-  into a block of their own, because a `goto` must not jump past their initialization.
+- **Explicit conversions.** `if (obj)` may call an `explicit operator bool`. Copy
+  initialization, `bool b = obj;`, can't call an `explicit` conversion. So the temporary is
+  direct-initialized instead: `bool __func_hoist_ret__0(obj);`.
+- **Unnameable types.** Some types can't be written, such as a template specialized for a
+  lambda's closure type. A temporary of such a type is declared `auto`, and cast with
+  `decltype(tmp)`.
+- **Labels.** The temporaries of a labeled statement go after its labels. A jump to the label
+  then still makes the calls. In a function with labels, the temporaries of a statement also
+  go in braces, because a `goto` must not jump past the initialization of a variable.
 
 ## 6. decl-before-def in depth
 
@@ -425,12 +439,14 @@ For every function definition in the TU:
 1. Its definition in place becomes a **declaration**.
 2. A **declaration** of it is added at the end of the TU, followed by its **definition**.
 
-So every function is declared before any definition, and any deferred body can call any
-function, which is what a pasted body needs. The definitions at the end, deferred definitions,
-specializations and copies alike, keep the order of the input: a copy is written where the
-template it comes from is defined. So what must be defined before it is used, not just
-declared, eg. a copy a `constexpr` variable's initializer calls, is defined in time, as it was
-in the input. Specializations returning `auto` are the exception and come first
+So every function is declared before any definition. Any deferred body can call any
+function, and so can a body the inliner pastes into it.
+
+The definitions at the end keep the order of the input. This holds for deferred definitions,
+specializations and copies alike. A copy is written where the template it comes from is
+defined. Some functions must be defined before they are used, not just declared, eg. a copy
+that a `constexpr` variable's initializer calls. Keeping the input's order defines them in
+time, as the input did. Specializations returning `auto` are the exception and come first
 (`deferredDefinitionOrder`). For the demo:
 
 ```cpp
@@ -462,7 +478,7 @@ function the binary contains. Printing a specialization that compiles takes care
 |---|---|
 | a specialization can't repeat default arguments or a `requires` clause | suppressed (`SuppressInitializers`, `erase_requires`) |
 | `auto f()` specialized must repeat `auto`, and can't be called before its definition | the placeholder is restored; such definitions come first, callees before callers (`deferredDefinitionOrder`) |
-| `noexcept(expr)` may call what's defined later | printed by value: `noexcept(true)`; a member of a class template also gets a probe that makes clang compute the member's exception specification first (`printMemberProbe`) |
+| `noexcept(expr)` may call a function that is only defined later | printed by its value, `noexcept(true)`. For a member of a class template, the `noexcept` also names the member, eg. `&S<int>::f`. This makes clang work out the member's exception specification first. Otherwise clang doesn't match the specialization to the member (`printMemberProbe`) |
 | a constructor template's arguments can't be written | stripped (`stripConstructorTemplateArgs`) |
 | a pack's arguments are printed with extra `<>` | reprinted (`fixParameterPack`) |
 | written template arguments are substituted into every template of the name, which can fail hard, eg. `__niter_base<ostream_iterator<char>>` instantiating `reverse_iterator<ostream_iterator<char>>` | arguments omitted when they're all deducible and only one template deduces the type (`stripTemplateArguments`): `template<> int sum(const int *, int)` |
@@ -477,21 +493,24 @@ Some functions keep their text in place, along with their instantiations:
 
 - **Friends.** They're left exactly as written.
 - **Defaulted, deleted and `consteval` functions.**
-- **`constexpr` functions** that aren't templates, members included. A constant expression
-  anywhere may evaluate a `constexpr` function, also through a concept or argument-dependent
-  lookup, which no scan can see. It still gets a copy for what is deferred to call.
+- **`constexpr` functions** that aren't templates, members included. Any constant
+  expression may evaluate a `constexpr` function, so it needs the body in place. Some of these
+  uses can't be found by scanning the code, eg. through a concept or argument-dependent
+  lookup. Such a function still gets a copy, which the deferred code calls.
 - **Explicitly instantiated templates.** `template void Data::reserve<true>(int);` needs the
   template's definition where it's written, and no specialization may follow it.
 - **Templates instantiated for a lambda's closure type.** The closure type can't be named.
-- **What `KeepInPlaceVisitor` finds.** Templates and `constexpr` functions used outside
-  function bodies, and what those use; a plain function used there only needs its
-  declaration, unless its return type is deduced; what a constant expression calls, in a template argument or a `static_assert` for
-  example, also in a body; and a function whose type or class can't be named elsewhere, such as
-  a return type deduced to name a lambda's closure type.
+- **What `KeepInPlaceVisitor` finds:**
+  - templates and `constexpr` functions used outside function bodies, and what those use. A
+    plain function used there only needs its declaration, unless its return type is deduced;
+  - what a constant expression calls, eg. in a template argument or a `static_assert`, even
+    inside a body;
+  - a function whose type or class can't be named elsewhere, eg. one whose deduced return
+    type is a lambda's closure type.
 
-The last rule exists because what's used outside function bodies is evaluated where it's
-written, in a constant expression for example. That code needs the definition there, and
-it instantiates the function before a specialization could be declared:
+The last rule exists because code outside function bodies is evaluated where it's written,
+eg. in a constant expression. That code needs the definition there. It also instantiates the
+function before a specialization at the end could be declared:
 
 ```cpp
 template <class T> constexpr bool small() { return sizeof(T) < 4; }
@@ -514,11 +533,13 @@ decl-before-def runs four more visitors on the same AST first:
 
 ## 7. Monomorphization
 
-An instantiation written as an explicit specialization **leaves its template in place**, and
-one that's only declared in place, whose template is still there, works for the compiler but
-gives the inliner nothing. So every instantiation of C++ gets a **copy** instead: a free
-function with a name of its own. Callers call the copy, and as many templates as possible are
-reduced to declarations. C has no templates.
+An explicit specialization needs its template to stay in place. So writing every
+instantiation as a specialization keeps every template's text too. The goal is to keep as few
+templates as possible.
+
+So every instantiation gets a **copy** instead: a free function with its own name. Callers
+call the copy, and as many templates as possible are reduced to declarations. C has no
+templates, so this only applies to C++.
 
 ```cpp
 Box<int> box{sum(xs, 3)};
@@ -547,21 +568,26 @@ return operator__monofddf8e98a0(__builtin_addressof(add), twice(clamp(get__monof
 - **Names.** A copy is printed at the end of the TU, outside every namespace and class.
   Every name in its body is qualified from the global namespace (`qualifyNonLocalNames`)
   and every type printed canonically.
-- **Callers.** Calls are redirected in two places. In the bodies of the deferred definitions
-  and the copies, `redirectCalls` rewrites the AST, which also reaches calls in declarations
-  that a `PrinterHelper` never sees, such as the initializers of a local class's members. In
-  the rest of what decl-before-def prints, a constructor's member initializers for example,
-  `MonoPrinterHelper` prints a call of a copied function as a call of its copy, the object
-  first. A function's address, `&f`, becomes the copy's. A comparison rewritten from another,
-  eg. `a != b` from `a == b`, or `a < b` from `<=>`, is written as what it was rewritten to once
-  a call in it goes to a copy: `!(operator__mono...(a, b))`, or `operator__mono...(a <=> b, 0)`
-  for a `<` whose `<=>` has no copy. clang can only print `a < b` while the calls under it are
-  the ones it made (`rewrittenForm`).
+- **Callers.** Calls are redirected to the copies in two ways:
+  - In the bodies of the deferred definitions and the copies, `redirectCalls` rewrites the
+    AST. This also reaches calls that a `PrinterHelper` never sees, such as the initializers
+    of a local class's members.
+  - In the rest of what decl-before-def prints, eg. a constructor's member initializers,
+    `MonoPrinterHelper` prints a call of a copied function as a call of its copy, with the
+    object as the first argument.
+
+  A function's address, `&f`, becomes the copy's.
+- **Rewritten comparisons.** clang rewrites some comparisons into others: `a != b` calls
+  `operator==`, and `a < b` may call `operator<=>`. The printer can only print `a < b` while
+  the calls under it are the ones clang made. So once such a call goes to a copy, the
+  comparison is written as what clang rewrote it to (`rewrittenForm`):
+  `!(operator__mono...(a, b))` for `a != b`, and `operator__mono...(a <=> b, 0)` for an `a < b`
+  whose `<=>` has no copy.
 - **`constexpr`.** A copy is `constexpr` exactly when its original instantiation can be a
-  constant expression, the same rule as for specializations (`printsConstexpr`). The passes
-  after decl-before-def still rewrite it. They leave as written only the `constexpr` functions
-  that stay in place, which the compiler may evaluate; a copy, called only by deferred code at
-  run time, never is (`isCopy`).
+  constant expression. This is the same rule as for specializations (`printsConstexpr`). The
+  passes after decl-before-def leave a `constexpr` function in place as written, because the
+  compiler may evaluate it. A copy is still rewritten by them, because only deferred code
+  calls it, at run time (`isCopy`).
 
 ### 7.2 What isn't copied
 
@@ -584,7 +610,7 @@ A template is reduced to a declaration unless something still needs its text:
 - an instantiation that can be neither copied nor specialized;
 - whatever the driver's recovery found a later pass needs (section 4.1).
 
-A template that's still called keeps its text.
+Every other template is reduced to a declaration, because its callers now call the copies.
 
 ## 8. The inliner
 
@@ -613,17 +639,30 @@ int &__func_hoist_ret__2 = static_cast<int &>(*__inline_ret__0);
 
 - **Parameters and results.** Parameters become variables, and `return` becomes an
   assignment and a `goto`. A reference result is carried as a pointer.
-- **Rounds.** Sites are inlined in rounds. Each round takes the sites whose callee has
-  nothing left to inline into it, one site per line, and is checked with one compile. A
-  round that doesn't compile is split in halves.
-- **Calls found in inlined bodies aren't followed.** When LLVM inlines `B` into `A` and then
-  the call of `C` it brought along, the oracle gives that call the line in `B`, which isn't in
-  `A`, and it is reported as not found.
-- **Skipped sites.** These are reported, not inlined: constructors and destructors, calls
-  returning a class that isn't trivially default-constructible, calls that aren't a statement
-  of their own (`topLevelStatement`, which hoist-calls makes every call it can), and calls
-  initializing a static, thread local or constexpr variable. A temporary of the call that the
-  inlined code outlives isn't checked, see `VisitCallExpr`.
+- **Rounds.** Sites are inlined in rounds. A round takes only the sites whose callee has
+  nothing left to inline into it, so bodies are inlined bottom up, as LLVM does. It takes at
+  most one site per line. The whole round is checked with one compile. When it doesn't
+  compile:
+  - each error is blamed on the site whose pasted code it is in. Those sites are dropped, and
+    the rest are retried;
+  - when an error isn't in any site's code, the round is split in halves, and each half is
+    tried alone.
+- **Calls found in inlined bodies aren't followed.** Say LLVM inlines `B` into `A`, and then
+  inlines the call of `C` that `B`'s body brought along. The oracle gives that call its line
+  in `B`, not in `A`. So the inliner finds no such call in `A`, and reports it as not found.
+- **Skipped sites.** These are reported, not inlined:
+  - constructors and destructors;
+  - variadic callees, eg. `log(const char *, ...)`. Their extra arguments have no parameter to
+    bind to, and `va_arg` needs a real call;
+  - callees with a `static` local variable. Each pasted body would get its own variable;
+  - calls returning a class that isn't trivially default-constructible and copyable. The
+    result variable is declared first and assigned later;
+  - calls that aren't a statement of their own (`topLevelStatement`). hoist-calls makes every
+    call it can into one;
+  - calls initializing a static, thread local or constexpr variable.
+- **Not checked.** An argument that points into a temporary, eg. `__mono_addr(make())`, can
+  make the inlined code wrong. The temporary is destroyed at the end of the parameter
+  variable's declaration, before the pasted body uses it.
 
 ## 9. Testing
 
@@ -639,8 +678,7 @@ program of several. Each passes when:
 5. the output matches the test's `CHECK` and `CHECK-NOT` lines.
 
 ```
-$ python3 test/run.py -j 10
-93 pass, 0 fail, 0 xfail, 0 xpass (93 tests)
+$ python3 test/run.py -j 10                           # every test
 $ python3 test/run.py constant_fold --keep /tmp/t     # one test, keeping its files
 ```
 
@@ -661,14 +699,18 @@ outputs of a project define twice, against the originals.
 
 - **Lifetimes.** A hoisted temporary lives until the end of its block, not of its full
   expression. Copy elision is lost and an extra move may happen. This is accepted.
-- **Access.** Members and bases made public change what access-based SFINAE sees. The pass
-  only notices when the TU stops compiling (section 5.2); an overload that SFINAE silently chooses
-  differently isn't noticed. Two runtime checks of a base's access change too, with no compile
-  error to tell: a handler `catch (B&)` catches a `D` whose base `B` was private, and
-  `dynamic_cast<B*>` to a private base, `nullptr` before, succeeds. Traits change too: if `T`
-  has a private copy constructor and a move constructor that isn't `noexcept`, `std::vector<T>`
-  moves its elements when it grows. Once the copy constructor is public, it copies them. If the
-  copy constructor is only declared, as in a C++03-style noncopyable class, linking fails.
+- **Access.** Members and bases made public can change behaviour without any compile error.
+  access-specifier only notices a change when the TU stops compiling (section 5.2). Four
+  changes go unnoticed:
+  - **Overloads.** SFINAE can see access. An overload that was removed because a member was
+    private may now be chosen instead.
+  - **`catch`.** A handler `catch (B&)` now catches a `D` whose base `B` was private.
+  - **`dynamic_cast`.** `dynamic_cast<B*>` to a base that was private returned `nullptr`. Now
+    it succeeds.
+  - **Traits.** Say `T` has a private copy constructor, and a move constructor that isn't
+    `noexcept`. `std::vector<T>` moves its elements when it grows. Once the copy constructor
+    is public, it copies them instead. If the copy constructor is only declared, as in a
+    C++03-style noncopyable class, linking fails.
 - **Layout.** Under the Itanium ABI, a derived class may put its members in the tail padding of
   a base whose data members are private. Once they are public, it can't. So `struct B : A { char
   d; }` with `A { private: int i; char c; }` grows from 8 to 12 bytes. The binary is still
