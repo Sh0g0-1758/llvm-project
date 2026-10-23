@@ -21,8 +21,8 @@ namespace invisible {
 
 // materialize-lambda: turns a lambda into a named struct, its captures into members and its body
 // into the call operator, so that its type can be named, eg. by the specialization of a
-// template it is passed to, see docs/DESIGN.md section 5.4. A captured `this` becomes a member
-// of its own. Lambdas are turned innermost first, and the pass repeats.
+// template it is passed to, see docs/DESIGN.md section 5.4. A captured `this` becomes the member
+// `__parent_this__`. Inner lambdas are turned first, and the pass runs again for the outer ones.
 class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLambdaVisitor> {
   public:
     MaterializeLambdaVisitor(clang::ASTContext& ctx, clang::Rewriter& rewriter);
@@ -34,14 +34,14 @@ class MaterializeLambdaVisitor : public clang::RecursiveASTVisitor<MaterializeLa
     clang::ASTContext& m_ctx;
     clang::Rewriter& m_rewriter;
     clang::PrintingPolicy m_policy;
-    // the types of the members, printed canonically: the struct is outside the function their aliases are in
+    // prints the members' types canonically, as the struct is outside the function their aliases may be in
     clang::PrintingPolicy m_field_policy;
     bool m_changed = false;
-    // the index of the next lambda in each function, keyed by the function's name prefix, see VisitLambdaExpr
+    // the index of the next struct of each function, keyed by its struct name prefix, see VisitLambdaExpr
     std::map<std::string, unsigned> m_next_index;
     // whether @p node has a lambda in it, which must become a struct first
     bool containsNestedLambda(clang::Stmt* node);
-    // the function the struct is put before
+    // the function the struct is put before: the nearest one that is neither a lambda nor in a function
     clang::FunctionDecl* enclosingFunction(const clang::LambdaExpr* lambda);
     // whether the lambda is used as a function pointer, which the struct can't be
     bool convertsToFunctionPointer(const clang::LambdaExpr* lambda);

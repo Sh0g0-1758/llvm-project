@@ -20,13 +20,15 @@ namespace invisible {
 
 namespace {
 
-// Collects what a lambda names that isn't declared before `function`, where its struct goes:
-//  - the type aliases local to `function`, which the struct repeats, eg. `It` in
+// Collects the names a lambda uses that aren't visible before `function`, where its struct goes:
+//  - the type aliases declared in `function`, and the aliases they use. The struct declares them
+//    again, eg. `It` in
 //
 //        void f() { using It = int*; auto g = [](It p) { return *p; }; }
 //
-//  - the member types of `record`, the class of an out-of-line member function;
-//  - whether it names a class or enumeration local to the function, which can't be named there.
+//  - the member types of `record`, the class of an out-of-line member function. The struct
+//    declares them again through `X::`;
+//  - whether it names a class or enum declared in the function. The struct can't name it at all.
 struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
     const clang::FunctionDecl* function;
     const clang::DeclContext* record;
@@ -45,7 +47,8 @@ struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
     }
     bool VisitTagTypeLoc(clang::TagTypeLoc loc) {
         addMember(loc.getDecl());
-        // a class or enumeration of the function, outside the lambda, can't be named before it
+        // a class or enum declared in the function, but not in the lambda, can't be named before
+        // the function
         for (const clang::DeclContext* dc = loc.getDecl()->getDeclContext(); dc && dc != lambda_call; dc = dc->getParent())
             if (dc == function) names_local_type = true;
         return true;
@@ -56,9 +59,10 @@ struct LocalAliasCollector : clang::RecursiveASTVisitor<LocalAliasCollector> {
     }
 };
 
-// Prints a lambda's body for its struct. In a template, an implicit member access is unresolved,
-// eg. `size` in `[this] { return size; }`. It is printed through the captured `this`,
-// `this->__parent_this__->size`. Resolved accesses are rewritten in the AST, see replaceThis.
+// Prints a lambda's body as the body of its struct's call operator. In a template, clang leaves an
+// implicit member access unresolved, eg. `size` in `[this] { return size; }`. It has no `this` in
+// the AST to rewrite, so the helper prints it as `this->__parent_this__->size`. The other uses of
+// `this` are rewritten in the AST, see replaceThis.
 class LambdaBodyPrinterHelper : public DeclBeforeDefPrinterHelper {
   public:
     LambdaBodyPrinterHelper(clang::ASTContext& ctx, clang::PrintingPolicy policy, std::string this_member)
@@ -106,15 +110,16 @@ class ContainsLambdaVisitor : public clang::RecursiveASTVisitor<ContainsLambdaVi
     }
 };
 
-// a lambda with a lambda in its body waits for a later iteration, when the inner one is a struct
+// a lambda with a lambda in its body waits until an iteration has turned the inner one into a struct
 bool MaterializeLambdaVisitor::containsNestedLambda(clang::Stmt* node) {
     ContainsLambdaVisitor visitor;
     visitor.TraverseStmt(node);
     return visitor.found;
 }
 
-// The function the struct of @p lambda is put before: the outermost one that isn't a member of a
-// lambda or of a local class, eg. `g` for the inner lambda of `void g() { [] { [] {}(); }(); }`.
+// The function the struct of @p lambda is put before: the nearest enclosing function that is
+// neither a lambda nor a member of a local class, eg. `g` for the inner lambda of
+// `void g() { [] { [] {}(); }(); }`. A struct can't go before those, as they are inside a function.
 clang::FunctionDecl* MaterializeLambdaVisitor::enclosingFunction(const clang::LambdaExpr* lambda) {
     for (clang::DeclContext* dc = lambda->getLambdaClass()->getDeclContext(); dc; dc = dc->getParent()) {
         auto* function = llvm::dyn_cast<clang::FunctionDecl>(dc);
@@ -150,10 +155,10 @@ bool MaterializeLambdaVisitor::convertsToFunctionPointer(const clang::LambdaExpr
     return false;
 }
 
-// Where the struct goes: before @p enclosing_func, its template heads, also those of the class of an
-// out-of-line member, and the attributes written on it, eg. before `[[nodiscard]]` of
-// `[[nodiscard]] int f() { ... }`. Not before the implicit ones: the visibility that `#pragma GCC
-// visibility push` gives a function is located at the pragma.
+// Where the struct goes: before @p enclosing_func, its template heads, those of the class of an
+// out-of-line member, and the attributes written before it, eg. before `[[nodiscard]]` in
+// `[[nodiscard]] int f() { ... }`. Implicit attributes are skipped. eg. clang gives a function the
+// visibility of `#pragma GCC visibility push` as an implicit attribute located at the pragma.
 clang::SourceLocation MaterializeLambdaVisitor::structLoc(const clang::FunctionDecl* enclosing_func) {
     const clang::SourceManager& sm = m_ctx.getSourceManager();
     clang::SourceLocation loc = enclosing_func->getOuterLocStart();
@@ -164,7 +169,7 @@ clang::SourceLocation MaterializeLambdaVisitor::structLoc(const clang::FunctionD
         if (attr->isImplicit() || attr->isInherited()) continue;
         clang::SourceLocation at = attr->getLocation();
         if (!at.isValid() || !sm.isBeforeInTranslationUnit(at, loc)) continue;
-        // `[[` opens a standard attribute
+        // a standard attribute is located at its name, so step back over the `[[` before it
         while (auto prev = clang::Lexer::findPreviousToken(at, sm, m_ctx.getLangOpts(), false)) {
             if (!prev->is(clang::tok::l_square)) break;
             at = prev->getLocation();
@@ -187,8 +192,8 @@ clang::SourceLocation MaterializeLambdaVisitor::structLoc(const clang::FunctionD
 //     };
 //     int g(int n) { return call(__invisible_lambda_1a2b3c4d5e_0{n}); }
 //
-// A lambda's type has no name. decl-before-def writes `call<__invisible_lambda_1a2b3c4d5e_0>` as a
-// specialization or a copy, which has to name it.
+// A lambda's type has no name, but decl-before-def has to name it when it writes out the
+// specialization or copy of `call` for it, `call<__invisible_lambda_1a2b3c4d5e_0>`.
 bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     clang::CXXMethodDecl* call_op = lambda->getCallOperator();
     if (containsNestedLambda(call_op->getBody()))
@@ -207,11 +212,12 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     // are declared again through `X::`
     local_aliases.record = enclosing_func->isOutOfLine() && enclosing_func->getQualifier() ? enclosing_func->getDeclContext() : nullptr;
     local_aliases.TraverseDecl(call_op);
-    // a lambda stays when it names a class of the function, eg. the type of a parameter, or has
-    // a capture of a type that can't be named: the struct goes before the function
-    // FIXME: so should a lambda naming a variable of the function that isn't captured, eg. a static
-    // local, `static int count; [] { return ++count; }`, or a constant that isn't odr-used,
-    // `const int N = 5; [=] { return N; }`. The struct names it where it isn't declared.
+    // a lambda stays a lambda if it names a class declared in the function, eg. as a parameter type,
+    // or captures a value whose type can't be named. The struct goes before the function, where
+    // neither type can be named.
+    // FIXME: a lambda should also stay if it uses a variable of the function without capturing it,
+    // eg. a static local, `static int count; [] { return ++count; }`, or a constant that isn't
+    // odr-used, `const int N = 5; [=] { return N; }`. The struct uses it before it is declared.
     if (local_aliases.names_local_type ||
         llvm::any_of(record->fields(), [](const clang::FieldDecl* field) { return !isNameableAnywhere(field->getType()); }))
         return true;
@@ -241,8 +247,9 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     if (auto* tmpl = enclosing_func->getDescribedFunctionTemplate())
         param_lists.push_back(tmpl->getTemplateParameters());
 
-    // in a template, what `[&]` and `[=]` capture is only known to the instantiations:
-    // the variables of the enclosing function that the body uses.
+    // in a template, clang only lists what `[&]` and `[=]` capture in the instantiations, not in the
+    // template's own lambda. So collect them here: the local variables from outside the lambda
+    // that its body uses and doesn't capture explicitly.
     bool dependent = call_op->isDependentContext();
     std::vector<const clang::VarDecl*> implicit_captures;
     if (lambda->getCaptureDefault() != clang::LCD_None && dependent) {
@@ -273,7 +280,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
                      }) ||
         llvm::any_of(implicit_captures, is_pack))
         return true;
-    // the enclosing function's template parameters, packs last: a class template can have only one pack
+    // the enclosing function's template parameters, packs last: in a class template, a pack must be
+    // the last parameter. So a lambda that needs two packs stays.
     std::vector<const clang::NamedDecl*> template_params;
     for (auto* list : param_lists) template_params.insert(template_params.end(), list->begin(), list->end());
     std::stable_partition(template_params.begin(), template_params.end(),
@@ -281,15 +289,16 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     if (llvm::count_if(template_params, [](const clang::NamedDecl* param) { return param->isParameterPack(); }) > 1)
         return true;
 
-    // a member for each capture. Out of a template, `type` is the member's declaration as the
+    // a member for each capture. Outside a template, `type` is the member's whole declaration, as the
     // closure has it, eg. for `[n, &v, this]`
     //
     //     int n;   std::vector<int> &v;   X *__parent_this__;
     //
     // In a template, the member's type is a template parameter of the struct, and `type` is the
-    // argument given where the lambda was, see capture_type:
+    // template argument written where the lambda was, see capture_type:
     //
-    //     template <class __invisible_capture_0, class T> struct __invisible_lambda_1a2b3c4d5e_0 { __invisible_capture_0 t; ... };
+    //     template <class __invisible_capture_0, class T>
+    //     struct __invisible_lambda_1a2b3c4d5e_0 { __invisible_capture_0 t; ... };
     //     __invisible_lambda_1a2b3c4d5e_0<__remove_reference_t(decltype(t)), T>{t}
     struct Member {
         std::string name;
@@ -305,9 +314,9 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     //              [y = t.size()]      =>  __decay(decltype((t.size())))       as `auto y = t.size()`
     //              [&y = t.get()]      =>  decltype((t.get()))&
     //
-    // A type that doesn't depend on the template is written out, not `decltype(n)`. clang doesn't
-    // instantiate such a decltype, so in the specialization of `f<int>` it would still name the
-    // template's `n`. canonicalize-var-decl gives that `n` a different name than the specialization's.
+    // A type that doesn't depend on the template is written out, not as `decltype(n)`. clang doesn't
+    // instantiate a decltype that doesn't depend on the template. So in the specialization `f<int>`,
+    // it still refers to the template's `n`, which canonicalize-var-decl names differently.
     auto capture_type = [this](const clang::VarDecl* var, bool by_ref) -> std::string {
         clang::QualType type = var->getType();
         if (!type->isDependentType() && !type->isUndeducedType()) {
@@ -330,8 +339,9 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         return "__remove_reference_t(decltype(" + expr + "))";
     };
 
-    // The closure's fields are its captures, in order. A captured `this` can't be a member's
-    // name, it becomes `__parent_this__`, and the body's `this` is rewritten to it below.
+    // The closure's fields are its captures, in order. A captured `this` needs a member name, as
+    // `this` is a keyword. It becomes `__parent_this__`, and the body's `this` is rewritten to use it
+    // below.
     auto capture_it = lambda->captures().begin();
     clang::FieldDecl* this_field = nullptr;
     for (clang::FieldDecl* field : record->fields()) {
@@ -346,7 +356,7 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             members.push_back({field_name, var ? capture_type(var, capture->getCaptureKind() == clang::LCK_ByRef) : "decltype(this)"});
             continue;
         }
-        // printed with its name, as in `int (*fp)(int)`
+        // the type is printed around the name, as in `int (*fp)(int)`
         std::string declaration;
         llvm::raw_string_ostream declaration_out(declaration);
         field->getType().print(declaration_out, m_field_policy, field_name);
@@ -389,7 +399,7 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             struct_out << members[i].type << ";\n";
     }
 
-    // `this` in the body is the captured one, `this->__parent_this__`
+    // `this` in the body becomes the captured one, `this->__parent_this__`
     if (this_field) {
         clang::QualType record_type = m_ctx.getTypeDeclType(clang::ElaboratedTypeKeyword::None, std::nullopt, record);
         clang::Expr* new_this = clang::CXXThisExpr::Create(m_ctx, clang::SourceLocation(), m_ctx.getPointerType(record_type), true);
@@ -401,8 +411,9 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
         replaceThis(call_op->getBody(), replacement);
     }
 
-    // `[]<class T>(T t)` has a call operator template, whose template head isn't printed with it,
-    // so it is copied as written. The parameters clang invents for `auto` need none: `auto` is printed.
+    // `[]<class T>(T t)` has a call operator template. Printing the call operator doesn't print its
+    // template head, so the head is copied from the source. Parameters declared `auto` need no head,
+    // as they are printed as `auto`.
     if (!lambda->getExplicitTemplateParameters().empty()) {
         const clang::TemplateParameterList* params = lambda->getTemplateParameterList();
         auto text = [this](clang::SourceRange range) {
@@ -414,8 +425,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
             struct_out << " requires " << text(requires_clause->getSourceRange());
         struct_out << "\n";
     }
-    // the call operator is printed without its body. The body is printed with the helper, as clang
-    // drops the `constexpr` of `if constexpr`.
+    // the call operator is printed without its body. The body is printed separately with the helper,
+    // as clang's printer drops the `constexpr` of `if constexpr`.
     clang::PrintingPolicy declaration_policy = m_policy;
     declaration_policy.TerseOutput = true;
     // clang marks this call operator constexpr even when it calls a non-constexpr function, eg.
@@ -429,7 +440,8 @@ bool MaterializeLambdaVisitor::VisitLambdaExpr(clang::LambdaExpr* lambda) {
     std::string body;
     llvm::raw_string_ostream body_out(body);
     call_op->getBody()->printPretty(body_out, &helper, m_policy);
-    // a namespace alias can't be a class member, so those of the enclosing function open the body
+    // a namespace alias can't be a class member. So the namespace aliases the enclosing function
+    // declares before the lambda are copied to the start of the call operator's body.
     std::string namespace_aliases;
     for (const clang::Decl* decl : enclosing_func->decls())
         if (llvm::isa<clang::NamespaceAliasDecl>(decl) &&
