@@ -1,4 +1,4 @@
-namespace std { template <class E> class initializer_list { const E* b; unsigned long n; public: const E* begin() const { return b; } const E* end() const { return b + n; } }; }
+namespace std { template <class E> class initializer_list { const E* b; decltype(sizeof(0)) n; public: const E* begin() const { return b; } const E* end() const { return b + n; } }; }
 namespace ns {
 struct Vec { int d[3] = {1, 2, 3}; int* begin() { return d; } int* end() { return d + 3; } };
 struct Bag { int d[2] = {4, 5}; };
